@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
+from datetime import datetime, timezone
 
 import websockets
 
@@ -13,6 +15,14 @@ from app.config import get_settings
 from app.market.data_store import Candle, DataStore
 
 logger = logging.getLogger(__name__)
+
+ANSI_RESET = "\033[0m"
+ANSI_CYAN = "\033[96m"
+ANSI_GREEN = "\033[92m"
+ANSI_RED = "\033[91m"
+ANSI_YELLOW = "\033[93m"
+ANSI_DIM = "\033[2m"
+ANSI_ENABLED = hasattr(sys.stderr, "isatty") and sys.stderr.isatty()
 
 
 class BinanceWSClient:
@@ -30,6 +40,7 @@ class BinanceWSClient:
         self.interval = interval
         self._task: asyncio.Task | None = None
         self._running = False
+        self._last_logged_price: float | None = None
 
     @property
     def stream_url(self) -> str:
@@ -55,6 +66,40 @@ class BinanceWSClient:
             self._task = None
         logger.info("Binance WS stopped")
 
+    def _format_live_price_log(self, symbol: str, candle: Candle, use_color: bool = ANSI_ENABLED) -> str:
+        previous_price = self._last_logged_price
+        self._last_logged_price = candle.close
+
+        def colorize(value: str, ansi_code: str) -> str:
+            if not use_color:
+                return value
+            return f"{ansi_code}{value}{ANSI_RESET}"
+
+        delta = 0.0 if previous_price is None else candle.close - previous_price
+        if previous_price is None:
+            delta_label = colorize("NEW", ANSI_YELLOW)
+            price_label = colorize(f"{candle.close:,.2f}", ANSI_CYAN)
+        elif delta > 0:
+            delta_label = colorize(f"+{delta:,.2f}", ANSI_GREEN)
+            price_label = colorize(f"{candle.close:,.2f}", ANSI_GREEN)
+        elif delta < 0:
+            delta_label = colorize(f"{delta:,.2f}", ANSI_RED)
+            price_label = colorize(f"{candle.close:,.2f}", ANSI_RED)
+        else:
+            delta_label = colorize("0.00", ANSI_DIM)
+            price_label = colorize(f"{candle.close:,.2f}", ANSI_YELLOW)
+
+        candle_open = datetime.fromtimestamp(candle.open_time / 1000, tz=timezone.utc).strftime(
+            "%Y-%m-%d %H:%M:%S UTC"
+        )
+        return (
+            f"{colorize('[LIVE]', ANSI_CYAN)} "
+            f"{symbol}/{self.interval} "
+            f"price={price_label} "
+            f"change={delta_label} "
+            f"{colorize(f'candle_open={candle_open}', ANSI_DIM)}"
+        )
+
     async def _run(self) -> None:
         store = DataStore.get_instance()
         manager = ConnectionManager.get_instance()
@@ -79,6 +124,8 @@ class BinanceWSClient:
                                 volume=float(k["v"]),
                             )
                             store.update_candle(symbol_upper, self.interval, candle)
+                            if logger.isEnabledFor(logging.DEBUG):
+                                logger.debug(self._format_live_price_log(symbol_upper, candle))
                             await manager.broadcast(
                                 {
                                     "type": "price_update",

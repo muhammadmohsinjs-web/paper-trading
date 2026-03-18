@@ -32,6 +32,86 @@ a {
   background: rgba(243, 201, 107, 0.25);
 }
 
+.price-tick {
+  display: inline-flex;
+  align-items: baseline;
+}
+
+.price-value {
+  display: inline-block;
+  will-change: transform, color, opacity;
+  transition:
+    color 180ms ease,
+    opacity 180ms ease;
+}
+
+.price-value-up {
+  color: #b8ff67;
+}
+
+.price-value-down {
+  color: #ff8d73;
+}
+
+.price-pulse-up {
+  animation: pricePulseUp 560ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.price-pulse-down {
+  animation: pricePulseDown 560ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes pricePulseUp {
+  0% {
+    opacity: 0.72;
+    transform: translateY(6px) scale(0.985);
+    text-shadow: 0 0 0 rgba(184, 255, 103, 0);
+  }
+
+  35% {
+    opacity: 1;
+    transform: translateY(-2px) scale(1.015);
+    text-shadow: 0 0 22px rgba(184, 255, 103, 0.32);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    text-shadow: 0 0 0 rgba(184, 255, 103, 0);
+  }
+}
+
+@keyframes pricePulseDown {
+  0% {
+    opacity: 0.72;
+    transform: translateY(-6px) scale(0.985);
+    text-shadow: 0 0 0 rgba(255, 123, 90, 0);
+  }
+
+  35% {
+    opacity: 1;
+    transform: translateY(2px) scale(1.015);
+    text-shadow: 0 0 22px rgba(255, 123, 90, 0.28);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    text-shadow: 0 0 0 rgba(255, 123, 90, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .price-value {
+    transition: color 120ms ease;
+  }
+
+  .price-pulse-up,
+  .price-pulse-down {
+    animation: none;
+  }
+}
+
 @layer components {
   .panel {
     @apply rounded-3xl border border-line/80 bg-panel/85 backdrop-blur;

@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { LivePrice } from "@/components/live-price";
 import { PriceChart } from "@/components/price-chart";
 import { OpenPositions } from "@/components/open-positions";
 import { TradeLog } from "@/components/trade-log";
@@ -86,7 +87,10 @@ export function StrategyDetailClient(props: StrategyDetailClientProps) {
           <div className="mt-4 flex flex-wrap gap-3 text-xs text-mist/55">
             <span>Last AI status: {strategy.ai_last_decision_status ?? "--"}</span>
             <span>Last decision: {formatDateTime(strategy.ai_last_decision_at)}</span>
-            <span>BTCUSDT: {formatCurrency(livePrice)}</span>
+            <span className="flex items-center gap-2">
+              <span>BTCUSDT:</span>
+              <LivePrice price={livePrice} variant="inline" className="text-sand" />
+            </span>
           </div>
         </div>
 

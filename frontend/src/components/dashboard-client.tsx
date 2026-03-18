@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useMemo } from "react";
+import { LivePrice } from "@/components/live-price";
 import { useLiveFeed } from "@/hooks/use-live-feed";
 import { formatCurrency, formatNumber } from "@/lib/format";
 import type { DashboardResponse, EngineStatus, MarketPrice } from "@/lib/types";
@@ -35,8 +36,8 @@ export function DashboardClient({
           <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
             <div className="space-y-3">
               <p className="text-xs uppercase tracking-[0.3em] text-gold">Live Market</p>
-              <h2 className="text-4xl font-semibold tracking-tight text-sand sm:text-5xl">
-                {formatCurrency(latestPrice)}
+              <h2>
+                <LivePrice price={latestPrice} className="text-sand" />
               </h2>
               <p className="text-sm text-mist/65">
                 BTCUSDT live price {live.connected ? "streaming over WebSocket" : "using latest API snapshot"}.
