@@ -89,9 +89,16 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         prefix = "PAPER_TRADING_"
+        environment = _get_value(f"{prefix}ENVIRONMENT", default=cls.environment)
+        allowed_origins = _get_list(f"{prefix}ALLOWED_ORIGINS", "CORS_ORIGINS")
+        if not allowed_origins and environment == "development":
+            allowed_origins = [
+                "http://localhost:3000",
+                "http://127.0.0.1:3000",
+            ]
         return cls(
             app_name=_get_value(f"{prefix}APP_NAME", default=cls.app_name),
-            environment=_get_value(f"{prefix}ENVIRONMENT", default=cls.environment),
+            environment=environment,
             api_prefix=_get_value(f"{prefix}API_PREFIX", default=cls.api_prefix),
             database_url=_get_value(
                 f"{prefix}DATABASE_URL",
@@ -108,7 +115,7 @@ class Settings:
                 "TRADING_SYMBOL",
                 default=cls.default_symbol,
             ),
-            allowed_origins=_get_list(f"{prefix}ALLOWED_ORIGINS", "CORS_ORIGINS"),
+            allowed_origins=allowed_origins,
             binance_ws_url=_get_value("BINANCE_WS_URL", default=cls.binance_ws_url),
             binance_rest_url=_get_value("BINANCE_REST_URL", default=cls.binance_rest_url),
             default_balance_usdt=float(_get_value("DEFAULT_BALANCE_USDT", default=str(cls.default_balance_usdt))),

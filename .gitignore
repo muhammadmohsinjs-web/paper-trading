@@ -8,3 +8,7 @@ backend/.env
 backend/.venv/
 backend/.pytest_cache/
 backend/paper_trading.db
+
+# Frontend dependencies and build output
+frontend/node_modules/
+frontend/.next/

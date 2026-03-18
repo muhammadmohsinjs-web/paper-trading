@@ -8,6 +8,7 @@ import logging
 
 import websockets
 
+from app.api.ws import ConnectionManager
 from app.config import get_settings
 from app.market.data_store import Candle, DataStore
 
@@ -56,6 +57,7 @@ class BinanceWSClient:
 
     async def _run(self) -> None:
         store = DataStore.get_instance()
+        manager = ConnectionManager.get_instance()
         symbol_upper = self.symbol.upper()
 
         while self._running:
@@ -77,6 +79,15 @@ class BinanceWSClient:
                                 volume=float(k["v"]),
                             )
                             store.update_candle(symbol_upper, self.interval, candle)
+                            await manager.broadcast(
+                                {
+                                    "type": "price_update",
+                                    "symbol": symbol_upper,
+                                    "interval": self.interval,
+                                    "price": candle.close,
+                                    "open_time": candle.open_time,
+                                }
+                            )
                         except (KeyError, ValueError) as exc:
                             logger.warning("Bad WS message: %s", exc)
             except asyncio.CancelledError:

@@ -14,6 +14,7 @@ from app.models.position import Position
 from app.models.strategy import Strategy
 from app.models.trade import Trade
 from app.models.wallet import Wallet
+from app.schemas.wallet import PositionResponse, WalletResponse
 from app.schemas.strategy import (
     StrategyCreate,
     StrategyResponse,
@@ -172,6 +173,60 @@ async def get_strategy(
     if strategy is None:
         raise HTTPException(404, "Strategy not found")
     return await _build_stats(session, strategy)
+
+
+@router.get("/{strategy_id}/wallet", response_model=WalletResponse)
+async def get_strategy_wallet(
+    strategy_id: str,
+    session: AsyncSession = Depends(get_db_session),
+):
+    wallet_result = await session.execute(
+        select(Wallet).where(Wallet.strategy_id == strategy_id)
+    )
+    wallet = wallet_result.scalar_one_or_none()
+    if wallet is None:
+        raise HTTPException(404, "Wallet not found")
+    return wallet
+
+
+@router.get("/{strategy_id}/positions", response_model=list[PositionResponse])
+async def get_strategy_positions(
+    strategy_id: str,
+    session: AsyncSession = Depends(get_db_session),
+):
+    strategy_result = await session.execute(
+        select(Strategy.id).where(Strategy.id == strategy_id)
+    )
+    if strategy_result.scalar_one_or_none() is None:
+        raise HTTPException(404, "Strategy not found")
+
+    result = await session.execute(
+        select(Position).where(Position.strategy_id == strategy_id).order_by(Position.opened_at.desc())
+    )
+    positions = result.scalars().all()
+    store = DataStore.get_instance()
+
+    return [
+        PositionResponse(
+            id=position.id,
+            strategy_id=position.strategy_id,
+            symbol=position.symbol,
+            side=position.side,
+            quantity=float(position.quantity),
+            entry_price=float(position.entry_price),
+            entry_fee=float(position.entry_fee),
+            opened_at=position.opened_at,
+            current_price=store.get_latest_price(position.symbol),
+            unrealized_pnl=(
+                (float(store.get_latest_price(position.symbol)) - float(position.entry_price))
+                * float(position.quantity)
+                - float(position.entry_fee)
+            )
+            if store.get_latest_price(position.symbol) is not None
+            else None,
+        )
+        for position in positions
+    ]
 
 
 @router.patch("/{strategy_id}", response_model=StrategyResponse)

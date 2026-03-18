@@ -10,6 +10,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from app.api.ws import ConnectionManager
 from app.config import get_settings
 from app.database import SessionLocal
 from app.engine.executor import execute_buy, execute_sell
@@ -187,6 +188,7 @@ async def run_single_cycle(
 ) -> dict[str, Any]:
     """Execute one decision cycle for a strategy."""
     store = DataStore.get_instance()
+    manager = ConnectionManager.get_instance()
     candles = store.get_candles(symbol, interval)
     closes = [candle.close for candle in candles]
 
@@ -352,6 +354,32 @@ async def run_single_cycle(
                 strategy_id, signal.action.value, symbol, result.trade.price,
             )
             await session.commit()
+            refreshed_position = await get_position(session, strategy_id, symbol)
+            await manager.broadcast(
+                {
+                    "type": "trade_executed",
+                    "strategy_id": strategy_id,
+                    "action": signal.action.value,
+                    "symbol": symbol,
+                    "price": float(result.trade.price),
+                    "quantity": float(result.trade.quantity),
+                    "fee": float(result.trade.fee),
+                    "pnl": float(result.trade.pnl) if result.trade.pnl is not None else None,
+                    "reason": signal.reason,
+                    "decision_source": "ai" if ai_config["ai_enabled"] else "rule",
+                }
+            )
+            await manager.broadcast(
+                {
+                    "type": "position_changed",
+                    "strategy_id": strategy_id,
+                    "symbol": symbol,
+                    "has_position": refreshed_position is not None,
+                    "quantity": float(refreshed_position.quantity) if refreshed_position else 0.0,
+                    "entry_price": float(refreshed_position.entry_price) if refreshed_position else None,
+                    "available_usdt": float(wallet.available_usdt),
+                }
+            )
             return {
                 "status": "executed",
                 "strategy_id": strategy_id,
