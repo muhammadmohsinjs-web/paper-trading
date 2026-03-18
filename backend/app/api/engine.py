@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,6 +38,7 @@ async def engine_status():
 @router.post("/strategies/{strategy_id}/execute")
 async def manual_execute(
     strategy_id: str,
+    force: bool = Query(False, description="Bypass AI cooldown, but still respect flat-market gating."),
     session: AsyncSession = Depends(get_db_session),
 ):
     """Manually trigger one strategy decision cycle."""
@@ -48,7 +49,4 @@ async def manual_execute(
     if strategy is None:
         raise HTTPException(404, "Strategy not found")
 
-    trade_info = await run_single_cycle(strategy_id)
-    if trade_info is None:
-        return {"status": "hold", "message": "No trade signal or insufficient data"}
-    return {"status": "executed", "trade": trade_info}
+    return await run_single_cycle(strategy_id, force=force)

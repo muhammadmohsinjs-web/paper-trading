@@ -69,6 +69,19 @@ class Settings:
     spot_fee_rate: float = 0.001
     bnb_discount_fee_rate: float = 0.00075
 
+    # AI / Claude
+    anthropic_api_key: str = ""
+    anthropic_base_url: str = "https://api.anthropic.com"
+    anthropic_model: str = "claude-3-5-sonnet-20240620"
+    ai_concurrent_calls: int = 3
+    ai_timeout_seconds: int = 45
+    ai_min_cooldown_seconds: int = 60
+    ai_flat_market_threshold_pct: float = 0.2
+    ai_max_tokens: int = 700
+    ai_temperature: float = 0.2
+    ai_input_cost_per_1m_tokens_usd: float = 3.0
+    ai_output_cost_per_1m_tokens_usd: float = 15.0
+
     # Server
     host: str = "0.0.0.0"
     port: int = 8000
@@ -102,6 +115,17 @@ class Settings:
             trading_interval_seconds=int(_get_value("TRADING_INTERVAL_SECONDS", default=str(cls.trading_interval_seconds))),
             spot_fee_rate=float(_get_value("SPOT_FEE_RATE", default=str(cls.spot_fee_rate))),
             bnb_discount_fee_rate=float(_get_value("BNB_DISCOUNT_FEE_RATE", default=str(cls.bnb_discount_fee_rate))),
+            anthropic_api_key=_get_value("ANTHROPIC_API_KEY", default=cls.anthropic_api_key),
+            anthropic_base_url=_get_value("ANTHROPIC_BASE_URL", default=cls.anthropic_base_url),
+            anthropic_model=_get_value("ANTHROPIC_MODEL", default=cls.anthropic_model),
+            ai_concurrent_calls=int(_get_value("AI_CONCURRENT_CALLS", default=str(cls.ai_concurrent_calls))),
+            ai_timeout_seconds=int(_get_value("AI_TIMEOUT_SECONDS", default=str(cls.ai_timeout_seconds))),
+            ai_min_cooldown_seconds=int(_get_value("AI_MIN_COOLDOWN_SECONDS", default=str(cls.ai_min_cooldown_seconds))),
+            ai_flat_market_threshold_pct=float(_get_value("AI_FLAT_MARKET_THRESHOLD_PCT", default=str(cls.ai_flat_market_threshold_pct))),
+            ai_max_tokens=int(_get_value("AI_MAX_TOKENS", default=str(cls.ai_max_tokens))),
+            ai_temperature=float(_get_value("AI_TEMPERATURE", default=str(cls.ai_temperature))),
+            ai_input_cost_per_1m_tokens_usd=float(_get_value("AI_INPUT_COST_PER_1M_TOKENS_USD", default=str(cls.ai_input_cost_per_1m_tokens_usd))),
+            ai_output_cost_per_1m_tokens_usd=float(_get_value("AI_OUTPUT_COST_PER_1M_TOKENS_USD", default=str(cls.ai_output_cost_per_1m_tokens_usd))),
             host=_get_value("HOST", default=cls.host),
             port=int(_get_value("PORT", default=str(cls.port))),
         )

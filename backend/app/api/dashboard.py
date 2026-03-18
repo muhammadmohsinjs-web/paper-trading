@@ -22,11 +22,17 @@ async def get_dashboard(session: AsyncSession = Depends(get_db_session)):
 
     stats_list = [await _build_stats(session, s) for s in strategies]
     active = sum(1 for s in stats_list if s.is_active)
+    ai_enabled = sum(1 for s in stats_list if s.ai_enabled)
+    ai_total_calls = sum(s.ai_total_calls for s in stats_list)
+    ai_total_cost_usdt = round(sum(s.ai_total_cost_usdt for s in stats_list), 8)
 
     return DashboardResponse(
         strategies=stats_list,
         total_strategies=len(stats_list),
         active_strategies=active,
+        ai_enabled_strategies=ai_enabled,
+        ai_total_calls=ai_total_calls,
+        ai_total_cost_usdt=ai_total_cost_usdt,
     )
 
 
@@ -49,6 +55,9 @@ async def get_leaderboard(
                 win_rate=stats.win_rate,
                 total_trades=stats.total_trades,
                 total_equity=stats.total_equity or 0.0,
+                ai_enabled=stats.ai_enabled,
+                ai_total_calls=stats.ai_total_calls,
+                ai_total_cost_usdt=stats.ai_total_cost_usdt,
                 rank=0,
             )
         )
