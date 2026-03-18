@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from sqlalchemy import Boolean, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -13,7 +13,7 @@ class Strategy(UUIDPrimaryKeyMixin, CreatedAtMixin, UpdatedAtMixin, Base):
     __tablename__ = "strategies"
 
     name: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     config_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 

@@ -59,6 +59,20 @@ class Settings:
     default_symbol: str = "BTCUSDT"
     allowed_origins: list[str] = field(default_factory=list)
 
+    # Binance
+    binance_ws_url: str = "wss://stream.binance.com:9443/ws"
+    binance_rest_url: str = "https://api.binance.com"
+
+    # Trading
+    default_balance_usdt: float = 1000.0
+    trading_interval_seconds: int = 300
+    spot_fee_rate: float = 0.001
+    bnb_discount_fee_rate: float = 0.00075
+
+    # Server
+    host: str = "0.0.0.0"
+    port: int = 8000
+
     @classmethod
     def from_env(cls) -> "Settings":
         prefix = "PAPER_TRADING_"
@@ -82,6 +96,14 @@ class Settings:
                 default=cls.default_symbol,
             ),
             allowed_origins=_get_list(f"{prefix}ALLOWED_ORIGINS", "CORS_ORIGINS"),
+            binance_ws_url=_get_value("BINANCE_WS_URL", default=cls.binance_ws_url),
+            binance_rest_url=_get_value("BINANCE_REST_URL", default=cls.binance_rest_url),
+            default_balance_usdt=float(_get_value("DEFAULT_BALANCE_USDT", default=str(cls.default_balance_usdt))),
+            trading_interval_seconds=int(_get_value("TRADING_INTERVAL_SECONDS", default=str(cls.trading_interval_seconds))),
+            spot_fee_rate=float(_get_value("SPOT_FEE_RATE", default=str(cls.spot_fee_rate))),
+            bnb_discount_fee_rate=float(_get_value("BNB_DISCOUNT_FEE_RATE", default=str(cls.bnb_discount_fee_rate))),
+            host=_get_value("HOST", default=cls.host),
+            port=int(_get_value("PORT", default=str(cls.port))),
         )
 
 

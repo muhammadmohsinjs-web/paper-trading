@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Optional
 
 from sqlalchemy import DateTime, Enum, ForeignKey, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -27,9 +28,9 @@ class Trade(UUIDPrimaryKeyMixin, Base):
     market_price: Mapped[Decimal] = mapped_column(Numeric(24, 12), nullable=False)
     fee: Mapped[Decimal] = mapped_column(Numeric(24, 12), nullable=False, default=Decimal("0"))
     slippage: Mapped[Decimal] = mapped_column(Numeric(24, 12), nullable=False, default=Decimal("0"))
-    pnl: Mapped[Decimal | None] = mapped_column(Numeric(24, 12), nullable=True)
-    pnl_pct: Mapped[Decimal | None] = mapped_column(Numeric(12, 6), nullable=True)
-    ai_reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pnl: Mapped[Optional[Decimal]] = mapped_column(Numeric(24, 12), nullable=True)
+    pnl_pct: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 6), nullable=True)
+    ai_reasoning: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     executed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
