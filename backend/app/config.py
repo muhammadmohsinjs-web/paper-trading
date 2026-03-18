@@ -1,0 +1,90 @@
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+
+
+def _read_dotenv() -> dict[str, str]:
+    env_path = BASE_DIR / ".env"
+    if not env_path.exists():
+        return {}
+
+    values: dict[str, str] = {}
+    for raw_line in env_path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip("'\"")
+    return values
+
+
+def _get_value(*names: str, default: str) -> str:
+    dotenv_values = _read_dotenv()
+    for name in names:
+        if name in os.environ:
+            return os.environ[name]
+        if name in dotenv_values:
+            return dotenv_values[name]
+    return default
+
+
+def _get_bool(name: str, default: bool) -> bool:
+    value = _get_value(name, default="" if default is False else "true")
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _get_list(*names: str) -> list[str]:
+    value = _get_value(*names, default="")
+    if not value.strip():
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+@dataclass(frozen=True)
+class Settings:
+    app_name: str = "Paper Trading Backend"
+    environment: str = "development"
+    api_prefix: str = "/api"
+    database_url: str = f"sqlite+aiosqlite:///{BASE_DIR / 'paper_trading.db'}"
+    database_echo: bool = False
+    default_quote_asset: str = "USDT"
+    default_symbol: str = "BTCUSDT"
+    allowed_origins: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_env(cls) -> "Settings":
+        prefix = "PAPER_TRADING_"
+        return cls(
+            app_name=_get_value(f"{prefix}APP_NAME", default=cls.app_name),
+            environment=_get_value(f"{prefix}ENVIRONMENT", default=cls.environment),
+            api_prefix=_get_value(f"{prefix}API_PREFIX", default=cls.api_prefix),
+            database_url=_get_value(
+                f"{prefix}DATABASE_URL",
+                "DATABASE_URL",
+                default=cls.database_url,
+            ),
+            database_echo=_get_bool(f"{prefix}DATABASE_ECHO", cls.database_echo),
+            default_quote_asset=_get_value(
+                f"{prefix}DEFAULT_QUOTE_ASSET",
+                default=cls.default_quote_asset,
+            ),
+            default_symbol=_get_value(
+                f"{prefix}DEFAULT_SYMBOL",
+                "TRADING_SYMBOL",
+                default=cls.default_symbol,
+            ),
+            allowed_origins=_get_list(f"{prefix}ALLOWED_ORIGINS", "CORS_ORIGINS"),
+        )
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings.from_env()

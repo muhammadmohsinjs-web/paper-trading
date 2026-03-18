@@ -1,0 +1,2 @@
+"""Strategy orchestration package placeholder."""
+

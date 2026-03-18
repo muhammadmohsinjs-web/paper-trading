@@ -1,0 +1,10 @@
+.DS_Store
+.codex/
+
+__pycache__/
+*.py[cod]
+
+backend/.env
+backend/.venv/
+backend/.pytest_cache/
+backend/paper_trading.db
