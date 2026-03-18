@@ -26,6 +26,10 @@ export function useLiveFeed() {
     let cancelled = false;
 
     const cleanup = () => {
+      if (retryRef.current) {
+        window.clearTimeout(retryRef.current);
+        retryRef.current = null;
+      }
       if (keepAliveRef.current) {
         window.clearInterval(keepAliveRef.current);
         keepAliveRef.current = null;
@@ -44,6 +48,10 @@ export function useLiveFeed() {
       socket.addEventListener("open", () => {
         if (cancelled) {
           return;
+        }
+        if (retryRef.current) {
+          window.clearTimeout(retryRef.current);
+          retryRef.current = null;
         }
         setState((current) => ({ ...current, connected: true }));
         keepAliveRef.current = window.setInterval(() => {
@@ -76,24 +84,29 @@ export function useLiveFeed() {
       });
 
       const scheduleReconnect = () => {
-        if (cancelled) {
+        if (cancelled || socketRef.current !== socket || retryRef.current) {
           return;
         }
         setState((current) => ({ ...current, connected: false }));
-        retryRef.current = window.setTimeout(connect, 3_000);
+        retryRef.current = window.setTimeout(() => {
+          retryRef.current = null;
+          connect();
+        }, 3_000);
       };
 
+      socket.addEventListener("error", () => {
+        if (cancelled || socketRef.current !== socket) {
+          return;
+        }
+        setState((current) => ({ ...current, connected: false }));
+      });
       socket.addEventListener("close", scheduleReconnect);
-      socket.addEventListener("error", scheduleReconnect);
     };
 
     connect();
 
     return () => {
       cancelled = true;
-      if (retryRef.current) {
-        window.clearTimeout(retryRef.current);
-      }
       cleanup();
     };
   }, []);

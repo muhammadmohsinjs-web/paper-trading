@@ -1,4 +1,5 @@
 import { apiBaseUrl } from "@/lib/env";
+import { logApiRequest } from "@/lib/api-logger";
 import type {
   CandleResponse,
   DashboardResponse,
@@ -15,13 +16,36 @@ import type {
 } from "@/lib/types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    ...init,
-    cache: "no-store",
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {})
-    }
+  const url = `${apiBaseUrl}${path}`;
+  const method = init?.method ?? "GET";
+  const startedAt = Date.now();
+  let response: Response;
+
+  try {
+    response = await fetch(url, {
+      ...init,
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        ...(init?.headers ?? {})
+      }
+    });
+  } catch (error) {
+    logApiRequest({
+      method,
+      url,
+      durationMs: Date.now() - startedAt,
+      error
+    });
+    throw error;
+  }
+
+  logApiRequest({
+    method,
+    url,
+    status: response.status,
+    statusText: response.statusText,
+    durationMs: Date.now() - startedAt
   });
 
   if (!response.ok) {

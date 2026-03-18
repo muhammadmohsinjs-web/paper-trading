@@ -5,4 +5,4 @@ export const apiBaseUrl =
 
 export const wsBaseUrl =
   process.env.NEXT_PUBLIC_WS_URL?.replace(/\/$/, "") ??
-  apiBaseUrl.replace(/^http/, "ws").replace(/\/api$/, "");
+  apiBaseUrl.replace(/^http/, "ws");
