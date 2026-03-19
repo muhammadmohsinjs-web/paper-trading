@@ -1,85 +1,158 @@
-# Crypto Paper Trading App — Overview
+# Paper Trading Application - Overview
 
-## Core Idea
+## What Is This App?
 
-An AI-powered paper trading app where Claude makes buy/sell decisions on cryptocurrencies using real market data. Zero financial risk, real results.
-
-## Why This Works
-
-- **Zero financial risk** while testing strategies
-- **Real market data** means results are meaningful
-- **AI decisions remove emotion** — the #1 killer of trading performance
-- Fast iteration on strategies without losing money
+This is an AI-powered cryptocurrency paper trading simulator. It lets an AI (Claude) make automated buy and sell decisions on Bitcoin using real market data — all without risking any real money. Multiple trading strategies run side by side, each with their own virtual wallet, so you can compare which approach performs best under the same market conditions.
 
 ---
 
-## Architecture — Three Main Pieces
+## How It Works (High-Level Flow)
 
-### 1. Brain (AI Decision Engine)
+### 1. Getting Market Data
 
-Claude analyzes market data and decides: **buy, sell, or hold**. It looks at price action, volume, trends, and whatever strategy rules we define. Runs on a schedule (e.g., every few minutes or on price triggers).
+- The app connects to Binance and continuously receives live Bitcoin price data (5-minute candles).
+- When the app starts up, it loads the most recent historical price data so strategies have enough context to make decisions right away.
+- Price updates are streamed to the frontend in real time so users always see the latest market state.
 
-**Multiple strategies run in parallel** — each strategy gets its own isolated virtual wallet and trade history, so we can compare performance side by side. Examples:
+### 2. Analyzing the Market
 
-- **Strategy A** — RSI + Moving Average crossover
-- **Strategy B** — Pure price action (support/resistance, candlestick patterns)
-- **Strategy C** — Volume profile + MACD
-- **Strategy D** — Chart pattern recognition (head & shoulders, triangles, etc.)
+Every 5 minutes, each trading strategy kicks off a cycle:
 
-Each strategy operates independently with the same starting capital, making it easy to see which approach performs best under the same market conditions.
+- The app gathers recent price history (open, high, low, close, volume).
+- It computes technical indicators like Moving Averages, RSI, and MACD from that price data.
+- If the market is too flat (barely moving), the cycle is skipped to avoid unnecessary decisions.
 
-### 2. Engine (Trading Simulator)
+### 3. AI Makes a Decision
 
-The core — simulates a real Binance account:
+- All the market data and indicators are packaged up and sent to Claude (the AI).
+- Each strategy has its own style of analysis — some focus on momentum, others on price patterns or volume signals.
+- Claude evaluates the data and responds with a decision: **Buy**, **Sell**, or **Hold**, along with how much to trade and why.
+- There are built-in cooldowns and limits to prevent the AI from making too many rapid-fire decisions.
 
-- **Virtual wallet** with a starting balance (e.g., $10,000 USDT)
-- **Order execution** at real market prices
-- **Fee deduction** matching Binance's actual fee structure
-- **Slippage simulation** for realism
-- **Trade history** — every buy/sell logged with exact entry/exit prices
+### 4. Executing Trades
 
-### 3. Dashboard (Stats UI)
+If the AI says Buy or Sell:
 
-Simple, clean interface showing:
+- **Buying**: The app calculates how much Bitcoin to purchase with the available virtual cash, applies realistic fees and slippage (price impact), deducts from the wallet, and opens a position.
+- **Selling**: The app sells part or all of a position, calculates the profit or loss (including fees), credits the wallet, and records the result.
+- **Holding**: Nothing happens — the strategy waits for better conditions.
 
-- **Per-trade P&L** — entry price, exit price, fees paid, net profit/loss
-- **Open positions** — what you're holding right now
-- **Overall balance** — starting vs current
-- **Overall profit/loss** — absolute $ and percentage
-- **Win rate** — how many trades were profitable
-- **Trade log** — chronological history of all decisions
-- **Strategy comparison view** — side-by-side performance of all active strategies
-- **Leaderboard** — rank strategies by profit, win rate, or risk-adjusted returns
+Every trade is recorded with full details: prices, fees, the AI's reasoning, and the resulting profit or loss.
 
----
+### 5. Displaying Results
 
-## Binance-Realistic Fees
-
-| Fee Type                  | Rate   |
-| ------------------------- | ------ |
-| Spot trading fee          | 0.10%  |
-| Round trip (buy + sell)   | 0.20%  |
-| With BNB discount         | 0.075% |
-| Withdrawal fees           | N/A (paper trading) |
+- Trade executions and position changes are instantly pushed to the frontend via a live connection.
+- The dashboard updates in real time — no page refresh needed.
+- Users can view each strategy's performance, trade history, equity curve, and open positions.
 
 ---
 
-## Phased Approach
+## Key Features
 
-### Phase 1 — Trading Engine
+### Multiple Trading Strategies
 
-Get live market data flowing and build the trading simulator with proper fee math. No AI yet — just a solid engine that can execute trades and track everything accurately.
+Four distinct AI-driven strategies run in parallel, each with a different analytical lens:
 
-### Phase 2 — Dashboard
+- **RSI + Moving Average** — Looks at overbought/oversold signals and trend direction.
+- **Price Action** — Focuses on support/resistance levels and candlestick patterns.
+- **Volume + MACD** — Uses volume confirmation and momentum divergence signals.
+- **Chart Patterns** — Identifies formations like triangles, flags, and double tops/bottoms.
 
-Build the UI so we can see stats, trades, and performance visually.
+Each strategy has its own isolated wallet and trade history for fair comparison.
 
-### Phase 3 — AI Integration
+### Realistic Trade Simulation
 
-Plug in Claude as the decision-maker with a simple starting strategy. Then iterate on strategies from there.
+- Trades include realistic exchange fees (matching Binance's fee structure).
+- Slippage is simulated based on order size — larger orders get worse prices, just like in real markets.
+- Full profit/loss accounting tracks every cost from entry to exit.
+
+### Real-Time Dashboard
+
+- Live price chart with candles.
+- Open positions showing current holdings and unrealized profit/loss.
+- Trade log with the AI's reasoning for each decision.
+- Wallet balance and available cash.
+
+### Leaderboard & Comparison
+
+- Strategies are ranked by profit, win rate, or trade count.
+- Side-by-side equity curves show how each strategy's account value has changed over time.
+
+### Cost Awareness
+
+- The app tracks how much each AI decision costs in terms of usage, so you can weigh strategy performance against the cost of running it.
 
 ---
 
-## Key Insight
+## Data Flow Summary
 
-The hardest part isn't the AI strategy — it's making the simulator **accurate enough** that results could transfer to real trading. Fees, timing, and realistic price execution are where most paper traders fool themselves. Getting that right first is crucial.
+```
+Binance (Live Prices)
+        │
+        ▼
+   Market Data Store ──────────────► Frontend (Live Price Chart)
+        │
+        ▼
+ Technical Indicators
+   (SMA, EMA, RSI, MACD)
+        │
+        ▼
+   AI Decision Engine
+   (Claude analyzes data)
+        │
+        ▼
+  ┌─────┴──────┐
+  │  BUY/SELL  │  HOLD → Wait for next cycle
+  └─────┬──────┘
+        │
+        ▼
+  Trade Execution
+  (Fees + Slippage applied)
+        │
+        ▼
+  Database (Trade recorded)
+        │
+        ▼
+  Frontend Updated in Real Time
+  (Dashboard, Positions, Trade Log)
+```
+
+---
+
+## Application Structure
+
+- **Backend** — Handles market data streaming, trading logic, AI integration, and serves data to the frontend.
+- **Frontend** — Displays the dashboard, charts, trade history, and strategy performance with real-time updates.
+- **Database** — Stores all strategies, wallets, positions, trades, and performance snapshots.
+- **Live Connection** — Keeps the frontend in sync with the backend instantly, so every trade and price change appears without delay.
+
+---
+
+## API Interactions
+
+### External Services
+
+| Service   | Purpose                                      |
+| --------- | -------------------------------------------- |
+| Binance   | Real-time market prices and historical candles |
+| Claude AI | Analyzes market data and makes trade decisions |
+
+### Frontend ↔ Backend Communication
+
+The frontend communicates with the backend in two ways:
+
+1. **Request/Response** — The frontend asks for data (strategies, trades, market candles, dashboard stats, leaderboard) and the backend responds. This is used for loading pages and fetching historical data.
+
+2. **Live Updates** — A persistent connection streams real-time events (price changes, new trades, position updates) from the backend to the frontend as they happen.
+
+### Key Data Endpoints
+
+| Area         | What It Provides                                                    |
+| ------------ | ------------------------------------------------------------------- |
+| Strategies   | List, create, update, and view individual strategy details          |
+| Trades       | Trade history per strategy, summaries with win rate and average P&L |
+| Dashboard    | Aggregated metrics across all strategies                            |
+| Leaderboard  | Strategy rankings by profit, win rate, or trade count               |
+| Equity Curve | Time-series snapshots of each strategy's total account value        |
+| Market       | Current price and historical candle data                            |
+| Engine       | Start/stop all strategies, or manually trigger a single cycle       |

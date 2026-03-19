@@ -16,7 +16,15 @@ from typing import Any
 
 import httpx
 
-from app.config import get_settings
+from app.config import (
+    AI_PROVIDER_ANTHROPIC,
+    AI_PROVIDER_OPENAI,
+    ai_api_key_for_provider,
+    ai_base_url_for_provider,
+    default_ai_model_for_provider,
+    get_settings,
+    normalize_ai_provider,
+)
 from app.engine.executor import TradeSignal
 from app.models.enums import TradeSide
 
@@ -44,6 +52,7 @@ AI_STRATEGY_ALIASES = {
 
 @dataclass(slots=True)
 class AIUsage:
+    provider: str
     model: str
     prompt_tokens: int
     completion_tokens: int
@@ -105,7 +114,7 @@ def _system_prompt(strategy_key: str) -> str:
     )
 
 
-def _extract_text(response_json: dict[str, Any]) -> str:
+def _extract_anthropic_text(response_json: dict[str, Any]) -> str:
     content = response_json.get("content", [])
     if isinstance(content, list):
         parts = []
@@ -116,6 +125,22 @@ def _extract_text(response_json: dict[str, Any]) -> str:
             return "\n".join(parts).strip()
     text = response_json.get("text")
     return str(text).strip() if text is not None else ""
+
+
+def _extract_openai_text(response_json: dict[str, Any]) -> str:
+    choices = response_json.get("choices", [])
+    if not isinstance(choices, list) or not choices:
+        return ""
+
+    message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+    content = message.get("content", "")
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") in {"text", "output_text"}:
+                parts.append(str(item.get("text", "")))
+        return "\n".join(part for part in parts if part).strip()
+    return str(content).strip()
 
 
 def _extract_json_payload(text: str) -> dict[str, Any]:
@@ -144,24 +169,40 @@ def _quantize_cost(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.00000001"))
 
 
-def _estimate_cost(prompt_tokens: int, completion_tokens: int) -> Decimal:
-    prompt_cost = Decimal(prompt_tokens) * Decimal(str(SETTINGS.ai_input_cost_per_1m_tokens_usd)) / Decimal("1000000")
-    completion_cost = Decimal(completion_tokens) * Decimal(str(SETTINGS.ai_output_cost_per_1m_tokens_usd)) / Decimal("1000000")
+def _estimate_cost(provider: str, prompt_tokens: int, completion_tokens: int) -> Decimal:
+    normalized_provider = normalize_ai_provider(provider)
+    if normalized_provider == AI_PROVIDER_OPENAI:
+        input_rate = SETTINGS.openai_input_cost_per_1m_tokens_usd
+        output_rate = SETTINGS.openai_output_cost_per_1m_tokens_usd
+    else:
+        input_rate = SETTINGS.ai_input_cost_per_1m_tokens_usd
+        output_rate = SETTINGS.ai_output_cost_per_1m_tokens_usd
+
+    prompt_cost = Decimal(prompt_tokens) * Decimal(str(input_rate)) / Decimal("1000000")
+    completion_cost = Decimal(completion_tokens) * Decimal(str(output_rate)) / Decimal("1000000")
     return _quantize_cost(prompt_cost + completion_cost)
 
 
-def _usage_from_response(response_json: dict[str, Any]) -> AIUsage:
+def _usage_from_response(response_json: dict[str, Any], provider: str) -> AIUsage:
     usage = response_json.get("usage") or {}
-    prompt_tokens = int(usage.get("input_tokens", 0) or 0)
-    completion_tokens = int(usage.get("output_tokens", 0) or 0)
+    normalized_provider = normalize_ai_provider(provider)
+    if normalized_provider == AI_PROVIDER_OPENAI:
+        prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+        default_model = SETTINGS.openai_model
+    else:
+        prompt_tokens = int(usage.get("input_tokens", 0) or 0)
+        completion_tokens = int(usage.get("output_tokens", 0) or 0)
+        default_model = SETTINGS.anthropic_model
     total_tokens = int(usage.get("total_tokens", prompt_tokens + completion_tokens) or (prompt_tokens + completion_tokens))
-    model = str(response_json.get("model") or SETTINGS.anthropic_model)
+    model = str(response_json.get("model") or default_model)
     return AIUsage(
+        provider=normalized_provider,
         model=model,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         total_tokens=total_tokens,
-        estimated_cost_usdt=_estimate_cost(prompt_tokens, completion_tokens),
+        estimated_cost_usdt=_estimate_cost(normalized_provider, prompt_tokens, completion_tokens),
     )
 
 
@@ -237,6 +278,7 @@ def build_ai_context(
     position_entry_price: Decimal | None,
     current_price: Decimal,
     ai_strategy_key: str,
+    ai_provider: str,
     ai_model: str,
     ai_cooldown_seconds: int,
     ai_max_tokens: int,
@@ -258,6 +300,7 @@ def build_ai_context(
             "id": strategy_id,
             "name": strategy_name,
             "ai_strategy_key": ai_strategy_key,
+            "ai_provider": normalize_ai_provider(ai_provider),
             "ai_model": ai_model,
             "ai_cooldown_seconds": ai_cooldown_seconds,
             "ai_max_tokens": ai_max_tokens,
@@ -319,6 +362,38 @@ async def _call_anthropic(
     return payload
 
 
+async def _call_openai(
+    *,
+    client: httpx.AsyncClient,
+    model: str,
+    max_tokens: int,
+    temperature: Decimal,
+    system_prompt: str,
+    user_message: str,
+) -> dict[str, Any]:
+    response = await client.post(
+        "/chat/completions",
+        headers={
+            "authorization": f"Bearer {SETTINGS.openai_api_key}",
+            "content-type": "application/json",
+        },
+        json={
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": float(temperature),
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+        },
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("OpenAI response was not a JSON object")
+    return payload
+
+
 async def evaluate_ai_decision(
     *,
     strategy_key: str,
@@ -343,14 +418,26 @@ async def evaluate_ai_decision(
             skip_reason="flat_market",
         )
 
-    if not SETTINGS.anthropic_api_key:
+    provider = SETTINGS.ai_provider
+    if provider == AI_PROVIDER_OPENAI:
+        api_key = ai_api_key_for_provider(provider, SETTINGS)
+        base_url = ai_base_url_for_provider(provider, SETTINGS)
+        provider_label = "OpenAI"
+    else:
+        api_key = ai_api_key_for_provider(provider, SETTINGS)
+        base_url = ai_base_url_for_provider(provider, SETTINGS)
+        provider_label = "Anthropic"
+
+    if not api_key:
         return AIDecisionResult(
             status="skipped",
-            reason="Anthropic API key is not configured",
+            reason=f"{provider_label} API key is not configured",
             skip_reason="missing_api_key",
         )
 
-    model = str(context.get("strategy", {}).get("ai_model") or SETTINGS.anthropic_model)
+    model = str(
+        default_ai_model_for_provider(provider, SETTINGS)
+    )
     max_tokens = int(context.get("strategy", {}).get("ai_max_tokens") or SETTINGS.ai_max_tokens)
     temperature = Decimal(str(context.get("strategy", {}).get("ai_temperature") or SETTINGS.ai_temperature))
     normalized_key = normalize_ai_strategy_key(strategy_key)
@@ -369,21 +456,33 @@ async def evaluate_ai_decision(
     system_prompt = _system_prompt(normalized_key)
 
     async with AI_CALL_SEMAPHORE:
-        async with httpx.AsyncClient(base_url=SETTINGS.anthropic_base_url, timeout=SETTINGS.ai_timeout_seconds) as client:
+        async with httpx.AsyncClient(base_url=base_url, timeout=SETTINGS.ai_timeout_seconds) as client:
             for attempt in range(2):
                 try:
-                    response_json = await _call_anthropic(
-                        client=client,
-                        model=model,
-                        max_tokens=max_tokens,
-                        temperature=temperature,
-                        system_prompt=system_prompt if attempt == 0 else f"{system_prompt}\nPrevious response was invalid. Return only strict JSON.",
-                        user_message=user_message,
-                    )
-                    raw_text = _extract_text(response_json)
+                    prompt = system_prompt if attempt == 0 else f"{system_prompt}\nPrevious response was invalid. Return only strict JSON."
+                    if provider == AI_PROVIDER_OPENAI:
+                        response_json = await _call_openai(
+                            client=client,
+                            model=model,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                            system_prompt=prompt,
+                            user_message=user_message,
+                        )
+                        raw_text = _extract_openai_text(response_json)
+                    else:
+                        response_json = await _call_anthropic(
+                            client=client,
+                            model=model,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                            system_prompt=prompt,
+                            user_message=user_message,
+                        )
+                        raw_text = _extract_anthropic_text(response_json)
                     if not raw_text:
-                        raise ValueError("Anthropic response did not contain text content")
-                    last_usage = _usage_from_response(response_json)
+                        raise ValueError(f"{provider_label} response did not contain text content")
+                    last_usage = _usage_from_response(response_json, provider)
                     payload = _extract_json_payload(raw_text)
                     signal = _coerce_signal(
                         payload,

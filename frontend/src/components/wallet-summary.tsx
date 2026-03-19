@@ -51,6 +51,10 @@ export function WalletSummary({ strategy, summary }: WalletSummaryProps) {
         <div className="text-xs uppercase tracking-[0.22em] text-mist/55">AI Telemetry</div>
         <div className="mt-4 space-y-3 text-sm text-mist/75">
           <div className="flex items-center justify-between">
+            <span>Provider</span>
+            <span className="text-sand">{strategy.ai_last_provider || strategy.ai_provider || "--"}</span>
+          </div>
+          <div className="flex items-center justify-between">
             <span>Model</span>
             <span className="text-sand">{strategy.ai_last_model || strategy.ai_model || "--"}</span>
           </div>

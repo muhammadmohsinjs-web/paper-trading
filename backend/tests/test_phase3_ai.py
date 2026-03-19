@@ -333,6 +333,7 @@ def test_flat_market_ai_decision_is_skipped_before_call():
         position_entry_price=None,
         current_price=Decimal("50000"),
         ai_strategy_key="rsi_ma",
+        ai_provider="anthropic",
         ai_model="claude-3-5-sonnet-latest",
         ai_cooldown_seconds=60,
         ai_max_tokens=700,
@@ -395,6 +396,7 @@ def test_ai_runtime_tracks_usage_and_estimated_cost_without_network(monkeypatch)
         position_entry_price=None,
         current_price=Decimal("51950"),
         ai_strategy_key="rsi_ma",
+        ai_provider="anthropic",
         ai_model="claude-3-5-sonnet-latest",
         ai_cooldown_seconds=60,
         ai_max_tokens=700,
@@ -410,10 +412,86 @@ def test_ai_runtime_tracks_usage_and_estimated_cost_without_network(monkeypatch)
     assert result.signal.quantity_pct == Decimal("0.25")
     assert result.reason == "Confirmed breakout"
     assert result.usage is not None
+    assert result.usage.provider == "anthropic"
     assert result.usage.prompt_tokens == 1200
     assert result.usage.completion_tokens == 300
     assert result.usage.total_tokens == 1500
     assert result.usage.estimated_cost_usdt == Decimal("0.00810000")
+
+
+def test_ai_runtime_uses_env_selected_openai_provider_and_model(monkeypatch):
+    monkeypatch.setattr(
+        ai_runtime,
+        "SETTINGS",
+        Settings(
+            ai_provider="openai",
+            ai_api_key="test-key",
+            ai_model="gpt-5.4",
+            openai_model="gpt-4o-mini",
+            openai_input_cost_per_1m_tokens_usd=0.5,
+            openai_output_cost_per_1m_tokens_usd=1.5,
+        ),
+    )
+
+    captured: dict[str, Any] = {}
+
+    async def fake_call_openai(**_: Any) -> dict[str, Any]:
+        captured.update(_)
+        return {
+            "model": "gpt-5.4",
+            "usage": {
+                "prompt_tokens": 1000,
+                "completion_tokens": 200,
+                "total_tokens": 1200,
+            },
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"action":"SELL","quantity_pct":1,'
+                            '"reason":"Momentum rolled over","confidence":0.74}'
+                        )
+                    }
+                }
+            ],
+        }
+
+    monkeypatch.setattr(ai_runtime, "_call_openai", fake_call_openai)
+
+    context = ai_runtime.build_ai_context(
+        strategy_id=STRATEGY_ID,
+        strategy_name="Phase 3 AI",
+        symbol="BTCUSDT",
+        interval="5m",
+        closes=[52000.0 - i * 25.0 for i in range(40)],
+        indicators={"rsi": [62.0, 41.0], "macd": ([0.5, -0.2], [0.3, 0.1], [0.2, -0.3])},
+        wallet_available_usdt=Decimal("150"),
+        has_position=True,
+        position_quantity=Decimal("0.02"),
+        position_entry_price=Decimal("51000"),
+        current_price=Decimal("51025"),
+        ai_strategy_key="price_action",
+        ai_provider="openai",
+        ai_model="gpt-4o-mini",
+        ai_cooldown_seconds=60,
+        ai_max_tokens=700,
+        ai_temperature=Decimal("0.2"),
+        flat_market_metrics={},
+    )
+
+    result = asyncio.run(ai_runtime.evaluate_ai_decision(strategy_key="price_action", context=context))
+
+    assert result.status == "signal"
+    assert result.signal is not None
+    assert result.signal.action.value == "SELL"
+    assert result.reason == "Momentum rolled over"
+    assert captured["model"] == "gpt-5.4"
+    assert result.usage is not None
+    assert result.usage.provider == "openai"
+    assert result.usage.prompt_tokens == 1000
+    assert result.usage.completion_tokens == 200
+    assert result.usage.total_tokens == 1200
+    assert result.usage.estimated_cost_usdt == Decimal("0.00080000")
 
 
 def test_ai_cooldown_helper_blocks_recent_calls():

@@ -13,7 +13,9 @@ export function StrategyCard({ strategy }: { strategy: StrategyWithStats }) {
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-xs uppercase tracking-[0.24em] text-mist/50">
-            {strategy.ai_enabled ? strategy.ai_strategy_key ?? "AI" : "Rule Based"}
+            {strategy.ai_enabled
+              ? `${strategy.ai_strategy_key ?? "AI"} · ${strategy.ai_provider}`
+              : "Rule Based"}
           </p>
           <h3 className="mt-2 text-xl font-semibold text-sand">{strategy.name}</h3>
           <p className="mt-2 text-sm leading-6 text-mist/65">

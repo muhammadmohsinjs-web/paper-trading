@@ -8,6 +8,10 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.config import (
+    default_ai_model_for_provider,
+    get_settings,
+)
 from app.database import get_db_session
 from app.models.enums import TradeSide
 from app.models.position import Position
@@ -25,20 +29,24 @@ from app.market.data_store import DataStore
 from app.strategies.manager import StrategyManager
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
+settings = get_settings()
 
 
 def _strategy_ai_defaults(strategy: Strategy) -> dict[str, object]:
     config = strategy.config_json or {}
+    provider = settings.ai_provider
     return {
         "ai_enabled": bool(strategy.ai_enabled or config.get("ai_enabled", False)),
+        "ai_provider": provider,
         "ai_strategy_key": strategy.ai_strategy_key or config.get("ai_strategy_key") or config.get("strategy_type"),
-        "ai_model": strategy.ai_model or config.get("ai_model"),
+        "ai_model": default_ai_model_for_provider(provider, settings),
         "ai_cooldown_seconds": int(strategy.ai_cooldown_seconds or config.get("ai_cooldown_seconds") or 60),
         "ai_max_tokens": int(strategy.ai_max_tokens or config.get("ai_max_tokens") or 700),
         "ai_temperature": float(strategy.ai_temperature),
         "ai_last_decision_at": strategy.ai_last_decision_at,
         "ai_last_decision_status": strategy.ai_last_decision_status,
         "ai_last_reasoning": strategy.ai_last_reasoning,
+        "ai_last_provider": strategy.ai_last_provider,
         "ai_last_model": strategy.ai_last_model,
         "ai_last_prompt_tokens": strategy.ai_last_prompt_tokens,
         "ai_last_completion_tokens": strategy.ai_last_completion_tokens,
@@ -127,8 +135,9 @@ async def create_strategy(
         config_json=config_json,
         is_active=body.is_active,
         ai_enabled=body.ai_enabled or bool(config_json.get("ai_enabled", False)),
+        ai_provider=settings.ai_provider,
         ai_strategy_key=body.ai_strategy_key or config_json.get("ai_strategy_key") or config_json.get("strategy_type"),
-        ai_model=body.ai_model or config_json.get("ai_model"),
+        ai_model=default_ai_model_for_provider(settings.ai_provider, settings),
         ai_cooldown_seconds=body.ai_cooldown_seconds or config_json.get("ai_cooldown_seconds") or 60,
         ai_max_tokens=body.ai_max_tokens or config_json.get("ai_max_tokens") or 700,
         ai_temperature=Decimal(
@@ -251,8 +260,8 @@ async def update_strategy(
         strategy.ai_enabled = body.ai_enabled
     if "ai_strategy_key" in updates:
         strategy.ai_strategy_key = body.ai_strategy_key or config.get("ai_strategy_key") or config.get("strategy_type")
-    if "ai_model" in updates:
-        strategy.ai_model = body.ai_model or config.get("ai_model")
+    strategy.ai_provider = settings.ai_provider
+    strategy.ai_model = default_ai_model_for_provider(settings.ai_provider, settings)
     if "ai_cooldown_seconds" in updates and body.ai_cooldown_seconds is not None:
         strategy.ai_cooldown_seconds = body.ai_cooldown_seconds
     if "ai_max_tokens" in updates and body.ai_max_tokens is not None:

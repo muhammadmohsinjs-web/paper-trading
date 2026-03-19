@@ -33,6 +33,7 @@ async def _ensure_phase3_strategy_columns() -> None:
 
     column_defs = {
         "ai_enabled": "BOOLEAN NOT NULL DEFAULT 0",
+        "ai_provider": "VARCHAR(32) NOT NULL DEFAULT 'anthropic'",
         "ai_strategy_key": "VARCHAR(64)",
         "ai_model": "VARCHAR(128)",
         "ai_cooldown_seconds": "INTEGER NOT NULL DEFAULT 60",
@@ -41,6 +42,7 @@ async def _ensure_phase3_strategy_columns() -> None:
         "ai_last_decision_at": "DATETIME",
         "ai_last_decision_status": "VARCHAR(32)",
         "ai_last_reasoning": "TEXT",
+        "ai_last_provider": "VARCHAR(32)",
         "ai_last_model": "VARCHAR(128)",
         "ai_last_prompt_tokens": "INTEGER NOT NULL DEFAULT 0",
         "ai_last_completion_tokens": "INTEGER NOT NULL DEFAULT 0",

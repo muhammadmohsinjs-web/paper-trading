@@ -87,6 +87,7 @@ export function StrategyDetailClient(props: StrategyDetailClientProps) {
           <div className="mt-4 flex flex-wrap gap-3 text-xs text-mist/55">
             <span>Last AI status: {strategy.ai_last_decision_status ?? "--"}</span>
             <span>Last decision: {formatDateTime(strategy.ai_last_decision_at)}</span>
+            <span>Provider: {strategy.ai_last_provider || strategy.ai_provider}</span>
             <span className="flex items-center gap-2">
               <span>BTCUSDT:</span>
               <LivePrice price={livePrice} variant="inline" className="text-sand" />
@@ -125,6 +126,21 @@ export function StrategyDetailClient(props: StrategyDetailClientProps) {
           <div>
             <p className="text-xs uppercase tracking-[0.24em] text-mist/50">AI Telemetry</p>
             <h3 className="mt-2 text-xl font-semibold text-sand">Decision Console</h3>
+          </div>
+          <div className="grid gap-3 rounded-[22px] border border-white/8 bg-black/10 p-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <p className="text-xs uppercase tracking-[0.18em] text-mist/55">Provider</p>
+                <p className="mt-2 text-sm text-sand">{strategy.ai_provider}</p>
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-[0.18em] text-mist/55">Model</p>
+                <p className="mt-2 text-sm text-sand">{strategy.ai_model || "--"}</p>
+              </div>
+            </div>
+            <p className="text-xs text-mist/50">
+              Controlled from `backend/.env`. Change `AI_PROVIDER` and `AI_MODEL`, then restart the backend.
+            </p>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="panel-soft p-4">

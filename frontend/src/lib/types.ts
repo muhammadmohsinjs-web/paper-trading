@@ -1,3 +1,5 @@
+export type AIProvider = "anthropic" | "openai";
+
 export type StrategyWithStats = {
   id: string;
   name: string;
@@ -5,6 +7,7 @@ export type StrategyWithStats = {
   config_json: Record<string, unknown>;
   is_active: boolean;
   ai_enabled: boolean;
+  ai_provider: AIProvider;
   ai_strategy_key: string | null;
   ai_model: string | null;
   ai_cooldown_seconds: number;
@@ -13,6 +16,7 @@ export type StrategyWithStats = {
   ai_last_decision_at: string | null;
   ai_last_decision_status: string | null;
   ai_last_reasoning: string | null;
+  ai_last_provider: AIProvider | null;
   ai_last_model: string | null;
   ai_last_prompt_tokens: number;
   ai_last_completion_tokens: number;

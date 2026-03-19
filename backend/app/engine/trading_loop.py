@@ -11,7 +11,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.api.ws import ConnectionManager
-from app.config import get_settings
+from app.config import default_ai_model_for_provider, get_settings
 from app.database import SessionLocal
 from app.engine.executor import execute_buy, execute_sell
 from app.engine.ai_runtime import (
@@ -51,6 +51,7 @@ def _strategy_last_ai_at(strategy: Any) -> datetime | None:
 
 def _normalize_ai_counters(strategy: Strategy) -> dict[str, Any]:
     config = strategy.config_json or {}
+    ai_provider = settings.ai_provider
     cooldown_seconds = int(
         strategy.ai_cooldown_seconds
         or config.get("ai_cooldown_seconds")
@@ -58,10 +59,13 @@ def _normalize_ai_counters(strategy: Strategy) -> dict[str, Any]:
     )
     return {
         "ai_enabled": bool(strategy.ai_enabled or config.get("ai_enabled", False)),
+        "ai_provider": ai_provider,
         "ai_strategy_key": normalize_ai_strategy_key(
             strategy.ai_strategy_key or config.get("ai_strategy_key") or config.get("strategy_type"),
         ),
-        "ai_model": str(strategy.ai_model or config.get("ai_model") or settings.anthropic_model),
+        "ai_model": str(
+            default_ai_model_for_provider(ai_provider, settings)
+        ),
         "ai_cooldown_seconds": max(cooldown_seconds, settings.ai_min_cooldown_seconds),
         "ai_max_tokens": int(strategy.ai_max_tokens or config.get("ai_max_tokens") or settings.ai_max_tokens),
         "ai_temperature": Decimal(
@@ -141,6 +145,7 @@ def _serialize_usage(usage: AIUsage | None) -> dict[str, Any] | None:
     if usage is None:
         return None
     return {
+        "provider": usage.provider,
         "model": usage.model,
         "prompt_tokens": usage.prompt_tokens,
         "completion_tokens": usage.completion_tokens,
@@ -168,6 +173,7 @@ def _touch_ai_metrics(strategy: Strategy, decision: AIDecisionResult) -> None:
     strategy.ai_last_decision_at = datetime.now(timezone.utc)
     strategy.ai_last_decision_status = decision.status
     strategy.ai_last_reasoning = decision.reason or decision.raw_response
+    strategy.ai_last_provider = usage.provider
     strategy.ai_last_model = usage.model
     strategy.ai_last_prompt_tokens = usage.prompt_tokens
     strategy.ai_last_completion_tokens = usage.completion_tokens
@@ -274,6 +280,7 @@ async def run_single_cycle(
                 position_entry_price=position.entry_price if position else None,
                 current_price=market_price,
                 ai_strategy_key=ai_config["ai_strategy_key"],
+                ai_provider=ai_config["ai_provider"],
                 ai_model=ai_config["ai_model"],
                 ai_cooldown_seconds=ai_config["ai_cooldown_seconds"],
                 ai_max_tokens=ai_config["ai_max_tokens"],

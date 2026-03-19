@@ -7,6 +7,7 @@ from decimal import Decimal
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.config import default_ai_model_for_provider, get_settings
 from app.models import Base
 from app.market.data_store import Candle, DataStore
 
@@ -171,15 +172,21 @@ async def test_full_cycle(test_app):
 @pytest.mark.asyncio
 async def test_strategy_crud(test_app):
     """Test create, read, update, delete flow."""
+    settings = get_settings()
+    expected_provider = settings.ai_provider
+    expected_model = default_ai_model_for_provider(expected_provider, settings)
     transport = ASGITransport(app=test_app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Create
         resp = await client.post(
             "/api/strategies",
-            json={"name": "CRUD Test", "config_json": {}},
+            json={"name": "CRUD Test", "config_json": {}, "ai_provider": "openai", "ai_model": "ignored-model"},
         )
         assert resp.status_code == 201
-        sid = resp.json()["id"]
+        created = resp.json()
+        sid = created["id"]
+        assert created["ai_provider"] == expected_provider
+        assert created["ai_model"] == expected_model
 
         # Read
         resp = await client.get(f"/api/strategies/{sid}")
@@ -188,10 +195,13 @@ async def test_strategy_crud(test_app):
         # Update
         resp = await client.patch(
             f"/api/strategies/{sid}",
-            json={"name": "Updated Name"},
+            json={"name": "Updated Name", "ai_provider": "openai", "ai_model": "still-ignored"},
         )
         assert resp.status_code == 200
-        assert resp.json()["name"] == "Updated Name"
+        updated = resp.json()
+        assert updated["name"] == "Updated Name"
+        assert updated["ai_provider"] == expected_provider
+        assert updated["ai_model"] == expected_model
 
         # Delete
         resp = await client.delete(f"/api/strategies/{sid}")
