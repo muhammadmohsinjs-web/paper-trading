@@ -9,6 +9,7 @@ import type {
   ManualExecutionResponse,
   MarketPrice,
   Position,
+  SignalData,
   StrategyWithStats,
   Trade,
   TradeSummary,
@@ -107,9 +108,59 @@ export function getEngineStatus() {
   return request<EngineStatus>("/engine/status");
 }
 
+export function getSignal(symbol = "BTCUSDT", interval = "1h") {
+  return request<SignalData>(`/market/signal/${symbol}?interval=${interval}`);
+}
+
 export function executeStrategy(strategyId: string, force = false) {
   return request<ManualExecutionResponse>(
     `/engine/strategies/${strategyId}/execute${force ? "?force=true" : ""}`,
+    { method: "POST" }
+  );
+}
+
+export function createStrategy(body: Record<string, unknown>) {
+  return request<StrategyWithStats>("/strategies", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function toggleStrategy(strategyId: string, isActive: boolean) {
+  return request<unknown>(`/strategies/${strategyId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ is_active: isActive }),
+  });
+}
+
+export function deleteStrategy(strategyId: string) {
+  return request<null>(`/strategies/${strategyId}`, {
+    method: "DELETE",
+  });
+}
+
+export type AIPreviewResponse = {
+  status: string;
+  action: string | null;
+  confidence: number | null;
+  reason: string | null;
+  raw_response: string | null;
+  usage: {
+    provider: string;
+    model: string;
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    estimated_cost_usdt: number;
+  } | null;
+  error: string | null;
+  strategy_key: string;
+  preview_only: boolean;
+};
+
+export function aiPreview(strategyId: string) {
+  return request<AIPreviewResponse>(
+    `/engine/strategies/${strategyId}/ai-preview`,
     { method: "POST" }
   );
 }

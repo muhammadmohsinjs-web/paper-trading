@@ -70,8 +70,12 @@ export function WalletSummary({ strategy, summary }: WalletSummaryProps) {
             <span>Last decision</span>
             <span className="text-sand">{strategy.ai_last_decision_status || "--"}</span>
           </div>
+          <div className="flex items-center justify-between">
+            <span>Last call cost</span>
+            <span className="text-sand">{formatCurrency(strategy.ai_last_cost_usdt)}</span>
+          </div>
           <div className="border-t border-white/10 pt-3 text-xs text-mist/55">
-            {strategy.ai_last_reasoning || "No AI reasoning recorded yet."}
+            Detailed AI findings appear in the call log below.
           </div>
           <div className="text-xs text-mist/45">
             Last updated {formatDateTime(strategy.ai_last_decision_at)}

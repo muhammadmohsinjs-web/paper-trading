@@ -33,13 +33,16 @@ class SMACrossoverStrategy(BaseStrategy):
 
         symbol = "BTCUSDT"
 
-        # Golden cross: short crosses above long → BUY
+        # Golden cross: short crosses above long → BUY (with volume confirmation)
         if prev_short <= prev_long and curr_short > curr_long and not has_position:
+            volume_ratio = indicators.get("volume_ratio")
+            if volume_ratio is not None and volume_ratio < 1.2:
+                return None  # Reject crossover without above-average volume
             return TradeSignal(
                 action=TradeSide.BUY,
                 symbol=symbol,
                 quantity_pct=Decimal("0.5"),  # Risk layer will further cap
-                reason=f"SMA crossover BUY: short({curr_short:.2f}) > long({curr_long:.2f})",
+                reason=f"SMA crossover BUY: short({curr_short:.2f}) > long({curr_long:.2f}) vol_ratio={volume_ratio or 'n/a'}",
             )
 
         # Death cross: short crosses below long → SELL

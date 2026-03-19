@@ -1,13 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { LivePrice } from "@/components/live-price";
 import { useLiveFeed } from "@/hooks/use-live-feed";
 import { formatCurrency, formatNumber } from "@/lib/format";
 import type { DashboardResponse, EngineStatus, MarketPrice } from "@/lib/types";
 import { MetricCard } from "@/components/metric-card";
+import { SignalMeter } from "@/components/signal-meter";
 import { StrategyCard } from "@/components/strategy-card";
+import { CreateStrategyDialog } from "@/components/create-strategy-dialog";
 
 type DashboardClientProps = {
   dashboard: DashboardResponse;
@@ -21,8 +23,24 @@ export function DashboardClient({
   engineStatus
 }: DashboardClientProps) {
   const live = useLiveFeed();
+  const [showCreate, setShowCreate] = useState(false);
   const latestPrice =
     live.latestPriceBySymbol[marketPrice?.symbol ?? "BTCUSDT"] ?? marketPrice?.price ?? null;
+  const strategyNameById = useMemo(
+    () =>
+      new Map(dashboard.strategies.map((strategy) => [strategy.id, strategy.name])),
+    [dashboard.strategies]
+  );
+  const runningLoopDetail = useMemo(() => {
+    const runningStrategies = engineStatus?.running_strategies ?? [];
+    if (!runningStrategies.length) {
+      return "No active loops";
+    }
+
+    return runningStrategies
+      .map((strategyId) => strategyNameById.get(strategyId) ?? `Strategy ${strategyId.slice(0, 8)}`)
+      .join(", ");
+  }, [engineStatus?.running_strategies, strategyNameById]);
 
   const compareTargets = useMemo(
     () => dashboard.strategies.slice(0, 2).map((strategy) => strategy.id),
@@ -72,9 +90,13 @@ export function DashboardClient({
           <MetricCard
             label="Running Loops"
             value={formatNumber(engineStatus?.count ?? 0, 0)}
-            detail={engineStatus?.running_strategies.length ? engineStatus.running_strategies.join(", ") : "No active loops"}
+            detail={runningLoopDetail}
           />
         </div>
+      </section>
+
+      <section>
+        <SignalMeter symbol="BTCUSDT" interval="1h" />
       </section>
 
       <section className="space-y-4">
@@ -83,9 +105,17 @@ export function DashboardClient({
             <p className="text-xs uppercase tracking-[0.24em] text-mist/50">Dashboard Home</p>
             <h2 className="text-2xl font-semibold text-sand">Strategy Grid</h2>
           </div>
-          <p className="text-sm text-mist/60">
-            Total AI spend {formatCurrency(dashboard.ai_total_cost_usdt)}
-          </p>
+          <div className="flex items-center gap-4">
+            <p className="text-sm text-mist/60">
+              Total AI spend {formatCurrency(dashboard.ai_total_cost_usdt)}
+            </p>
+            <button
+              onClick={() => setShowCreate(true)}
+              className="rounded-lg bg-gold/90 px-4 py-2 text-sm font-medium text-black transition hover:bg-gold"
+            >
+              + New Strategy
+            </button>
+          </div>
         </div>
 
         <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
@@ -94,6 +124,8 @@ export function DashboardClient({
           ))}
         </div>
       </section>
+
+      <CreateStrategyDialog open={showCreate} onClose={() => setShowCreate(false)} />
     </div>
   );
 }

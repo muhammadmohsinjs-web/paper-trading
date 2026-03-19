@@ -16,7 +16,7 @@ from app.models.wallet import Wallet
 STRATEGIES = [
     {
         "name": "SMA Crossover (10/50)",
-        "description": "Buy when SMA-10 crosses above SMA-50, sell on death cross. Classic trend-following strategy.",
+        "description": "Buy when SMA-10 crosses above SMA-50, sell on death cross. Classic trend-following with volume confirmation.",
         "config_json": {
             "strategy_type": "sma_crossover",
             "sma_short": 10,
@@ -26,26 +26,56 @@ STRATEGIES = [
         },
     },
     {
-        "name": "SMA Crossover (5/20) Fast",
-        "description": "Faster SMA crossover with 5/20 periods. More trades, quicker reaction to trends.",
+        "name": "RSI Mean Reversion",
+        "description": "Buy when RSI drops below 30 (oversold), sell when RSI rises above 70 (overbought). Catches reversals.",
         "config_json": {
-            "strategy_type": "sma_crossover",
-            "sma_short": 5,
-            "sma_long": 20,
+            "strategy_type": "rsi_mean_reversion",
+            "rsi_period": 14,
+            "rsi_oversold": 30,
+            "rsi_overbought": 70,
             "initial_balance": 1000,
             "interval_seconds": 300,
         },
     },
     {
-        "name": "SMA Crossover (20/100) Slow",
-        "description": "Conservative SMA crossover with 20/100 periods. Fewer but more reliable signals.",
+        "name": "MACD Momentum",
+        "description": "Buy on MACD bullish crossover (MACD crosses above signal line), sell on bearish crossover. Momentum-based.",
         "config_json": {
-            "strategy_type": "sma_crossover",
-            "sma_short": 20,
-            "sma_long": 100,
+            "strategy_type": "macd_momentum",
+            "macd_fast": 12,
+            "macd_slow": 26,
+            "macd_signal": 9,
             "initial_balance": 1000,
             "interval_seconds": 300,
         },
+    },
+    {
+        "name": "Bollinger Bounce",
+        "description": "Buy when price touches lower Bollinger Band, sell at upper band. Mean-reversion on volatility bands.",
+        "config_json": {
+            "strategy_type": "bollinger_bounce",
+            "bb_period": 20,
+            "bb_std_dev": 2.0,
+            "initial_balance": 1000,
+            "interval_seconds": 300,
+        },
+    },
+    {
+        "name": "Hybrid AI Composite",
+        "description": "Combines RSI, MACD, SMA, EMA, Volume + AI advisor. Weighted composite scoring with confidence gates.",
+        "config_json": {
+            "strategy_type": "hybrid_composite",
+            "initial_balance": 1000,
+            "interval_seconds": 300,
+            "sma_short": 10,
+            "sma_long": 50,
+            "confidence_gate": 0.5,
+            "ai_enabled": True,
+            "ai_cooldown_seconds": 300,
+            "ai_max_tokens": 700,
+            "ai_temperature": 0.2,
+        },
+        "ai_enabled": True,
     },
 ]
 
@@ -64,6 +94,7 @@ async def seed():
                 description=s["description"],
                 config_json=s["config_json"],
                 is_active=False,
+                ai_enabled=s.get("ai_enabled", False),
             )
             wallet = Wallet(
                 id=str(uuid4()),

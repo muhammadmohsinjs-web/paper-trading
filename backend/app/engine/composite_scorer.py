@@ -7,11 +7,11 @@ from typing import Any
 
 DEFAULT_WEIGHTS = {
     "rsi": 0.20,
-    "macd": 0.20,
+    "macd": 0.25,
     "sma": 0.15,
     "ema": 0.10,
-    "volume": 0.10,
-    "ai": 0.25,
+    "volume": 0.15,
+    "ai": 0.15,
 }
 
 DEFAULT_CONFIDENCE_GATE = 0.5

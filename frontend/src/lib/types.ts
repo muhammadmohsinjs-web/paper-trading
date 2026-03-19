@@ -1,5 +1,48 @@
 export type AIProvider = "anthropic" | "openai";
 
+export type StrategyType =
+  | "sma_crossover"
+  | "rsi_mean_reversion"
+  | "macd_momentum"
+  | "bollinger_bounce"
+  | "hybrid_composite";
+
+export const STRATEGY_TYPE_META: Record<
+  StrategyType,
+  { label: string; short: string; color: string; description: string }
+> = {
+  sma_crossover: {
+    label: "SMA Crossover",
+    short: "SMA",
+    color: "text-blue-400 bg-blue-400/10 border-blue-400/30",
+    description: "Buy/sell on short-vs-long SMA crossover",
+  },
+  rsi_mean_reversion: {
+    label: "RSI Mean Reversion",
+    short: "RSI",
+    color: "text-purple-400 bg-purple-400/10 border-purple-400/30",
+    description: "Buy oversold (RSI<30), sell overbought (RSI>70)",
+  },
+  macd_momentum: {
+    label: "MACD Momentum",
+    short: "MACD",
+    color: "text-amber-400 bg-amber-400/10 border-amber-400/30",
+    description: "Buy/sell on MACD/signal line crossovers",
+  },
+  bollinger_bounce: {
+    label: "Bollinger Bounce",
+    short: "BB",
+    color: "text-teal-400 bg-teal-400/10 border-teal-400/30",
+    description: "Buy at lower band, sell at upper band",
+  },
+  hybrid_composite: {
+    label: "Hybrid AI Composite",
+    short: "AI",
+    color: "text-gold bg-gold/10 border-gold/30",
+    description: "Weighted composite of all indicators + AI advisor",
+  },
+};
+
 export type StrategyWithStats = {
   id: string;
   name: string;
@@ -156,6 +199,32 @@ export type ManualExecutionResponse =
       decision_source?: string;
       [key: string]: unknown;
     };
+
+export type SignalData = {
+  symbol: string;
+  interval: string;
+  candles_used: number;
+  composite_score: number;
+  confidence: number;
+  direction: string;
+  signal: string;
+  dampening_multiplier: number;
+  votes: Record<string, number>;
+  weights: Record<string, number>;
+  indicators: {
+    rsi: number | null;
+    atr: number | null;
+    volume_ratio: number | null;
+    price: number;
+  };
+  thresholds: {
+    buy_gate: number;
+    sell_gate: number;
+    confidence_gate: number;
+    full_conviction: number;
+    reduced_conviction: number;
+  };
+};
 
 export type LiveEvent = {
   type?: string;

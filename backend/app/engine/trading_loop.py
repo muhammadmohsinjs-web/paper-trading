@@ -213,6 +213,15 @@ def _update_strategy_streak(strategy: Strategy, pnl: Decimal | None) -> None:
     strategy.streak_size_multiplier = streak_multiplier_for_losses(strategy.consecutive_losses)
 
 
+def _accumulate_wallet_losses(wallet: Any, pnl: Decimal | None) -> None:
+    """Track daily/weekly losses on the wallet for limit enforcement."""
+    if pnl is None or pnl >= 0:
+        return
+    loss = abs(pnl)
+    wallet.daily_loss_usdt = (wallet.daily_loss_usdt or Decimal("0")) + loss
+    wallet.weekly_loss_usdt = (wallet.weekly_loss_usdt or Decimal("0")) + loss
+
+
 def _touch_ai_metrics(strategy: Strategy, decision: AIDecisionResult) -> None:
     if decision.usage is None:
         return
@@ -267,6 +276,7 @@ async def _force_stop_loss_sell(
     )
     if result.success:
         _update_strategy_streak(strategy, result.trade.pnl)
+        _accumulate_wallet_losses(wallet, result.trade.pnl)
         logger.info(
             "stop-loss executed strategy_id=%s symbol=%s price=%s stop=%s",
             strategy_id, symbol, market_price, position.stop_loss_price,
@@ -416,6 +426,49 @@ async def run_single_cycle(
                     "decision_source": "risk",
                 }
 
+        # ── Risk check 3: Daily / weekly loss limits ──────────────────
+        today = datetime.now(timezone.utc).date()
+        if wallet.daily_loss_reset_date != today:
+            wallet.daily_loss_usdt = Decimal("0")
+            wallet.daily_loss_reset_date = today
+
+        from datetime import timedelta
+        week_start = today
+        days_since_monday = today.weekday()  # Monday=0
+        week_start = today - timedelta(days=days_since_monday)
+        if wallet.weekly_loss_reset_date is None or wallet.weekly_loss_reset_date < week_start:
+            wallet.weekly_loss_usdt = Decimal("0")
+            wallet.weekly_loss_reset_date = week_start
+
+        daily_limit = Decimal(str(config.get("daily_loss_limit_usdt", 0)))
+        weekly_limit = Decimal(str(config.get("weekly_loss_limit_usdt", 0)))
+        if daily_limit > 0 and wallet.daily_loss_usdt >= daily_limit:
+            await session.commit()
+            logger.warning(
+                "daily loss limit hit strategy_id=%s loss=%s limit=%s",
+                strategy_id, wallet.daily_loss_usdt, daily_limit,
+            )
+            return {
+                "status": "halted",
+                "reason": f"Daily loss ${wallet.daily_loss_usdt} exceeds limit ${daily_limit}",
+                "symbol": symbol,
+                "strategy_id": strategy_id,
+                "decision_source": "risk",
+            }
+        if weekly_limit > 0 and wallet.weekly_loss_usdt >= weekly_limit:
+            await session.commit()
+            logger.warning(
+                "weekly loss limit hit strategy_id=%s loss=%s limit=%s",
+                strategy_id, wallet.weekly_loss_usdt, weekly_limit,
+            )
+            return {
+                "status": "halted",
+                "reason": f"Weekly loss ${wallet.weekly_loss_usdt} exceeds limit ${weekly_limit}",
+                "symbol": symbol,
+                "strategy_id": strategy_id,
+                "decision_source": "risk",
+            }
+
         # ── Compute indicators (pass highs/lows for ATR) ────────────────
         highs = [candle.high for candle in candles]
         lows = [candle.low for candle in candles]
@@ -507,6 +560,7 @@ async def run_single_cycle(
                     )
                     if result.success:
                         _update_strategy_streak(strategy, result.trade.pnl)
+                        _accumulate_wallet_losses(wallet, result.trade.pnl)
                         refreshed_position = await get_position(session, strategy_id, symbol)
                         if refreshed_position is not None:
                             if exit_decision.consume_take_profit:
@@ -621,13 +675,21 @@ async def run_single_cycle(
                     "composite": _serialize_composite_result(composite_result),
                 }
 
+            # Map composite confidence to position sizing tiers
+            comp_conf = composite_result.confidence
+            confidence_tier = (
+                "full" if comp_conf >= 0.8
+                else "reduced" if comp_conf >= 0.6
+                else "small"
+            )
+
             sizing = calculate_position_size(
                 equity=equity,
                 entry_price=market_price,
                 atr=Decimal(str(atr_values[-1])),
                 atr_multiplier=Decimal(str(config.get("atr_stop_multiplier", 2.0))),
                 risk_per_trade_pct=Decimal(str(strategy.risk_per_trade_pct)),
-                confidence_tier="reduced",
+                confidence_tier=confidence_tier,
                 losing_streak_count=strategy.consecutive_losses,
                 max_position_pct=Decimal(str(strategy.max_position_size_pct)),
                 take_profit_ratio=take_profit_ratio,
@@ -871,6 +933,7 @@ async def run_single_cycle(
                     ).quantize(Decimal("0.00000001"))
             else:
                 _update_strategy_streak(strategy, result.trade.pnl)
+                _accumulate_wallet_losses(wallet, result.trade.pnl)
 
             await session.commit()
             refreshed_position = await get_position(session, strategy_id, symbol)

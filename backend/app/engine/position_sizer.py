@@ -75,8 +75,12 @@ def calculate_position_size(
     else:
         position_value = adjusted_risk / stop_distance_pct
 
-    max_position_value = equity * (max_position_pct / Decimal("100"))
-    final_position_value = min(position_value, max_position_value)
+    if confidence_tier == "full":
+        # High-conviction: use up to 60% of available equity
+        final_position_value = min(position_value, equity * Decimal("0.6"))
+    else:
+        max_position_value = equity * (max_position_pct / Decimal("100"))
+        final_position_value = min(position_value, max_position_value)
     quantity_pct = final_position_value / equity if equity > 0 else Decimal("0")
     quantity_pct = max(Decimal("0"), min(quantity_pct, Decimal("1.0")))
 

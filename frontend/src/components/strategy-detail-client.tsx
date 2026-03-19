@@ -7,9 +7,10 @@ import { PriceChart } from "@/components/price-chart";
 import { OpenPositions } from "@/components/open-positions";
 import { TradeLog } from "@/components/trade-log";
 import { WalletSummary } from "@/components/wallet-summary";
+import { AICallLog } from "@/components/ai-call-log";
 import { useLiveFeed } from "@/hooks/use-live-feed";
-import { executeStrategy } from "@/lib/api";
-import { formatCurrency, formatDateTime, formatNumber } from "@/lib/format";
+import { executeStrategy, aiPreview, type AIPreviewResponse } from "@/lib/api";
+import { formatDateTime } from "@/lib/format";
 import type {
   Candle,
   EquityPoint,
@@ -34,6 +35,8 @@ export function StrategyDetailClient(props: StrategyDetailClientProps) {
   const live = useLiveFeed();
   const [isPending, startTransition] = useTransition();
   const [executionMessage, setExecutionMessage] = useState<string | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiResult, setAiResult] = useState<AIPreviewResponse | null>(null);
   const lastCandle = candles[candles.length - 1];
   const livePrice = live.latestPriceBySymbol.BTCUSDT ?? lastCandle?.close ?? null;
   const derivedPositions = useMemo(() => {
@@ -75,6 +78,37 @@ export function StrategyDetailClient(props: StrategyDetailClientProps) {
     });
   };
 
+  const runAiPreview = async () => {
+    setAiLoading(true);
+    setAiResult(null);
+    try {
+      const result = await aiPreview(strategy.id);
+      setAiResult(result);
+      router.refresh();
+    } catch (error) {
+      setAiResult({
+        status: "error",
+        action: null,
+        confidence: null,
+        reason: null,
+        raw_response: null,
+        usage: null,
+        error: error instanceof Error ? error.message : "AI call failed",
+        strategy_key: "",
+        preview_only: true,
+      });
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const actionColor = (action: string | null) => {
+    if (!action) return "text-mist";
+    if (action === "BUY") return "text-rise";
+    if (action === "SELL") return "text-fall";
+    return "text-gold";
+  };
+
   return (
     <div className="space-y-6">
       <section className="panel flex flex-col gap-5 p-6 lg:flex-row lg:items-end lg:justify-between">
@@ -96,7 +130,22 @@ export function StrategyDetailClient(props: StrategyDetailClientProps) {
         </div>
 
         <div className="flex flex-col items-start gap-3 lg:items-end">
-          <div className="flex gap-3">
+          <div className="flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={runAiPreview}
+              disabled={aiLoading || isPending}
+              className="rounded-full border border-purple-400/40 bg-purple-400/10 px-4 py-2 text-sm text-purple-400 transition hover:bg-purple-400/15 disabled:opacity-50"
+            >
+              {aiLoading ? (
+                <span className="flex items-center gap-2">
+                  <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-purple-400/30 border-t-purple-400" />
+                  AI Thinking...
+                </span>
+              ) : (
+                "Ask AI"
+              )}
+            </button>
             <button
               type="button"
               onClick={() => runManualExecution(false)}
@@ -114,53 +163,87 @@ export function StrategyDetailClient(props: StrategyDetailClientProps) {
               Force Execute
             </button>
           </div>
-          <p className="text-sm text-mist/60">{executionMessage ?? strategy.ai_last_reasoning ?? "Awaiting decision."}</p>
+          <p className="text-sm text-mist/60">
+            {executionMessage ?? "Trigger a manual cycle or ask AI for its market analysis."}
+          </p>
         </div>
       </section>
+
+      {/* AI Preview Result Panel */}
+      {aiResult && (
+        <section className="panel overflow-hidden">
+          <div className="flex items-center justify-between border-b border-white/6 px-6 py-4">
+            <div className="flex items-center gap-3">
+              <span className="text-xs uppercase tracking-[0.24em] text-purple-400">AI Preview</span>
+              <span className={`text-lg font-bold ${actionColor(aiResult.action)}`}>
+                {aiResult.action || aiResult.status?.toUpperCase()}
+              </span>
+              {aiResult.confidence != null && (
+                <span className="rounded-md bg-white/5 px-2 py-0.5 text-xs text-mist/70">
+                  {(aiResult.confidence * 100).toFixed(0)}% confidence
+                </span>
+              )}
+              <span className="rounded-md bg-white/5 px-2 py-0.5 text-xs text-mist/50">
+                Preview only — no trade placed
+              </span>
+            </div>
+            <button
+              onClick={() => setAiResult(null)}
+              className="text-mist/40 transition hover:text-mist"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            </button>
+          </div>
+
+          <div className="space-y-4 p-6">
+            {/* Reason */}
+            {aiResult.reason && (
+              <div>
+                <p className="mb-1 text-xs uppercase tracking-[0.2em] text-mist/40">AI Reasoning</p>
+                <p className="text-sm leading-relaxed text-sand/90">{aiResult.reason}</p>
+              </div>
+            )}
+
+            {/* Error */}
+            {aiResult.error && (
+              <div className="rounded-lg border border-fall/20 bg-fall/5 px-4 py-3">
+                <p className="text-sm text-fall">{aiResult.error}</p>
+              </div>
+            )}
+
+            {/* Usage stats */}
+            {aiResult.usage && (
+              <div className="flex flex-wrap gap-4 text-xs text-mist/50">
+                <span>Provider: {aiResult.usage.provider}</span>
+                <span>Model: {aiResult.usage.model}</span>
+                <span>Tokens: {aiResult.usage.total_tokens.toLocaleString()}</span>
+                <span>Cost: ${aiResult.usage.estimated_cost_usdt.toFixed(4)}</span>
+                <span>Strategy: {aiResult.strategy_key}</span>
+              </div>
+            )}
+
+            {/* Raw response (collapsible) */}
+            {aiResult.raw_response && (
+              <details className="group">
+                <summary className="cursor-pointer text-xs text-mist/40 transition hover:text-mist/60">
+                  Show raw AI response
+                </summary>
+                <pre className="mt-2 max-h-40 overflow-auto rounded-lg bg-black/30 p-3 text-xs text-mist/60">
+                  {aiResult.raw_response}
+                </pre>
+              </details>
+            )}
+          </div>
+        </section>
+      )}
 
       <WalletSummary strategy={strategy} summary={summary} />
 
       <div className="grid gap-6 xl:grid-cols-[1.2fr,0.8fr]">
         <PriceChart title="Price Chart" candles={candles} trades={trades} />
-        <div className="panel grid gap-4 p-5">
-          <div>
-            <p className="text-xs uppercase tracking-[0.24em] text-mist/50">AI Telemetry</p>
-            <h3 className="mt-2 text-xl font-semibold text-sand">Decision Console</h3>
-          </div>
-          <div className="grid gap-3 rounded-[22px] border border-white/8 bg-black/10 p-4">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div>
-                <p className="text-xs uppercase tracking-[0.18em] text-mist/55">Provider</p>
-                <p className="mt-2 text-sm text-sand">{strategy.ai_provider}</p>
-              </div>
-              <div>
-                <p className="text-xs uppercase tracking-[0.18em] text-mist/55">Model</p>
-                <p className="mt-2 text-sm text-sand">{strategy.ai_model || "--"}</p>
-              </div>
-            </div>
-            <p className="text-xs text-mist/50">
-              Controlled from `backend/.env`. Change `AI_PROVIDER` and `AI_MODEL`, then restart the backend.
-            </p>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="panel-soft p-4">
-              <p className="text-xs uppercase tracking-[0.22em] text-mist/55">Total Calls</p>
-              <p className="mt-2 text-xl font-semibold text-sand">{strategy.ai_total_calls}</p>
-            </div>
-            <div className="panel-soft p-4">
-              <p className="text-xs uppercase tracking-[0.22em] text-mist/55">Total Cost</p>
-              <p className="mt-2 text-xl font-semibold text-gold">{formatCurrency(strategy.ai_total_cost_usdt)}</p>
-            </div>
-            <div className="panel-soft p-4">
-              <p className="text-xs uppercase tracking-[0.22em] text-mist/55">Prompt Tokens</p>
-              <p className="mt-2 text-xl font-semibold text-sand">{formatNumber(strategy.ai_total_prompt_tokens, 0)}</p>
-            </div>
-            <div className="panel-soft p-4">
-              <p className="text-xs uppercase tracking-[0.22em] text-mist/55">Completion Tokens</p>
-              <p className="mt-2 text-xl font-semibold text-sand">{formatNumber(strategy.ai_total_completion_tokens, 0)}</p>
-            </div>
-          </div>
-        </div>
+        <AICallLog strategy={strategy} executionMessage={executionMessage} />
       </div>
 
       <PriceChart title="Equity Curve" candles={[]} equity={equity} mode="equity" />

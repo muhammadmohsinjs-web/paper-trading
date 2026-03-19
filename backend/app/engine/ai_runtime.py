@@ -417,22 +417,31 @@ async def _call_openai(
     system_prompt: str,
     user_message: str,
 ) -> dict[str, Any]:
+    # Newer OpenAI models (gpt-4o, gpt-5, o-series) require
+    # "max_completion_tokens" instead of the legacy "max_tokens".
+    _new_api_models = ("gpt-4o", "gpt-5", "o1", "o3", "o4")
+    use_new_param = any(model.startswith(prefix) for prefix in _new_api_models)
+    token_key = "max_completion_tokens" if use_new_param else "max_tokens"
+    request_body = {
+        "model": model,
+        token_key: max_tokens,
+        "temperature": float(temperature),
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+    }
+    logger.info("openai request model=%s max_tokens=%d msg_len=%d", model, max_tokens, len(user_message))
     response = await client.post(
         "/chat/completions",
         headers={
             "authorization": f"Bearer {SETTINGS.openai_api_key}",
             "content-type": "application/json",
         },
-        json={
-            "model": model,
-            "max_tokens": max_tokens,
-            "temperature": float(temperature),
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-        },
+        json=request_body,
     )
+    if response.status_code != 200:
+        logger.error("openai error status=%d body=%s", response.status_code, response.text[:500])
     response.raise_for_status()
     payload = response.json()
     if not isinstance(payload, dict):
