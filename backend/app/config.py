@@ -56,6 +56,8 @@ class Settings:
     app_name: str = "Paper Trading Backend"
     environment: str = "development"
     api_prefix: str = "/api"
+    log_level: str = "INFO"
+    log_use_colors: bool = True
     database_url: str = f"sqlite+aiosqlite:///{BASE_DIR / 'paper_trading.db'}"
     database_echo: bool = False
     default_quote_asset: str = "USDT"
@@ -112,6 +114,8 @@ class Settings:
             app_name=_get_value(f"{prefix}APP_NAME", default=cls.app_name),
             environment=environment,
             api_prefix=_get_value(f"{prefix}API_PREFIX", default=cls.api_prefix),
+            log_level=_get_value(f"{prefix}LOG_LEVEL", "LOG_LEVEL", default=cls.log_level),
+            log_use_colors=_get_bool(f"{prefix}LOG_USE_COLORS", cls.log_use_colors),
             database_url=_get_value(
                 f"{prefix}DATABASE_URL",
                 "DATABASE_URL",

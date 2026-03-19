@@ -34,7 +34,7 @@ class StrategyManager:
 
     async def start_strategy(self, strategy_id: str, interval_seconds: int = 300) -> bool:
         if strategy_id in self._tasks and not self._tasks[strategy_id].done():
-            logger.info("Strategy %s already running", strategy_id)
+            logger.info("strategy already running strategy_id=%s", strategy_id)
             return False
 
         task = asyncio.create_task(
@@ -42,7 +42,11 @@ class StrategyManager:
             name=f"strategy-{strategy_id}",
         )
         self._tasks[strategy_id] = task
-        logger.info("Started strategy %s", strategy_id)
+        logger.info(
+            "strategy started strategy_id=%s interval_seconds=%d",
+            strategy_id,
+            interval_seconds,
+        )
         return True
 
     async def stop_strategy(self, strategy_id: str) -> bool:
@@ -54,7 +58,7 @@ class StrategyManager:
             await task
         except asyncio.CancelledError:
             pass
-        logger.info("Stopped strategy %s", strategy_id)
+        logger.info("strategy stopped strategy_id=%s", strategy_id)
         return True
 
     async def start_all_active(self) -> int:

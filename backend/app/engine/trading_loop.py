@@ -199,7 +199,12 @@ async def run_single_cycle(
     closes = [candle.close for candle in candles]
 
     if len(closes) < 50:
-        logger.warning("Not enough candle data (%d) for strategy %s", len(closes), strategy_id)
+        logger.warning(
+            "insufficient candles strategy_id=%s symbol=%s candles=%d required=50",
+            strategy_id,
+            symbol,
+            len(closes),
+        )
         return {
             "status": "skipped",
             "reason": "Not enough candle data",
@@ -240,7 +245,7 @@ async def run_single_cycle(
 
         current_price = store.get_latest_price(symbol)
         if current_price is None:
-            logger.warning("No price available for %s", symbol)
+            logger.warning("missing price symbol=%s strategy_id=%s", symbol, strategy_id)
             return {
                 "status": "skipped",
                 "reason": "No price data",
@@ -357,8 +362,14 @@ async def run_single_cycle(
 
         if result.success:
             logger.info(
-                "Strategy %s executed %s %s @ %s",
-                strategy_id, signal.action.value, symbol, result.trade.price,
+                "trade executed strategy_id=%s action=%s symbol=%s price=%s quantity=%s fee=%s source=%s",
+                strategy_id,
+                signal.action.value,
+                symbol,
+                result.trade.price,
+                result.trade.quantity,
+                result.trade.fee,
+                "ai" if ai_config["ai_enabled"] else "rule",
             )
             await session.commit()
             refreshed_position = await get_position(session, strategy_id, symbol)
@@ -409,7 +420,12 @@ async def run_single_cycle(
                 ),
             }
         else:
-            logger.warning("Execution failed for %s: %s", strategy_id, result.error)
+            logger.warning(
+                "trade rejected strategy_id=%s symbol=%s error=%s",
+                strategy_id,
+                symbol,
+                result.error,
+            )
             await session.rollback()
             return {
                 "status": "failed",
@@ -453,16 +469,16 @@ async def strategy_loop(strategy_id: str, interval_seconds: int = 300) -> None:
 
             if result.get("status") == "executed":
                 logger.info(
-                    "Loop cycle %d executed for %s (%s)",
-                    cycle,
+                    "cycle complete strategy_id=%s cycle=%d status=executed action=%s",
                     strategy_id,
+                    cycle,
                     result.get("action"),
                 )
             elif result.get("status") in {"skipped", "hold"}:
                 logger.debug(
-                    "Loop cycle %d for %s returned %s: %s",
-                    cycle,
+                    "cycle complete strategy_id=%s cycle=%d status=%s reason=%s",
                     strategy_id,
+                    cycle,
                     result.get("status"),
                     result.get("reason"),
                 )
@@ -472,6 +488,6 @@ async def strategy_loop(strategy_id: str, interval_seconds: int = 300) -> None:
                 await take_equity_snapshot(strategy_id, symbol)
 
         except Exception:
-            logger.exception("Error in strategy loop %s", strategy_id)
+            logger.exception("strategy loop crashed strategy_id=%s", strategy_id)
 
         await asyncio.sleep(interval_seconds)

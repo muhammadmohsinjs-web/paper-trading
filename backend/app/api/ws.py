@@ -35,11 +35,11 @@ class ConnectionManager:
     async def connect(self, ws: WebSocket) -> None:
         await ws.accept()
         self._connections.append(ws)
-        logger.info("WS client connected (%d total)", len(self._connections))
+        logger.info("ws client connected total=%d", len(self._connections))
 
     def disconnect(self, ws: WebSocket) -> None:
         self._connections.remove(ws)
-        logger.info("WS client disconnected (%d remaining)", len(self._connections))
+        logger.info("ws client disconnected total=%d", len(self._connections))
 
     async def broadcast(self, event: dict[str, Any]) -> None:
         """Send an event to all connected clients."""

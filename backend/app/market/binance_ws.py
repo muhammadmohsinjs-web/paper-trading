@@ -53,7 +53,11 @@ class BinanceWSClient:
             return
         self._running = True
         self._task = asyncio.create_task(self._run())
-        logger.info("Binance WS started for %s/%s", self.symbol, self.interval)
+        logger.info(
+            "stream starting symbol=%s interval=%s",
+            self.symbol.upper(),
+            self.interval,
+        )
 
     async def stop(self) -> None:
         self._running = False
@@ -64,7 +68,7 @@ class BinanceWSClient:
             except asyncio.CancelledError:
                 pass
             self._task = None
-        logger.info("Binance WS stopped")
+        logger.info("stream stopped symbol=%s interval=%s", self.symbol.upper(), self.interval)
 
     def _format_live_price_log(self, symbol: str, candle: Candle, use_color: bool = ANSI_ENABLED) -> str:
         previous_price = self._last_logged_price
@@ -108,7 +112,12 @@ class BinanceWSClient:
         while self._running:
             try:
                 async with websockets.connect(self.stream_url) as ws:
-                    logger.info("Connected to Binance WS: %s", self.stream_url)
+                    logger.info(
+                        "stream connected symbol=%s interval=%s url=%s",
+                        symbol_upper,
+                        self.interval,
+                        self.stream_url,
+                    )
                     async for raw in ws:
                         if not self._running:
                             break
@@ -136,10 +145,13 @@ class BinanceWSClient:
                                 }
                             )
                         except (KeyError, ValueError) as exc:
-                            logger.warning("Bad WS message: %s", exc)
+                            logger.warning("bad ws message symbol=%s error=%s", symbol_upper, exc)
             except asyncio.CancelledError:
                 break
             except Exception:
                 if self._running:
-                    logger.exception("WS disconnected, reconnecting in 5s...")
+                    logger.exception(
+                        "stream disconnected symbol=%s retry_in_seconds=5",
+                        symbol_upper,
+                    )
                     await asyncio.sleep(5)

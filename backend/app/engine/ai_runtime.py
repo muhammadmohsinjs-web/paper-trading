@@ -50,7 +50,7 @@ AI_STRATEGY_ALIASES = {
 }
 
 
-@dataclass(slots=True)
+@dataclass
 class AIUsage:
     provider: str
     model: str
@@ -60,7 +60,7 @@ class AIUsage:
     estimated_cost_usdt: Decimal
 
 
-@dataclass(slots=True)
+@dataclass
 class AIDecisionResult:
     status: str
     signal: TradeSignal | None = None
@@ -506,7 +506,12 @@ async def evaluate_ai_decision(
                     )
                 except (httpx.HTTPError, ValueError, json.JSONDecodeError) as exc:
                     last_error = str(exc)
-                    logger.warning("AI decision attempt %d failed: %s", attempt + 1, exc)
+                    logger.warning(
+                        "ai decision retry provider=%s attempt=%d error=%s",
+                        provider,
+                        attempt + 1,
+                        exc,
+                    )
                     if attempt == 0:
                         continue
 

@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import router as api_router
 from app.config import get_settings
 from app.database import dispose_database, init_database
+from app.logging_utils import configure_logging
 from app.market.binance_rest import backfill
 from app.market.binance_ws import BinanceWSClient
 from app.strategies.manager import StrategyManager
@@ -24,7 +25,7 @@ async def lifespan(_: FastAPI):
 
     # Init DB
     await init_database()
-    logger.info("Database initialized")
+    logger.info("database ready")
 
     # Backfill historical candles
     settings = get_settings()
@@ -37,7 +38,7 @@ async def lifespan(_: FastAPI):
     # Start active strategies
     manager = StrategyManager.get_instance()
     count = await manager.start_all_active()
-    logger.info("Started %d active strategies", count)
+    logger.info("strategy bootstrap complete active_count=%d", count)
 
     try:
         yield
@@ -47,16 +48,12 @@ async def lifespan(_: FastAPI):
             await _ws_client.stop()
         await StrategyManager.get_instance().stop_all()
         await dispose_database()
-        logger.info("Shutdown complete")
+        logger.info("shutdown complete")
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging(settings.log_level, use_color=settings.log_use_colors)
 
     app = FastAPI(
         title=settings.app_name,

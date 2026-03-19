@@ -52,6 +52,11 @@ async def backfill(
     try:
         candles = await fetch_candles(symbol, interval, limit)
         store.set_candles(symbol, interval, candles)
-        logger.info("Backfilled %d candles for %s/%s", len(candles), symbol, interval)
+        logger.info(
+            "backfill complete symbol=%s interval=%s candles=%d",
+            symbol,
+            interval,
+            len(candles),
+        )
     except Exception:
-        logger.exception("Failed to backfill candles for %s/%s", symbol, interval)
+        logger.exception("backfill failed symbol=%s interval=%s", symbol, interval)
