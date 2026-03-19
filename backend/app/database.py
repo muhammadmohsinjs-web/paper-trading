@@ -63,10 +63,44 @@ async def _ensure_phase3_strategy_columns() -> None:
                 await connection.execute(text(f"ALTER TABLE strategies ADD COLUMN {name} {definition}"))
 
 
+async def _ensure_risk_management_columns() -> None:
+    """Add risk-management columns for Phase 4 (backward-compatible)."""
+    if engine.url.get_backend_name() != "sqlite":
+        return
+
+    async with engine.begin() as connection:
+        # -- positions table --
+        result = await connection.execute(text("PRAGMA table_info(positions)"))
+        existing = {row[1] for row in result}
+        if "stop_loss_price" not in existing:
+            await connection.execute(text("ALTER TABLE positions ADD COLUMN stop_loss_price NUMERIC(24,12)"))
+
+        # -- wallets table --
+        result = await connection.execute(text("PRAGMA table_info(wallets)"))
+        existing = {row[1] for row in result}
+        if "peak_equity_usdt" not in existing:
+            await connection.execute(text("ALTER TABLE wallets ADD COLUMN peak_equity_usdt NUMERIC(18,8) NOT NULL DEFAULT 1000"))
+
+        # -- strategies table --
+        strategy_cols = {
+            "stop_loss_pct": "NUMERIC(6,3) NOT NULL DEFAULT 3.0",
+            "max_drawdown_pct": "NUMERIC(6,3) NOT NULL DEFAULT 15.0",
+            "risk_per_trade_pct": "NUMERIC(6,3) NOT NULL DEFAULT 2.0",
+            "max_position_size_pct": "NUMERIC(6,3) NOT NULL DEFAULT 50.0",
+            "candle_interval": "VARCHAR(8) NOT NULL DEFAULT '1h'",
+        }
+        result = await connection.execute(text("PRAGMA table_info(strategies)"))
+        existing = {row[1] for row in result}
+        for name, definition in strategy_cols.items():
+            if name not in existing:
+                await connection.execute(text(f"ALTER TABLE strategies ADD COLUMN {name} {definition}"))
+
+
 async def init_database() -> None:
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     await _ensure_phase3_strategy_columns()
+    await _ensure_risk_management_columns()
 
 
 async def dispose_database() -> None:

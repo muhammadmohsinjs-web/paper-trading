@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Optional
 
 from sqlalchemy import DateTime, Enum, ForeignKey, Numeric, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -30,6 +31,9 @@ class Position(UUIDPrimaryKeyMixin, Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
+    )
+    stop_loss_price: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(24, 12), nullable=True, default=None,
     )
 
     strategy = relationship("Strategy", back_populates="positions")

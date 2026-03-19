@@ -16,16 +16,21 @@ def sma(closes: list[float], period: int) -> list[float]:
 
 
 def ema(closes: list[float], period: int) -> list[float]:
-    """Exponential Moving Average."""
+    """Exponential Moving Average.
+
+    Initialises with the SMA of the first *period* values (standard method)
+    and returns ``len(closes) - period + 1`` values — the same length
+    convention used by :func:`sma`.
+    """
     if len(closes) < period:
         return []
     arr = np.array(closes, dtype=np.float64)
     multiplier = 2.0 / (period + 1)
-    result = np.empty(len(arr))
-    result[0] = arr[0]
-    for i in range(1, len(arr)):
-        result[i] = (arr[i] - result[i - 1]) * multiplier + result[i - 1]
-    return result.tolist()
+    seed = float(np.mean(arr[:period]))
+    result = [seed]
+    for i in range(period, len(arr)):
+        result.append((arr[i] - result[-1]) * multiplier + result[-1])
+    return result
 
 
 def rsi(closes: list[float], period: int = 14) -> list[float]:
@@ -86,22 +91,92 @@ def macd(
     return macd_line, [], []
 
 
+def atr(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    period: int = 14,
+) -> list[float]:
+    """Average True Range (Wilder's smoothing).
+
+    Returns ``len(closes) - period`` values.
+    """
+    n = len(closes)
+    if n < period + 1 or len(highs) < n or len(lows) < n:
+        return []
+
+    h = np.array(highs, dtype=np.float64)
+    l = np.array(lows, dtype=np.float64)
+    c = np.array(closes, dtype=np.float64)
+
+    # True Range starts at index 1 (needs previous close)
+    tr = np.maximum(
+        h[1:] - l[1:],
+        np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])),
+    )
+
+    # Wilder's smoothing (same approach as RSI)
+    avg = float(np.mean(tr[:period]))
+    result = [avg]
+    for i in range(period, len(tr)):
+        avg = (avg * (period - 1) + float(tr[i])) / period
+        result.append(avg)
+    return result
+
+
+def bollinger_bands(
+    closes: list[float],
+    period: int = 20,
+    std_dev: float = 2.0,
+) -> tuple[list[float], list[float], list[float]]:
+    """Bollinger Bands: returns (upper, middle, lower).
+
+    Each list has ``len(closes) - period + 1`` values.
+    """
+    if len(closes) < period:
+        return [], [], []
+
+    arr = np.array(closes, dtype=np.float64)
+    middle: list[float] = []
+    upper: list[float] = []
+    lower: list[float] = []
+
+    for i in range(period - 1, len(arr)):
+        window = arr[i - period + 1 : i + 1]
+        mean = float(np.mean(window))
+        std = float(np.std(window, ddof=0))
+        middle.append(mean)
+        upper.append(mean + std_dev * std)
+        lower.append(mean - std_dev * std)
+
+    return upper, middle, lower
+
+
 def compute_indicators(
     closes: list[float],
     config: dict | None = None,
+    *,
+    highs: list[float] | None = None,
+    lows: list[float] | None = None,
 ) -> dict:
     """Compute all indicators and return as a dict."""
     cfg = config or {}
-    sma_short = cfg.get("sma_short", 10)
+    sma_short = cfg.get("sma_short", 20)
     sma_long = cfg.get("sma_long", 50)
     rsi_period = cfg.get("rsi_period", 14)
 
-    return {
+    result = {
         "sma_short": sma(closes, sma_short),
         "sma_long": sma(closes, sma_long),
         "ema_12": ema(closes, 12),
         "ema_26": ema(closes, 26),
         "rsi": rsi(closes, rsi_period),
         "macd": macd(closes),
+        "bollinger_bands": bollinger_bands(closes),
         "latest_close": closes[-1] if closes else None,
     }
+
+    if highs is not None and lows is not None:
+        result["atr"] = atr(highs, lows, closes)
+
+    return result

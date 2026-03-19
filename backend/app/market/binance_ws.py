@@ -154,4 +154,11 @@ class BinanceWSClient:
                         "stream disconnected symbol=%s retry_in_seconds=5",
                         symbol_upper,
                     )
+                    # Backfill any candles missed during disconnect
+                    try:
+                        from app.market.binance_rest import backfill
+                        await backfill(symbol_upper, self.interval)
+                        logger.info("post-reconnect backfill complete symbol=%s interval=%s", symbol_upper, self.interval)
+                    except Exception:
+                        logger.exception("post-reconnect backfill failed symbol=%s", symbol_upper)
                     await asyncio.sleep(5)

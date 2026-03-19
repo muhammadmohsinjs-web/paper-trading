@@ -233,7 +233,11 @@ def _coerce_signal(payload: dict[str, Any], *, symbol: str, has_position: bool) 
     )
 
 
-def _flat_market_metrics(closes: list[float], threshold_pct: float) -> tuple[bool, dict[str, float]]:
+def _flat_market_metrics(
+    closes: list[float],
+    threshold_pct: float,
+    atr_values: list[float] | None = None,
+) -> tuple[bool, dict[str, float]]:
     if len(closes) < 10:
         return False, {}
 
@@ -248,17 +252,33 @@ def _flat_market_metrics(closes: list[float], threshold_pct: float) -> tuple[boo
     drift_pct = abs(last - first) / first * 100
     midpoint = (high + low) / 2
     range_pct = ((high - low) / midpoint * 100) if midpoint > 0 else 0.0
-    metrics = {
+    metrics: dict[str, float] = {
         "drift_pct": drift_pct,
         "range_pct": range_pct,
         "threshold_pct": threshold_pct,
     }
+
+    # ATR-based flat detection: if latest ATR / price < 0.5%, market is quiet
+    if atr_values and last > 0:
+        atr_pct = atr_values[-1] / last * 100
+        metrics["atr_pct"] = atr_pct
+        if atr_pct < 0.5:
+            return True, metrics
+
     return max(drift_pct, range_pct) < threshold_pct, metrics
 
 
-def analyze_flat_market(closes: list[float], threshold_pct: float | None = None) -> tuple[bool, dict[str, float]]:
+def analyze_flat_market(
+    closes: list[float],
+    threshold_pct: float | None = None,
+    atr_values: list[float] | None = None,
+) -> tuple[bool, dict[str, float]]:
     """Public wrapper for flat-market gating and prompt context."""
-    return _flat_market_metrics(closes, threshold_pct or SETTINGS.ai_flat_market_threshold_pct)
+    return _flat_market_metrics(
+        closes,
+        threshold_pct or SETTINGS.ai_flat_market_threshold_pct,
+        atr_values=atr_values,
+    )
 
 
 def build_ai_context(
@@ -288,13 +308,22 @@ def build_ai_context(
     indicator_snapshot: dict[str, Any] = {}
     for key, value in indicators.items():
         if isinstance(value, tuple):
-            indicator_snapshot[key] = [list(part[-8:]) if isinstance(part, list) else part for part in value]
+            indicator_snapshot[key] = [list(part[-30:]) if isinstance(part, list) else part for part in value]
         elif isinstance(value, list):
-            indicator_snapshot[key] = value[-12:]
+            indicator_snapshot[key] = value[-30:]
         else:
             indicator_snapshot[key] = value
 
-    recent_closes = closes[-40:]
+    recent_closes = closes[-100:]
+
+    # Unrealized P&L for open positions
+    unrealized_pnl = 0.0
+    unrealized_pnl_pct = 0.0
+    if has_position and position_entry_price is not None and position_quantity is not None:
+        unrealized_pnl = float((current_price - position_entry_price) * position_quantity)
+        if position_entry_price > 0:
+            unrealized_pnl_pct = float((current_price / position_entry_price - 1) * 100)
+
     return {
         "strategy": {
             "id": strategy_id,
@@ -311,9 +340,9 @@ def build_ai_context(
             "interval": interval,
             "current_price": float(current_price),
             "recent_closes": recent_closes,
-            "recent_highs": list((highs or [])[-40:]),
-            "recent_lows": list((lows or [])[-40:]),
-            "recent_volumes": list((volumes or [])[-40:]),
+            "recent_highs": list((highs or [])[-100:]),
+            "recent_lows": list((lows or [])[-100:]),
+            "recent_volumes": list((volumes or [])[-100:]),
             "flat_market_metrics": flat_market_metrics,
         },
         "indicators": indicator_snapshot,
@@ -322,6 +351,8 @@ def build_ai_context(
             "has_position": has_position,
             "position_quantity": float(position_quantity) if position_quantity is not None else 0.0,
             "position_entry_price": float(position_entry_price) if position_entry_price is not None else None,
+            "unrealized_pnl": unrealized_pnl,
+            "unrealized_pnl_pct": unrealized_pnl_pct,
         },
     }
 

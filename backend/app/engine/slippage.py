@@ -27,7 +27,7 @@ _TIERS: list[tuple[Decimal, Decimal, Decimal]] = [
 def _pick_rate(notional: Decimal) -> Decimal:
     for threshold, lo, hi in _TIERS:
         if notional < threshold:
-            rate = Decimal(str(random.uniform(float(lo), float(hi))))
+            rate = (lo + hi) / 2
             return rate.quantize(Decimal("0.0000001"))
     # fallback (should not reach here)
     return Decimal("0.001")

@@ -16,24 +16,28 @@ from app.strategies.manager import StrategyManager
 
 logger = logging.getLogger(__name__)
 
-_ws_client: BinanceWSClient | None = None
+_ws_clients: list[BinanceWSClient] = []
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global _ws_client
+    global _ws_clients
 
     # Init DB
     await init_database()
     logger.info("database ready")
 
-    # Backfill historical candles
+    # Backfill historical candles for both intervals
     settings = get_settings()
+    await backfill(settings.default_symbol, "1h", 200)
     await backfill(settings.default_symbol, "5m", 200)
 
-    # Start Binance WebSocket
-    _ws_client = BinanceWSClient(settings.default_symbol, "5m")
-    await _ws_client.start()
+    # Start Binance WebSocket for both intervals
+    ws_1h = BinanceWSClient(settings.default_symbol, "1h")
+    ws_5m = BinanceWSClient(settings.default_symbol, "5m")
+    await ws_1h.start()
+    await ws_5m.start()
+    _ws_clients = [ws_1h, ws_5m]
 
     # Start active strategies
     manager = StrategyManager.get_instance()
@@ -44,8 +48,9 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         # Shutdown
-        if _ws_client:
-            await _ws_client.stop()
+        for client in _ws_clients:
+            await client.stop()
+        _ws_clients.clear()
         await StrategyManager.get_instance().stop_all()
         await dispose_database()
         logger.info("shutdown complete")

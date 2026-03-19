@@ -186,10 +186,87 @@ def _touch_ai_metrics(strategy: Strategy, decision: AIDecisionResult) -> None:
     strategy.ai_total_cost_usdt += usage.estimated_cost_usdt
 
 
+INTERVAL_TO_SECONDS: dict[str, int] = {
+    "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400,
+}
+
+
+def _compute_equity(wallet: Any, position: Any, market_price: Decimal) -> Decimal:
+    """Cash + mark-to-market position value."""
+    equity = wallet.available_usdt
+    if position is not None:
+        equity += position.quantity * market_price
+    return equity
+
+
+async def _force_stop_loss_sell(
+    session: Any,
+    strategy_id: str,
+    wallet: Any,
+    position: Any,
+    symbol: str,
+    market_price: Decimal,
+    manager: Any,
+) -> dict[str, Any]:
+    """Execute an immediate full sell triggered by stop-loss."""
+    from app.engine.executor import execute_sell  # already imported at module level
+
+    result = await execute_sell(
+        session, strategy_id, wallet, symbol, market_price,
+        Decimal("1.0"),
+        reason=f"Stop-loss triggered at {market_price} (stop={position.stop_loss_price})",
+    )
+    if result.success:
+        logger.info(
+            "stop-loss executed strategy_id=%s symbol=%s price=%s stop=%s",
+            strategy_id, symbol, market_price, position.stop_loss_price,
+        )
+        await session.commit()
+        await manager.broadcast({
+            "type": "trade_executed",
+            "strategy_id": strategy_id,
+            "action": "SELL",
+            "symbol": symbol,
+            "price": float(result.trade.price),
+            "quantity": float(result.trade.quantity),
+            "fee": float(result.trade.fee),
+            "pnl": float(result.trade.pnl) if result.trade.pnl is not None else None,
+            "reason": "stop_loss_triggered",
+            "decision_source": "risk",
+        })
+        await manager.broadcast({
+            "type": "position_changed",
+            "strategy_id": strategy_id,
+            "symbol": symbol,
+            "has_position": False,
+            "quantity": 0.0,
+            "entry_price": None,
+            "available_usdt": float(wallet.available_usdt),
+        })
+        return {
+            "status": "executed",
+            "action": "SELL",
+            "reason": "stop_loss_triggered",
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "risk",
+            "price": str(result.trade.price),
+            "pnl": str(result.trade.pnl) if result.trade.pnl else None,
+        }
+    await session.rollback()
+    return {
+        "status": "failed",
+        "reason": f"Stop-loss sell failed: {result.error}",
+        "symbol": symbol,
+        "strategy_id": strategy_id,
+        "decision_source": "risk",
+    }
+
+
 async def run_single_cycle(
     strategy_id: str,
     symbol: str = "BTCUSDT",
-    interval: str = "5m",
+    interval: str = "1h",
     force: bool = False,
 ) -> dict[str, Any]:
     """Execute one decision cycle for a strategy."""
@@ -228,13 +305,13 @@ async def run_single_cycle(
                 "decision_source": "strategy",
             }
 
+        # Override interval from strategy if set
+        interval = strategy.candle_interval or (strategy.config_json or {}).get("candle_interval", interval)
+
         # Get strategy config
         config = strategy.config_json or {}
         strategy_type = config.get("strategy_type", "sma_crossover")
         ai_config = _normalize_ai_counters(strategy)
-
-        # Compute indicators
-        indicators = compute_indicators(closes, config)
 
         # Get wallet and position
         wallet = await get_or_create_wallet(
@@ -256,6 +333,44 @@ async def run_single_cycle(
 
         market_price = Decimal(str(current_price))
 
+        # ── Risk check 1: Stop-loss ──────────────────────────────────────
+        if (
+            position is not None
+            and position.stop_loss_price is not None
+            and market_price <= position.stop_loss_price
+        ):
+            return await _force_stop_loss_sell(
+                session, strategy_id, wallet, position, symbol, market_price, manager,
+            )
+
+        # ── Risk check 2: Max drawdown circuit breaker ───────────────────
+        equity = _compute_equity(wallet, position, market_price)
+        peak = wallet.peak_equity_usdt or equity
+        if equity > peak:
+            wallet.peak_equity_usdt = equity
+            peak = equity
+        if peak > 0:
+            drawdown_pct = (peak - equity) / peak * 100
+            max_dd = Decimal(str(strategy.max_drawdown_pct or settings.default_max_drawdown_pct))
+            if drawdown_pct >= max_dd:
+                await session.commit()
+                logger.warning(
+                    "max drawdown hit strategy_id=%s drawdown=%.2f%% limit=%s%%",
+                    strategy_id, drawdown_pct, max_dd,
+                )
+                return {
+                    "status": "halted",
+                    "reason": f"Max drawdown {drawdown_pct:.2f}% exceeds limit {max_dd}%",
+                    "symbol": symbol,
+                    "strategy_id": strategy_id,
+                    "decision_source": "risk",
+                }
+
+        # ── Compute indicators (pass highs/lows for ATR) ────────────────
+        highs = [candle.high for candle in candles]
+        lows = [candle.low for candle in candles]
+        indicators = compute_indicators(closes, config, highs=highs, lows=lows)
+
         if ai_config["ai_enabled"]:
             _, flat_metrics = analyze_flat_market(closes, ai_config["flat_market_threshold_pct"])
             cooldown_remaining = _cooldown_remaining(strategy, ai_config["ai_cooldown_seconds"])
@@ -275,8 +390,8 @@ async def run_single_cycle(
                 symbol=symbol,
                 interval=interval,
                 closes=closes,
-                highs=[candle.high for candle in candles],
-                lows=[candle.low for candle in candles],
+                highs=highs,
+                lows=lows,
                 volumes=[candle.volume for candle in candles],
                 indicators=indicators,
                 wallet_available_usdt=wallet.available_usdt,
@@ -348,6 +463,21 @@ async def run_single_cycle(
                 "decision_source": "ai" if ai_config["ai_enabled"] else "rule",
             }
 
+        # ── Risk check 3: Position size cap for BUY signals ──────────────
+        if signal.action.value == "BUY":
+            max_pos_pct = Decimal(str(
+                strategy.max_position_size_pct or settings.default_max_position_size_pct
+            )) / 100
+            max_spend = equity * max_pos_pct
+            if wallet.available_usdt > 0:
+                capped_pct = min(signal.quantity_pct, max_spend / wallet.available_usdt)
+                if capped_pct < signal.quantity_pct:
+                    logger.info(
+                        "position size capped strategy_id=%s original=%.2f capped=%.2f",
+                        strategy_id, signal.quantity_pct, capped_pct,
+                    )
+                signal.quantity_pct = max(capped_pct, Decimal("0"))
+
         # Execute
         if signal.action.value == "BUY":
             result = await execute_buy(
@@ -371,8 +501,27 @@ async def run_single_cycle(
                 result.trade.fee,
                 "ai" if ai_config["ai_enabled"] else "rule",
             )
+
+            # ── Risk check 4: Set stop-loss on new BUY position ─────────
+            if signal.action.value == "BUY":
+                refreshed_position = await get_position(session, strategy_id, symbol)
+                if refreshed_position is not None:
+                    sl_pct = Decimal(str(
+                        strategy.stop_loss_pct or settings.default_stop_loss_pct
+                    )) / 100
+                    refreshed_position.stop_loss_price = (
+                        refreshed_position.entry_price * (1 - sl_pct)
+                    ).quantize(Decimal("0.00000001"))
+
             await session.commit()
             refreshed_position = await get_position(session, strategy_id, symbol)
+
+            # ── Risk check 5: Update peak equity after trade ─────────────
+            new_equity = _compute_equity(wallet, refreshed_position, market_price)
+            if new_equity > wallet.peak_equity_usdt:
+                wallet.peak_equity_usdt = new_equity
+                await session.commit()
+
             await manager.broadcast(
                 {
                     "type": "trade_executed",
@@ -457,7 +606,7 @@ async def take_equity_snapshot(strategy_id: str, symbol: str = "BTCUSDT") -> Non
         await session.commit()
 
 
-async def strategy_loop(strategy_id: str, interval_seconds: int = 300) -> None:
+async def strategy_loop(strategy_id: str, interval_seconds: int = 3600) -> None:
     """Continuous trading loop for a single strategy."""
     symbol = "BTCUSDT"
     cycle = 0
@@ -474,6 +623,8 @@ async def strategy_loop(strategy_id: str, interval_seconds: int = 300) -> None:
                     cycle,
                     result.get("action"),
                 )
+                # Snapshot after every trade
+                await take_equity_snapshot(strategy_id, symbol)
             elif result.get("status") in {"skipped", "hold"}:
                 logger.debug(
                     "cycle complete strategy_id=%s cycle=%d status=%s reason=%s",
@@ -483,9 +634,8 @@ async def strategy_loop(strategy_id: str, interval_seconds: int = 300) -> None:
                     result.get("reason"),
                 )
 
-            # Snapshot every 5 cycles
-            if cycle % 5 == 0:
-                await take_equity_snapshot(strategy_id, symbol)
+            # Snapshot every cycle
+            await take_equity_snapshot(strategy_id, symbol)
 
         except Exception:
             logger.exception("strategy loop crashed strategy_id=%s", strategy_id)

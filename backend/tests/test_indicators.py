@@ -1,6 +1,6 @@
 """Tests for technical indicator calculations."""
 
-from app.market.indicators import sma, ema, rsi, macd
+from app.market.indicators import sma, ema, rsi, macd, atr, bollinger_bands
 
 
 def test_sma_basic():
@@ -20,15 +20,31 @@ def test_sma_insufficient_data():
 def test_ema_basic():
     closes = [10.0] * 20
     result = ema(closes, 10)
-    # Constant input → EMA should converge to input
+    # Constant input → EMA should equal input; length = 20 - 10 + 1 = 11
+    assert len(result) == 11
     assert abs(result[-1] - 10.0) < 0.001
+    assert abs(result[0] - 10.0) < 0.001  # seed is SMA of first 10 = 10.0
+
+
+def test_ema_seed_is_sma():
+    closes = list(range(1, 11))  # 1..10
+    result = ema(closes, 5)
+    # Seed should be SMA of first 5 values = (1+2+3+4+5)/5 = 3.0
+    assert abs(result[0] - 3.0) < 0.001
 
 
 def test_ema_responds_to_change():
     closes = [100.0] * 20 + [200.0] * 10
     result = ema(closes, 10)
+    # Length = 30 - 10 + 1 = 21
+    assert len(result) == 21
     # Last values should be closer to 200 than 100
     assert result[-1] > 150.0
+
+
+def test_ema_insufficient_data():
+    result = ema([10.0, 20.0], 5)
+    assert result == []
 
 
 def test_rsi_returns_values():
@@ -52,3 +68,37 @@ def test_macd_returns_three_lists():
     assert len(signal_line) > 0
     assert len(histogram) > 0
     assert len(macd_line) == len(signal_line) == len(histogram)
+
+
+def test_atr_basic():
+    n = 30
+    highs = [float(100 + i * 0.5) for i in range(n)]
+    lows = [float(99 + i * 0.5) for i in range(n)]
+    closes = [float(99.5 + i * 0.5) for i in range(n)]
+    result = atr(highs, lows, closes, period=14)
+    # Should return n - 1 (TR starts at 1) - 14 + 1 = n - 14 values
+    assert len(result) == n - 14
+    # All ATR values should be positive
+    assert all(v > 0 for v in result)
+
+
+def test_atr_insufficient_data():
+    result = atr([100.0] * 5, [99.0] * 5, [99.5] * 5, period=14)
+    assert result == []
+
+
+def test_bollinger_bands_basic():
+    closes = [float(100 + i) for i in range(30)]
+    upper, middle, lower = bollinger_bands(closes, period=20)
+    # Length = 30 - 20 + 1 = 11
+    assert len(upper) == 11
+    assert len(middle) == 11
+    assert len(lower) == 11
+    # Upper > middle > lower
+    for u, m, l in zip(upper, middle, lower):
+        assert u > m > l
+
+
+def test_bollinger_bands_insufficient_data():
+    upper, middle, lower = bollinger_bands([100.0] * 5, period=20)
+    assert upper == [] and middle == [] and lower == []

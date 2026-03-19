@@ -38,7 +38,7 @@ class SMACrossoverStrategy(BaseStrategy):
             return TradeSignal(
                 action=TradeSide.BUY,
                 symbol=symbol,
-                quantity_pct=Decimal("0.95"),  # Keep 5% cash reserve
+                quantity_pct=Decimal("0.5"),  # Risk layer will further cap
                 reason=f"SMA crossover BUY: short({curr_short:.2f}) > long({curr_long:.2f})",
             )
 

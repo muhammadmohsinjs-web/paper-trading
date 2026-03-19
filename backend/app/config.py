@@ -70,9 +70,16 @@ class Settings:
 
     # Trading
     default_balance_usdt: float = 1000.0
-    trading_interval_seconds: int = 300
+    trading_interval_seconds: int = 3600
+    default_candle_interval: str = "1h"
     spot_fee_rate: float = 0.001
     bnb_discount_fee_rate: float = 0.00075
+
+    # Risk management
+    default_stop_loss_pct: float = 3.0
+    default_max_drawdown_pct: float = 15.0
+    default_risk_per_trade_pct: float = 2.0
+    default_max_position_size_pct: float = 50.0
 
     # AI
     ai_provider: str = AI_PROVIDER_ANTHROPIC
@@ -136,8 +143,13 @@ class Settings:
             binance_rest_url=_get_value("BINANCE_REST_URL", default=cls.binance_rest_url),
             default_balance_usdt=float(_get_value("DEFAULT_BALANCE_USDT", default=str(cls.default_balance_usdt))),
             trading_interval_seconds=int(_get_value("TRADING_INTERVAL_SECONDS", default=str(cls.trading_interval_seconds))),
+            default_candle_interval=_get_value("DEFAULT_CANDLE_INTERVAL", default=cls.default_candle_interval),
             spot_fee_rate=float(_get_value("SPOT_FEE_RATE", default=str(cls.spot_fee_rate))),
             bnb_discount_fee_rate=float(_get_value("BNB_DISCOUNT_FEE_RATE", default=str(cls.bnb_discount_fee_rate))),
+            default_stop_loss_pct=float(_get_value("STOP_LOSS_PCT", default=str(cls.default_stop_loss_pct))),
+            default_max_drawdown_pct=float(_get_value("MAX_DRAWDOWN_PCT", default=str(cls.default_max_drawdown_pct))),
+            default_risk_per_trade_pct=float(_get_value("RISK_PER_TRADE_PCT", default=str(cls.default_risk_per_trade_pct))),
+            default_max_position_size_pct=float(_get_value("MAX_POSITION_SIZE_PCT", default=str(cls.default_max_position_size_pct))),
             ai_provider=normalize_ai_provider(_get_value("AI_PROVIDER", default=cls.ai_provider)),
             ai_api_key=_get_value("AI_API_KEY", default=cls.ai_api_key),
             ai_base_url=_get_value("AI_BASE_URL", default=cls.ai_base_url),

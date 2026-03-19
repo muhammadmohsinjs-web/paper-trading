@@ -57,6 +57,11 @@ def _strategy_ai_defaults(strategy: Strategy) -> dict[str, object]:
         "ai_total_completion_tokens": strategy.ai_total_completion_tokens,
         "ai_total_tokens": strategy.ai_total_tokens,
         "ai_total_cost_usdt": float(strategy.ai_total_cost_usdt),
+        "stop_loss_pct": float(strategy.stop_loss_pct),
+        "max_drawdown_pct": float(strategy.max_drawdown_pct),
+        "risk_per_trade_pct": float(strategy.risk_per_trade_pct),
+        "max_position_size_pct": float(strategy.max_position_size_pct),
+        "candle_interval": strategy.candle_interval,
     }
 
 
@@ -147,6 +152,11 @@ async def create_strategy(
                 else config_json.get("ai_temperature", 0.2)
             )
         ),
+        stop_loss_pct=Decimal(str(body.stop_loss_pct or settings.default_stop_loss_pct)),
+        max_drawdown_pct=Decimal(str(body.max_drawdown_pct or settings.default_max_drawdown_pct)),
+        risk_per_trade_pct=Decimal(str(body.risk_per_trade_pct or settings.default_risk_per_trade_pct)),
+        max_position_size_pct=Decimal(str(body.max_position_size_pct or settings.default_max_position_size_pct)),
+        candle_interval=body.candle_interval or settings.default_candle_interval,
     )
     session.add(strategy)
 
@@ -157,6 +167,7 @@ async def create_strategy(
         strategy_id=strategy.id,
         initial_balance_usdt=initial,
         available_usdt=initial,
+        peak_equity_usdt=initial,
     )
     session.add(wallet)
     await session.commit()
@@ -164,7 +175,7 @@ async def create_strategy(
 
     # Auto-start if active
     if strategy.is_active:
-        interval = config_json.get("interval_seconds", 300)
+        interval = config_json.get("interval_seconds", settings.trading_interval_seconds)
         await StrategyManager.get_instance().start_strategy(strategy.id, interval)
 
     return strategy

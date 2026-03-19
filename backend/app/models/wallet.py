@@ -29,5 +29,10 @@ class Wallet(UUIDPrimaryKeyMixin, UpdatedAtMixin, Base):
         nullable=False,
         default=Decimal("1000"),
     )
+    peak_equity_usdt: Mapped[Decimal] = mapped_column(
+        Numeric(18, 8),
+        nullable=False,
+        default=Decimal("1000"),
+    )
 
     strategy = relationship("Strategy", back_populates="wallet")

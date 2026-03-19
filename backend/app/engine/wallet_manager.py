@@ -28,6 +28,7 @@ async def get_or_create_wallet(
             strategy_id=strategy_id,
             initial_balance_usdt=initial_balance,
             available_usdt=initial_balance,
+            peak_equity_usdt=initial_balance,
         )
         session.add(wallet)
         await session.flush()

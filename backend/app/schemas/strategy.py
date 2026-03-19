@@ -23,6 +23,11 @@ class StrategyCreate(BaseModel):
     ai_cooldown_seconds: int | None = None
     ai_max_tokens: int | None = None
     ai_temperature: float | None = None
+    stop_loss_pct: float | None = None
+    max_drawdown_pct: float | None = None
+    risk_per_trade_pct: float | None = None
+    max_position_size_pct: float | None = None
+    candle_interval: str | None = None
 
 
 class StrategyUpdate(BaseModel):
@@ -37,6 +42,11 @@ class StrategyUpdate(BaseModel):
     ai_cooldown_seconds: int | None = None
     ai_max_tokens: int | None = None
     ai_temperature: float | None = None
+    stop_loss_pct: float | None = None
+    max_drawdown_pct: float | None = None
+    risk_per_trade_pct: float | None = None
+    max_position_size_pct: float | None = None
+    candle_interval: str | None = None
 
 
 class StrategyResponse(BaseModel):
@@ -66,6 +76,11 @@ class StrategyResponse(BaseModel):
     ai_total_completion_tokens: int = 0
     ai_total_tokens: int = 0
     ai_total_cost_usdt: float = 0.0
+    stop_loss_pct: float = 3.0
+    max_drawdown_pct: float = 15.0
+    risk_per_trade_pct: float = 2.0
+    max_position_size_pct: float = 50.0
+    candle_interval: str = "1h"
     created_at: datetime
     updated_at: datetime
 

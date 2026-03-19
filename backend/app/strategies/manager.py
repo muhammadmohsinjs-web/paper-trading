@@ -32,7 +32,7 @@ class StrategyManager:
     def reset(cls) -> None:
         cls._instance = None
 
-    async def start_strategy(self, strategy_id: str, interval_seconds: int = 300) -> bool:
+    async def start_strategy(self, strategy_id: str, interval_seconds: int = 3600) -> bool:
         if strategy_id in self._tasks and not self._tasks[strategy_id].done():
             logger.info("strategy already running strategy_id=%s", strategy_id)
             return False
@@ -70,7 +70,7 @@ class StrategyManager:
             )
             strategies = result.scalars().all()
             for s in strategies:
-                interval = (s.config_json or {}).get("interval_seconds", 300)
+                interval = (s.config_json or {}).get("interval_seconds", 3600)
                 started = await self.start_strategy(s.id, interval)
                 if started:
                     count += 1
