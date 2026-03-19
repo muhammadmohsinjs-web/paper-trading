@@ -74,20 +74,38 @@ async def _ensure_risk_management_columns() -> None:
         existing = {row[1] for row in result}
         if "stop_loss_price" not in existing:
             await connection.execute(text("ALTER TABLE positions ADD COLUMN stop_loss_price NUMERIC(24,12)"))
+        if "take_profit_price" not in existing:
+            await connection.execute(text("ALTER TABLE positions ADD COLUMN take_profit_price NUMERIC(24,12)"))
+        if "trailing_stop_price" not in existing:
+            await connection.execute(text("ALTER TABLE positions ADD COLUMN trailing_stop_price NUMERIC(24,12)"))
+        if "entry_atr" not in existing:
+            await connection.execute(text("ALTER TABLE positions ADD COLUMN entry_atr NUMERIC(24,12)"))
 
         # -- wallets table --
         result = await connection.execute(text("PRAGMA table_info(wallets)"))
         existing = {row[1] for row in result}
         if "peak_equity_usdt" not in existing:
             await connection.execute(text("ALTER TABLE wallets ADD COLUMN peak_equity_usdt NUMERIC(18,8) NOT NULL DEFAULT 1000"))
+        wallet_cols = {
+            "daily_loss_usdt": "NUMERIC(18,8) NOT NULL DEFAULT 0",
+            "daily_loss_reset_date": "DATE",
+            "weekly_loss_usdt": "NUMERIC(18,8) NOT NULL DEFAULT 0",
+            "weekly_loss_reset_date": "DATE",
+        }
+        for name, definition in wallet_cols.items():
+            if name not in existing:
+                await connection.execute(text(f"ALTER TABLE wallets ADD COLUMN {name} {definition}"))
 
         # -- strategies table --
         strategy_cols = {
             "stop_loss_pct": "NUMERIC(6,3) NOT NULL DEFAULT 3.0",
             "max_drawdown_pct": "NUMERIC(6,3) NOT NULL DEFAULT 15.0",
             "risk_per_trade_pct": "NUMERIC(6,3) NOT NULL DEFAULT 2.0",
-            "max_position_size_pct": "NUMERIC(6,3) NOT NULL DEFAULT 50.0",
+            "max_position_size_pct": "NUMERIC(6,3) NOT NULL DEFAULT 30.0",
             "candle_interval": "VARCHAR(8) NOT NULL DEFAULT '1h'",
+            "consecutive_losses": "INTEGER NOT NULL DEFAULT 0",
+            "max_consecutive_losses": "INTEGER NOT NULL DEFAULT 0",
+            "streak_size_multiplier": "NUMERIC(6,3) NOT NULL DEFAULT 1.0",
         }
         result = await connection.execute(text("PRAGMA table_info(strategies)"))
         existing = {row[1] for row in result}

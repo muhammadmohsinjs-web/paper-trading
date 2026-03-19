@@ -13,6 +13,7 @@ from sqlalchemy import select
 from app.api.ws import ConnectionManager
 from app.config import default_ai_model_for_provider, get_settings
 from app.database import SessionLocal
+from app.engine.composite_scorer import compute_ai_vote, compute_composite_score
 from app.engine.executor import execute_buy, execute_sell
 from app.engine.ai_runtime import (
     AIDecisionResult,
@@ -22,6 +23,8 @@ from app.engine.ai_runtime import (
     evaluate_ai_decision,
     normalize_ai_strategy_key,
 )
+from app.engine.exit_manager import evaluate_exit
+from app.engine.position_sizer import calculate_position_size, streak_multiplier_for_losses
 from app.engine.wallet_manager import get_or_create_wallet, get_position
 from app.market.data_store import DataStore
 from app.market.indicators import compute_indicators
@@ -165,6 +168,51 @@ def _serialize_signal_result(signal: dict[str, Any] | None) -> dict[str, Any] | 
     }
 
 
+def _serialize_composite_result(result: Any) -> dict[str, Any]:
+    return {
+        "composite_score": result.composite_score,
+        "confidence": result.confidence,
+        "direction": result.direction,
+        "signal": result.signal,
+        "votes": result.votes,
+        "weights": result.weights,
+        "dampening_multiplier": result.dampening_multiplier,
+    }
+
+
+def _hybrid_ai_bias(action: str | None) -> float | None:
+    normalized = (action or "").strip().upper()
+    if normalized == "BUY":
+        return 1.0
+    if normalized == "SELL":
+        return -1.0
+    if normalized == "HOLD":
+        return 0.0
+    return None
+
+
+def _hybrid_ai_vote_value(decision: AIDecisionResult | None) -> float | None:
+    if decision is None:
+        return None
+    return compute_ai_vote(_hybrid_ai_bias(decision.action), decision.confidence, 1.0)
+
+
+def _update_strategy_streak(strategy: Strategy, pnl: Decimal | None) -> None:
+    if pnl is None:
+        return
+
+    if pnl < 0:
+        strategy.consecutive_losses += 1
+        strategy.max_consecutive_losses = max(
+            strategy.max_consecutive_losses,
+            strategy.consecutive_losses,
+        )
+    elif pnl > 0:
+        strategy.consecutive_losses = 0
+
+    strategy.streak_size_multiplier = streak_multiplier_for_losses(strategy.consecutive_losses)
+
+
 def _touch_ai_metrics(strategy: Strategy, decision: AIDecisionResult) -> None:
     if decision.usage is None:
         return
@@ -201,6 +249,7 @@ def _compute_equity(wallet: Any, position: Any, market_price: Decimal) -> Decima
 
 async def _force_stop_loss_sell(
     session: Any,
+    strategy: Strategy,
     strategy_id: str,
     wallet: Any,
     position: Any,
@@ -217,6 +266,7 @@ async def _force_stop_loss_sell(
         reason=f"Stop-loss triggered at {market_price} (stop={position.stop_loss_price})",
     )
     if result.success:
+        _update_strategy_streak(strategy, result.trade.pnl)
         logger.info(
             "stop-loss executed strategy_id=%s symbol=%s price=%s stop=%s",
             strategy_id, symbol, market_price, position.stop_loss_price,
@@ -340,7 +390,7 @@ async def run_single_cycle(
             and market_price <= position.stop_loss_price
         ):
             return await _force_stop_loss_sell(
-                session, strategy_id, wallet, position, symbol, market_price, manager,
+                session, strategy, strategy_id, wallet, position, symbol, market_price, manager,
             )
 
         # ── Risk check 2: Max drawdown circuit breaker ───────────────────
@@ -369,7 +419,314 @@ async def run_single_cycle(
         # ── Compute indicators (pass highs/lows for ATR) ────────────────
         highs = [candle.high for candle in candles]
         lows = [candle.low for candle in candles]
-        indicators = compute_indicators(closes, config, highs=highs, lows=lows)
+        volumes = [candle.volume for candle in candles]
+        indicators = compute_indicators(closes, config, highs=highs, lows=lows, volumes=volumes)
+
+        if strategy_type == "hybrid_composite":
+            ai_result: AIDecisionResult | None = None
+            flat_metrics: dict[str, float] | None = None
+            if ai_config["ai_enabled"]:
+                flat_metrics = analyze_flat_market(
+                    closes,
+                    ai_config["flat_market_threshold_pct"],
+                    indicators.get("atr"),
+                )[1]
+                cooldown_remaining = _cooldown_remaining(strategy, ai_config["ai_cooldown_seconds"])
+                if cooldown_remaining <= 0 or force:
+                    ai_context = build_ai_context(
+                        strategy_id=strategy.id,
+                        strategy_name=strategy.name,
+                        symbol=symbol,
+                        interval=interval,
+                        closes=closes,
+                        highs=highs,
+                        lows=lows,
+                        volumes=volumes,
+                        indicators=indicators,
+                        wallet_available_usdt=wallet.available_usdt,
+                        has_position=has_position,
+                        position_quantity=position.quantity if position else None,
+                        position_entry_price=position.entry_price if position else None,
+                        current_price=market_price,
+                        ai_strategy_key=ai_config["ai_strategy_key"],
+                        ai_provider=ai_config["ai_provider"],
+                        ai_model=ai_config["ai_model"],
+                        ai_cooldown_seconds=ai_config["ai_cooldown_seconds"],
+                        ai_max_tokens=ai_config["ai_max_tokens"],
+                        ai_temperature=ai_config["ai_temperature"],
+                        flat_market_metrics=flat_metrics or {
+                            "threshold_pct": ai_config["flat_market_threshold_pct"]
+                        },
+                    )
+                    ai_result = await evaluate_ai_decision(
+                        strategy_key=ai_config["ai_strategy_key"],
+                        context=ai_context,
+                        force=force,
+                    )
+                    if ai_result.status in {"skipped", "error"}:
+                        strategy.ai_last_decision_status = ai_result.status
+                        strategy.ai_last_reasoning = ai_result.reason or ai_result.error
+                        if ai_result.usage is not None:
+                            _touch_ai_metrics(strategy, ai_result)
+                    else:
+                        _touch_ai_metrics(strategy, ai_result)
+                    await session.commit()
+
+            composite_result = compute_composite_score(
+                indicators,
+                config=config,
+                ai_vote_value=_hybrid_ai_vote_value(ai_result),
+            )
+
+            if position is not None:
+                prior_trailing_stop = position.trailing_stop_price
+                exit_decision = evaluate_exit(
+                    position=position,
+                    current_price=market_price,
+                    composite_score=composite_result.composite_score,
+                    config=config,
+                    now=datetime.now(timezone.utc),
+                )
+
+                if (
+                    exit_decision.updated_trailing_stop_price is not None
+                    and exit_decision.updated_trailing_stop_price != prior_trailing_stop
+                ):
+                    position.trailing_stop_price = exit_decision.updated_trailing_stop_price
+                    await session.flush()
+
+                if exit_decision.action == "SELL":
+                    result = await execute_sell(
+                        session,
+                        strategy_id,
+                        wallet,
+                        symbol,
+                        market_price,
+                        exit_decision.quantity_pct,
+                        reason=exit_decision.reason,
+                    )
+                    if result.success:
+                        _update_strategy_streak(strategy, result.trade.pnl)
+                        refreshed_position = await get_position(session, strategy_id, symbol)
+                        if refreshed_position is not None:
+                            if exit_decision.consume_take_profit:
+                                refreshed_position.take_profit_price = None
+                            if exit_decision.updated_trailing_stop_price is not None:
+                                refreshed_position.trailing_stop_price = exit_decision.updated_trailing_stop_price
+
+                        await session.commit()
+                        refreshed_position = await get_position(session, strategy_id, symbol)
+                        await manager.broadcast(
+                            {
+                                "type": "trade_executed",
+                                "strategy_id": strategy_id,
+                                "action": "SELL",
+                                "symbol": symbol,
+                                "price": float(result.trade.price),
+                                "quantity": float(result.trade.quantity),
+                                "fee": float(result.trade.fee),
+                                "pnl": float(result.trade.pnl) if result.trade.pnl is not None else None,
+                                "reason": exit_decision.reason,
+                                "decision_source": "hybrid_exit",
+                            }
+                        )
+                        await manager.broadcast(
+                            {
+                                "type": "position_changed",
+                                "strategy_id": strategy_id,
+                                "symbol": symbol,
+                                "has_position": refreshed_position is not None,
+                                "quantity": float(refreshed_position.quantity) if refreshed_position else 0.0,
+                                "entry_price": float(refreshed_position.entry_price) if refreshed_position else None,
+                                "available_usdt": float(wallet.available_usdt),
+                            }
+                        )
+                        return {
+                            "status": "executed",
+                            "strategy_id": strategy_id,
+                            "action": "SELL",
+                            "symbol": symbol,
+                            "price": str(result.trade.price),
+                            "quantity": str(result.trade.quantity),
+                            "fee": str(result.trade.fee),
+                            "pnl": str(result.trade.pnl) if result.trade.pnl else None,
+                            "reason": exit_decision.reason,
+                            "decision_source": "hybrid_exit",
+                            "composite": _serialize_composite_result(composite_result),
+                        }
+
+                    await session.rollback()
+                    return {
+                        "status": "failed",
+                        "reason": result.error,
+                        "strategy_id": strategy_id,
+                        "symbol": symbol,
+                        "decision_source": "hybrid_exit",
+                        "composite": _serialize_composite_result(composite_result),
+                    }
+
+                if (
+                    exit_decision.updated_trailing_stop_price is not None
+                    and exit_decision.updated_trailing_stop_price != prior_trailing_stop
+                ):
+                    await session.commit()
+                    return {
+                        "status": "hold",
+                        "reason": "Trailing stop updated",
+                        "symbol": symbol,
+                        "strategy_id": strategy_id,
+                        "decision_source": "hybrid_exit",
+                        "composite": _serialize_composite_result(composite_result),
+                    }
+
+                return {
+                    "status": "hold",
+                    "reason": "Position open; no hybrid exit signal",
+                    "symbol": symbol,
+                    "strategy_id": strategy_id,
+                    "decision_source": "hybrid_exit",
+                    "composite": _serialize_composite_result(composite_result),
+                }
+
+            if composite_result.signal != "BUY":
+                return {
+                    "status": "hold",
+                    "reason": "Hybrid composite gate not met",
+                    "symbol": symbol,
+                    "strategy_id": strategy_id,
+                    "decision_source": "hybrid_entry",
+                    "composite": _serialize_composite_result(composite_result),
+                }
+
+            atr_values = indicators.get("atr", [])
+            if not atr_values:
+                return {
+                    "status": "skipped",
+                    "reason": "ATR unavailable for hybrid sizing",
+                    "symbol": symbol,
+                    "strategy_id": strategy_id,
+                    "decision_source": "hybrid_entry",
+                    "composite": _serialize_composite_result(composite_result),
+                }
+
+            take_profit_ratio = Decimal(str(config.get("take_profit_ratio", 2.0)))
+            min_reward_risk_ratio = Decimal(str(config.get("min_reward_risk_ratio", 1.5)))
+            if take_profit_ratio < min_reward_risk_ratio:
+                return {
+                    "status": "skipped",
+                    "reason": "Configured reward/risk ratio below minimum",
+                    "symbol": symbol,
+                    "strategy_id": strategy_id,
+                    "decision_source": "hybrid_entry",
+                    "composite": _serialize_composite_result(composite_result),
+                }
+
+            sizing = calculate_position_size(
+                equity=equity,
+                entry_price=market_price,
+                atr=Decimal(str(atr_values[-1])),
+                atr_multiplier=Decimal(str(config.get("atr_stop_multiplier", 2.0))),
+                risk_per_trade_pct=Decimal(str(strategy.risk_per_trade_pct)),
+                confidence_tier="reduced",
+                losing_streak_count=strategy.consecutive_losses,
+                max_position_pct=Decimal(str(strategy.max_position_size_pct)),
+                take_profit_ratio=take_profit_ratio,
+            )
+
+            if sizing.quantity_pct <= Decimal("0"):
+                return {
+                    "status": "skipped",
+                    "reason": "Hybrid sizing produced zero quantity",
+                    "symbol": symbol,
+                    "strategy_id": strategy_id,
+                    "decision_source": "hybrid_entry",
+                    "composite": _serialize_composite_result(composite_result),
+                }
+
+            result = await execute_buy(
+                session,
+                strategy_id,
+                wallet,
+                symbol,
+                market_price,
+                sizing.quantity_pct,
+                reason=(
+                    f"Hybrid BUY score={composite_result.composite_score:.3f} "
+                    f"confidence={composite_result.confidence:.3f}"
+                ),
+            )
+
+            if result.success:
+                refreshed_position = await get_position(session, strategy_id, symbol)
+                if refreshed_position is not None:
+                    refreshed_position.stop_loss_price = sizing.stop_loss_price
+                    refreshed_position.take_profit_price = sizing.take_profit_price
+                    refreshed_position.trailing_stop_price = None
+                    refreshed_position.entry_atr = sizing.entry_atr
+
+                await session.commit()
+                refreshed_position = await get_position(session, strategy_id, symbol)
+                new_equity = _compute_equity(wallet, refreshed_position, market_price)
+                if new_equity > wallet.peak_equity_usdt:
+                    wallet.peak_equity_usdt = new_equity
+                    await session.commit()
+
+                await manager.broadcast(
+                    {
+                        "type": "trade_executed",
+                        "strategy_id": strategy_id,
+                        "action": "BUY",
+                        "symbol": symbol,
+                        "price": float(result.trade.price),
+                        "quantity": float(result.trade.quantity),
+                        "fee": float(result.trade.fee),
+                        "pnl": None,
+                        "reason": result.trade.ai_reasoning,
+                        "decision_source": "hybrid_entry",
+                    }
+                )
+                await manager.broadcast(
+                    {
+                        "type": "position_changed",
+                        "strategy_id": strategy_id,
+                        "symbol": symbol,
+                        "has_position": refreshed_position is not None,
+                        "quantity": float(refreshed_position.quantity) if refreshed_position else 0.0,
+                        "entry_price": float(refreshed_position.entry_price) if refreshed_position else None,
+                        "available_usdt": float(wallet.available_usdt),
+                    }
+                )
+                return {
+                    "status": "executed",
+                    "strategy_id": strategy_id,
+                    "action": "BUY",
+                    "symbol": symbol,
+                    "price": str(result.trade.price),
+                    "quantity": str(result.trade.quantity),
+                    "fee": str(result.trade.fee),
+                    "pnl": None,
+                    "reason": result.trade.ai_reasoning,
+                    "decision_source": "hybrid_entry",
+                    "composite": _serialize_composite_result(composite_result),
+                    "signal": _serialize_signal_result(
+                        {
+                            "action": "BUY",
+                            "symbol": symbol,
+                            "quantity_pct": sizing.quantity_pct,
+                            "reason": result.trade.ai_reasoning or "",
+                        }
+                    ),
+                }
+
+            await session.rollback()
+            return {
+                "status": "failed",
+                "reason": result.error,
+                "strategy_id": strategy_id,
+                "symbol": symbol,
+                "decision_source": "hybrid_entry",
+                "composite": _serialize_composite_result(composite_result),
+            }
 
         if ai_config["ai_enabled"]:
             _, flat_metrics = analyze_flat_market(closes, ai_config["flat_market_threshold_pct"])
@@ -392,7 +749,7 @@ async def run_single_cycle(
                 closes=closes,
                 highs=highs,
                 lows=lows,
-                volumes=[candle.volume for candle in candles],
+                volumes=volumes,
                 indicators=indicators,
                 wallet_available_usdt=wallet.available_usdt,
                 has_position=has_position,
@@ -512,6 +869,8 @@ async def run_single_cycle(
                     refreshed_position.stop_loss_price = (
                         refreshed_position.entry_price * (1 - sl_pct)
                     ).quantize(Decimal("0.00000001"))
+            else:
+                _update_strategy_streak(strategy, result.trade.pnl)
 
             await session.commit()
             refreshed_position = await get_position(session, strategy_id, symbol)

@@ -1,6 +1,6 @@
 """Tests for technical indicator calculations."""
 
-from app.market.indicators import sma, ema, rsi, macd, atr, bollinger_bands
+from app.market.indicators import atr, bollinger_bands, compute_indicators, ema, macd, rsi, sma
 
 
 def test_sma_basic():
@@ -102,3 +102,19 @@ def test_bollinger_bands_basic():
 def test_bollinger_bands_insufficient_data():
     upper, middle, lower = bollinger_bands([100.0] * 5, period=20)
     assert upper == [] and middle == [] and lower == []
+
+
+def test_compute_indicators_includes_volume_ratio():
+    closes = [float(100 + i) for i in range(30)]
+    highs = [close + 1 for close in closes]
+    lows = [close - 1 for close in closes]
+    volumes = [float(1000 + i * 10) for i in range(30)]
+
+    result = compute_indicators(closes, {"volume_ma_period": 20}, highs=highs, lows=lows, volumes=volumes)
+
+    assert "volume_sma" in result
+    assert "volume_ratio" in result
+    assert len(result["volume_sma"]) == 11
+    assert len(result["volume_ratio"]) == 11
+    assert result["latest_close"] == closes[-1]
+    assert result["previous_close"] == closes[-2]

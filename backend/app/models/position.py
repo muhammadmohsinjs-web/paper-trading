@@ -35,5 +35,14 @@ class Position(UUIDPrimaryKeyMixin, Base):
     stop_loss_price: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(24, 12), nullable=True, default=None,
     )
+    take_profit_price: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(24, 12), nullable=True, default=None,
+    )
+    trailing_stop_price: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(24, 12), nullable=True, default=None,
+    )
+    entry_atr: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(24, 12), nullable=True, default=None,
+    )
 
     strategy = relationship("Strategy", back_populates="positions")

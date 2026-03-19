@@ -64,6 +64,8 @@ class AIUsage:
 class AIDecisionResult:
     status: str
     signal: TradeSignal | None = None
+    action: str | None = None
+    confidence: float | None = None
     reason: str | None = None
     usage: AIUsage | None = None
     raw_response: str | None = None
@@ -231,6 +233,19 @@ def _coerce_signal(payload: dict[str, Any], *, symbol: str, has_position: bool) 
         quantity_pct=quantity_pct,
         reason=reason,
     )
+
+
+def _coerce_confidence(payload: dict[str, Any]) -> float | None:
+    raw_confidence = payload.get("confidence")
+    if raw_confidence is None:
+        return None
+
+    confidence = float(raw_confidence)
+    if confidence < 0:
+        return 0.0
+    if confidence > 1:
+        return 1.0
+    return confidence
 
 
 def _flat_market_metrics(
@@ -515,6 +530,8 @@ async def evaluate_ai_decision(
                         raise ValueError(f"{provider_label} response did not contain text content")
                     last_usage = _usage_from_response(response_json, provider)
                     payload = _extract_json_payload(raw_text)
+                    confidence = _coerce_confidence(payload)
+                    action = str(payload.get("action", "HOLD")).strip().upper()
                     signal = _coerce_signal(
                         payload,
                         symbol=str(context.get("market", {}).get("symbol") or "BTCUSDT"),
@@ -523,6 +540,8 @@ async def evaluate_ai_decision(
                     if signal is None:
                         return AIDecisionResult(
                             status="hold",
+                            action=action,
+                            confidence=confidence,
                             reason=str(payload.get("reason", "")).strip() or "AI returned HOLD",
                             usage=last_usage,
                             raw_response=raw_text,
@@ -531,6 +550,8 @@ async def evaluate_ai_decision(
                     return AIDecisionResult(
                         status="signal",
                         signal=signal,
+                        action=signal.action.value,
+                        confidence=confidence,
                         reason=signal.reason or "AI returned a tradable signal",
                         usage=last_usage,
                         raw_response=raw_text,

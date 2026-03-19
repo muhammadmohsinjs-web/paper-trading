@@ -410,6 +410,8 @@ def test_ai_runtime_tracks_usage_and_estimated_cost_without_network(monkeypatch)
     assert result.signal is not None
     assert result.signal.action.value == "BUY"
     assert result.signal.quantity_pct == Decimal("0.25")
+    assert result.action == "BUY"
+    assert result.confidence == 0.91
     assert result.reason == "Confirmed breakout"
     assert result.usage is not None
     assert result.usage.provider == "anthropic"
@@ -484,6 +486,8 @@ def test_ai_runtime_uses_env_selected_openai_provider_and_model(monkeypatch):
     assert result.status == "signal"
     assert result.signal is not None
     assert result.signal.action.value == "SELL"
+    assert result.action == "SELL"
+    assert result.confidence == 0.74
     assert result.reason == "Momentum rolled over"
     assert captured["model"] == "gpt-5.4"
     assert result.usage is not None

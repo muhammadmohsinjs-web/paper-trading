@@ -158,12 +158,14 @@ def compute_indicators(
     *,
     highs: list[float] | None = None,
     lows: list[float] | None = None,
+    volumes: list[float] | None = None,
 ) -> dict:
     """Compute all indicators and return as a dict."""
     cfg = config or {}
     sma_short = cfg.get("sma_short", 20)
     sma_long = cfg.get("sma_long", 50)
     rsi_period = cfg.get("rsi_period", 14)
+    volume_ma_period = cfg.get("volume_ma_period", 20)
 
     result = {
         "sma_short": sma(closes, sma_short),
@@ -174,9 +176,22 @@ def compute_indicators(
         "macd": macd(closes),
         "bollinger_bands": bollinger_bands(closes),
         "latest_close": closes[-1] if closes else None,
+        "previous_close": closes[-2] if len(closes) > 1 else None,
     }
 
     if highs is not None and lows is not None:
         result["atr"] = atr(highs, lows, closes)
+
+    if volumes is not None:
+        volume_sma = sma(volumes, volume_ma_period)
+        volume_ratio: list[float] = []
+        for idx, avg_volume in enumerate(volume_sma):
+            volume_idx = idx + volume_ma_period - 1
+            current_volume = volumes[volume_idx]
+            volume_ratio.append(current_volume / avg_volume if avg_volume else 0.0)
+
+        result["volume_sma"] = volume_sma
+        result["volume_ratio"] = volume_ratio
+        result["latest_volume"] = volumes[-1] if volumes else None
 
     return result

@@ -62,6 +62,9 @@ def _strategy_ai_defaults(strategy: Strategy) -> dict[str, object]:
         "risk_per_trade_pct": float(strategy.risk_per_trade_pct),
         "max_position_size_pct": float(strategy.max_position_size_pct),
         "candle_interval": strategy.candle_interval,
+        "consecutive_losses": strategy.consecutive_losses,
+        "max_consecutive_losses": strategy.max_consecutive_losses,
+        "streak_size_multiplier": float(strategy.streak_size_multiplier),
     }
 
 
@@ -236,6 +239,10 @@ async def get_strategy_positions(
             entry_price=float(position.entry_price),
             entry_fee=float(position.entry_fee),
             opened_at=position.opened_at,
+            stop_loss_price=float(position.stop_loss_price) if position.stop_loss_price is not None else None,
+            take_profit_price=float(position.take_profit_price) if position.take_profit_price is not None else None,
+            trailing_stop_price=float(position.trailing_stop_price) if position.trailing_stop_price is not None else None,
+            entry_atr=float(position.entry_atr) if position.entry_atr is not None else None,
             current_price=store.get_latest_price(position.symbol),
             unrealized_pnl=(
                 (float(store.get_latest_price(position.symbol)) - float(position.entry_price))

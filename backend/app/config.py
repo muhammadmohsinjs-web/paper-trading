@@ -79,7 +79,7 @@ class Settings:
     default_stop_loss_pct: float = 3.0
     default_max_drawdown_pct: float = 15.0
     default_risk_per_trade_pct: float = 2.0
-    default_max_position_size_pct: float = 50.0
+    default_max_position_size_pct: float = 30.0
 
     # AI
     ai_provider: str = AI_PROVIDER_ANTHROPIC

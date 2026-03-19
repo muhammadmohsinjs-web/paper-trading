@@ -79,8 +79,11 @@ class StrategyResponse(BaseModel):
     stop_loss_pct: float = 3.0
     max_drawdown_pct: float = 15.0
     risk_per_trade_pct: float = 2.0
-    max_position_size_pct: float = 50.0
+    max_position_size_pct: float = 30.0
     candle_interval: str = "1h"
+    consecutive_losses: int = 0
+    max_consecutive_losses: int = 0
+    streak_size_multiplier: float = 1.0
     created_at: datetime
     updated_at: datetime
 

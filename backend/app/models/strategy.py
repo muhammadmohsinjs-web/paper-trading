@@ -44,8 +44,11 @@ class Strategy(UUIDPrimaryKeyMixin, CreatedAtMixin, UpdatedAtMixin, Base):
     stop_loss_pct: Mapped[Decimal] = mapped_column(Numeric(6, 3), nullable=False, default=Decimal("3.0"))
     max_drawdown_pct: Mapped[Decimal] = mapped_column(Numeric(6, 3), nullable=False, default=Decimal("15.0"))
     risk_per_trade_pct: Mapped[Decimal] = mapped_column(Numeric(6, 3), nullable=False, default=Decimal("2.0"))
-    max_position_size_pct: Mapped[Decimal] = mapped_column(Numeric(6, 3), nullable=False, default=Decimal("50.0"))
+    max_position_size_pct: Mapped[Decimal] = mapped_column(Numeric(6, 3), nullable=False, default=Decimal("30.0"))
     candle_interval: Mapped[str] = mapped_column(String(8), nullable=False, default="1h")
+    consecutive_losses: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_consecutive_losses: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    streak_size_multiplier: Mapped[Decimal] = mapped_column(Numeric(6, 3), nullable=False, default=Decimal("1.0"))
 
     wallet = relationship(
         "Wallet",
