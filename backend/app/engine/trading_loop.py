@@ -515,6 +515,8 @@ async def run_single_cycle(
         if strategy_type == "hybrid_composite":
             ai_result: AIDecisionResult | None = None
             flat_metrics: dict[str, float] | None = None
+            # Pre-compute composite score WITHOUT AI so we can pass it to the AI
+            pre_composite = compute_composite_score(indicators, config=config, ai_vote_value=None)
             if ai_config["ai_enabled"]:
                 flat_metrics = analyze_flat_market(
                     closes,
@@ -546,6 +548,14 @@ async def run_single_cycle(
                         ai_temperature=ai_config["ai_temperature"],
                         flat_market_metrics=flat_metrics or {
                             "threshold_pct": ai_config["flat_market_threshold_pct"]
+                        },
+                        algorithmic_signal={
+                            "composite_score": round(pre_composite.composite_score, 4),
+                            "confidence": round(pre_composite.confidence, 4),
+                            "signal": pre_composite.signal,
+                            "direction": pre_composite.direction,
+                            "votes": {k: round(v, 4) for k, v in pre_composite.votes.items()},
+                            "dampening_multiplier": pre_composite.dampening_multiplier,
                         },
                     )
                     ai_result = await evaluate_ai_decision(
@@ -684,6 +694,23 @@ async def run_single_cycle(
                     "symbol": symbol,
                     "strategy_id": strategy_id,
                     "decision_source": "hybrid_exit",
+                    "composite": _serialize_composite_result(composite_result),
+                }
+
+            # ── Conflict gate: AI and algorithm must agree to trade ──
+            ai_action = (ai_result.action or "HOLD").upper() if ai_result else "HOLD"
+            algo_direction = pre_composite.direction  # computed WITHOUT AI vote
+            if ai_action != "HOLD" and algo_direction != "HOLD" and ai_action != algo_direction:
+                return {
+                    "status": "hold",
+                    "reason": (
+                        f"AI/algorithm conflict: AI says {ai_action} but "
+                        f"algorithm says {algo_direction} (score={pre_composite.composite_score:.3f}). "
+                        f"No trade executed."
+                    ),
+                    "symbol": symbol,
+                    "strategy_id": strategy_id,
+                    "decision_source": "conflict_gate",
                     "composite": _serialize_composite_result(composite_result),
                 }
 
@@ -835,7 +862,7 @@ async def run_single_cycle(
                 "composite": _serialize_composite_result(composite_result),
             }
 
-        if ai_config["ai_enabled"]:
+        if ai_config["ai_enabled"] and strategy_type != "hybrid_composite":
             _, flat_metrics = analyze_flat_market(closes, ai_config["flat_market_threshold_pct"])
             cooldown_remaining = _cooldown_remaining(strategy, ai_config["ai_cooldown_seconds"])
             if cooldown_remaining > 0 and not force:
@@ -1083,6 +1110,8 @@ async def take_equity_snapshot(strategy_id: str, symbol: str = "BTCUSDT") -> Non
 
 async def strategy_loop(strategy_id: str, interval_seconds: int = 3600) -> None:
     """Continuous trading loop for a single strategy."""
+    # Ensure loop never runs faster than the smallest candle interval (1m = 60s)
+    interval_seconds = max(interval_seconds, 60)
     symbol = "BTCUSDT"
     cycle = 0
 

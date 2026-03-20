@@ -21,7 +21,7 @@ class AICallLog(UUIDPrimaryKeyMixin, Base):
         index=True,
     )
     symbol: Mapped[str] = mapped_column(String(24), nullable=False, default="BTCUSDT")
-    status: Mapped[str] = mapped_column(String(32), nullable=False)  # success, skipped, error
+    status: Mapped[str] = mapped_column(String(32), nullable=False)  # signal, hold, skipped, error
     skip_reason: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # flat_market, cooldown, missing_api_key
     action: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)  # buy, sell, hold
     confidence: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 3), nullable=True)

@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -29,6 +30,34 @@ from app.engine.executor import TradeSignal
 from app.models.enums import TradeSide
 
 logger = logging.getLogger(__name__)
+
+# ANSI color codes for terminal log formatting
+_CYAN = "\033[96m"
+_GREEN = "\033[92m"
+_YELLOW = "\033[93m"
+_MAGENTA = "\033[95m"
+_BOLD = "\033[1m"
+_DIM = "\033[2m"
+_RESET = "\033[0m"
+
+
+def _log_ai_prompt(provider: str, model: str, system_prompt: str, symbol: str) -> None:
+    print(
+        f"\n{_BOLD}{_CYAN}══════════ AI CALL [{provider.upper()}] {model} @ {symbol} ══════════{_RESET}\n"
+        f"{_BOLD}{_YELLOW}📋 SYSTEM PROMPT:{_RESET}\n"
+        f"{_DIM}{system_prompt}{_RESET}\n",
+        flush=True,
+    )
+
+
+def _log_ai_response(provider: str, raw_text: str, symbol: str) -> None:
+    print(
+        f"\n{_BOLD}{_GREEN}── AI RESPONSE [{provider.upper()}] {symbol} ──{_RESET}\n"
+        f"{_BOLD}{_MAGENTA}💬 OUTPUT:{_RESET}\n"
+        f"{_DIM}{raw_text}{_RESET}\n"
+        f"{_BOLD}{_CYAN}══════════════════════════════════════════{_RESET}\n",
+        flush=True,
+    )
 
 SETTINGS = get_settings()
 AI_CALL_SEMAPHORE = asyncio.Semaphore(max(1, SETTINGS.ai_concurrent_calls))
@@ -108,10 +137,16 @@ def _system_prompt(strategy_key: str) -> str:
         "You must answer with a single JSON object with these fields:\n"
         '{ "action": "BUY|SELL|HOLD", "quantity_pct": 0.0, "reason": "short rationale", "confidence": 0.0 }\n'
         "Rules:\n"
-        "- Use BUY only when the edge is clear and position sizing is justified.\n"
+        "- Make your decision independently based on the market data provided.\n"
+        "- Base your analysis ONLY on the actual numeric values in the data. Do not infer or assume trends not visible in the numbers.\n"
+        "- RSI reference: < 30 is oversold, 30-40 is approaching oversold, 40-60 is NEUTRAL, 60-70 is approaching overbought, > 70 is overbought.\n"
+        "- For moving average crossovers, compare the LAST values: if short MA > long MA the trend is bullish, if short MA < long MA the trend is bearish.\n"
+        "- Volume ratio < 0.5 means extremely low volume — low conviction environment.\n"
+        "- Use BUY only when you see a clear edge with supporting evidence from multiple data points.\n"
         "- Use SELL only when there is an open position and the setup is bearish.\n"
-        "- Use HOLD when the market is not attractive or the setup is flat.\n"
+        "- Use HOLD when signals are mixed, unclear, or volume is too low to trust.\n"
         "- quantity_pct must be between 0 and 1.\n"
+        "- confidence must honestly reflect the strength of evidence (mixed signals = low confidence).\n"
         "- Do not wrap the JSON in markdown or add extra commentary."
     )
 
@@ -351,6 +386,7 @@ def build_ai_context(
     ai_max_tokens: int,
     ai_temperature: Decimal,
     flat_market_metrics: dict[str, float],
+    algorithmic_signal: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     indicator_snapshot: dict[str, Any] = {}
     for key, value in indicators.items():
@@ -393,6 +429,7 @@ def build_ai_context(
             "flat_market_metrics": flat_market_metrics,
         },
         "indicators": indicator_snapshot,
+        **({"algorithmic_signal": algorithmic_signal} if algorithmic_signal else {}),
         "portfolio": {
             "available_usdt": float(wallet_available_usdt),
             "has_position": has_position,
@@ -547,6 +584,10 @@ async def evaluate_ai_decision(
             for attempt in range(2):
                 try:
                     prompt = system_prompt if attempt == 0 else f"{system_prompt}\nPrevious response was invalid. Return only strict JSON."
+                    _symbol = str(context.get("market", {}).get("symbol") or "BTCUSDT")
+                    _log_ai_prompt(provider, model, prompt, _symbol)
+                    print(f"{_BOLD}{_YELLOW}⏳ Waiting for {provider.upper()} response...{_RESET}", flush=True)
+                    t0 = time.monotonic()
                     if provider == AI_PROVIDER_OPENAI:
                         response_json = await _call_openai(
                             client=client,
@@ -567,6 +608,9 @@ async def evaluate_ai_decision(
                             user_message=user_message,
                         )
                         raw_text = _extract_anthropic_text(response_json)
+                    elapsed = time.monotonic() - t0
+                    print(f"{_BOLD}{_GREEN}✅ Response received in {elapsed:.2f}s{_RESET}", flush=True)
+                    _log_ai_response(provider, raw_text or "(empty)", _symbol)
                     if not raw_text:
                         raise ValueError(f"{provider_label} response did not contain text content")
                     last_usage = _usage_from_response(response_json, provider)

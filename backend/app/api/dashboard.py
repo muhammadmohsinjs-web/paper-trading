@@ -27,10 +27,14 @@ async def get_dashboard(session: AsyncSession = Depends(get_db_session)):
 
     # Get actual API call counts from logs table (excludes skipped/cooldown)
     actual_calls = (await session.execute(
-        select(func.count()).select_from(AICallLog).where(AICallLog.status == "success")
+        select(func.count()).select_from(AICallLog).where(
+            AICallLog.status.in_(["success", "signal", "hold"])
+        )
     )).scalar() or 0
     total_log_cost = (await session.execute(
-        select(func.sum(AICallLog.cost_usdt)).where(AICallLog.status == "success")
+        select(func.sum(AICallLog.cost_usdt)).where(
+            AICallLog.status.in_(["success", "signal", "hold"])
+        )
     )).scalar()
     ai_total_cost_usdt = round(float(total_log_cost or 0), 8)
 

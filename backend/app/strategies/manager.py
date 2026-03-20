@@ -8,7 +8,7 @@ import logging
 from sqlalchemy import select
 
 from app.database import SessionLocal
-from app.engine.trading_loop import strategy_loop
+from app.engine.trading_loop import INTERVAL_TO_SECONDS, strategy_loop
 from app.models.strategy import Strategy
 
 logger = logging.getLogger(__name__)
@@ -70,7 +70,10 @@ class StrategyManager:
             )
             strategies = result.scalars().all()
             for s in strategies:
-                interval = (s.config_json or {}).get("interval_seconds", 3600)
+                candle_seconds = INTERVAL_TO_SECONDS.get(s.candle_interval or "1h", 3600)
+                config_interval = (s.config_json or {}).get("interval_seconds", candle_seconds)
+                # Never loop faster than the candle interval — no new data arrives sooner
+                interval = max(config_interval, candle_seconds)
                 started = await self.start_strategy(s.id, interval)
                 if started:
                     count += 1

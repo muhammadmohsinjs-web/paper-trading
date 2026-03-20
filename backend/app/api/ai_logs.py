@@ -86,7 +86,9 @@ async def ai_log_stats(
 ) -> dict:
     total = (await session.execute(select(func.count()).select_from(AICallLog))).scalar() or 0
     success = (await session.execute(
-        select(func.count()).select_from(AICallLog).where(AICallLog.status == "success")
+        select(func.count()).select_from(AICallLog).where(
+            AICallLog.status.in_(["success", "signal", "hold"])
+        )
     )).scalar() or 0
     skipped = (await session.execute(
         select(func.count()).select_from(AICallLog).where(AICallLog.status == "skipped")
