@@ -8,6 +8,7 @@ import {
   type UTCTimestamp,
   createChart
 } from "lightweight-charts";
+import { toEquitySeries } from "@/lib/chart";
 import type { Candle, EquityPoint, Trade } from "@/lib/types";
 
 type PriceChartProps = {
@@ -81,12 +82,7 @@ export function PriceChart({
         topColor: "rgba(243, 201, 107, 0.28)",
         bottomColor: "rgba(243, 201, 107, 0.02)"
       });
-      series.setData(
-        equity.map((point) => ({
-          time: Math.floor(new Date(point.timestamp).getTime() / 1000) as UTCTimestamp,
-          value: point.total_equity_usdt
-        }))
-      );
+      series.setData(toEquitySeries(equity));
     }
 
     chart.timeScale().fitContent();

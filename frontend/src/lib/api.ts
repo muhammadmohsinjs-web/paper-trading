@@ -1,6 +1,8 @@
 import { apiBaseUrl } from "@/lib/env";
 import { logApiRequest } from "@/lib/api-logger";
 import type {
+  AILogResponse,
+  AILogStats,
   CandleResponse,
   DashboardResponse,
   EngineStatus,
@@ -8,6 +10,7 @@ import type {
   LeaderboardEntry,
   ManualExecutionResponse,
   MarketPrice,
+  OpenAIUsageResponse,
   Position,
   SignalData,
   StrategyWithStats,
@@ -163,4 +166,22 @@ export function aiPreview(strategyId: string) {
     `/engine/strategies/${strategyId}/ai-preview`,
     { method: "POST" }
   );
+}
+
+export function getAILogs(params?: { strategy_id?: string; status?: string; limit?: number; offset?: number }) {
+  const query = new URLSearchParams();
+  if (params?.strategy_id) query.set("strategy_id", params.strategy_id);
+  if (params?.status) query.set("status", params.status);
+  if (params?.limit) query.set("limit", String(params.limit));
+  if (params?.offset) query.set("offset", String(params.offset));
+  const qs = query.toString();
+  return request<AILogResponse>(`/ai-logs${qs ? `?${qs}` : ""}`);
+}
+
+export function getAILogStats() {
+  return request<AILogStats>("/ai-logs/stats");
+}
+
+export function getOpenAIUsage(days = 7) {
+  return request<OpenAIUsageResponse>(`/ai-logs/openai-usage?days=${days}`);
 }

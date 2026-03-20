@@ -171,15 +171,47 @@ def _quantize_cost(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.00000001"))
 
 
-def _estimate_cost(provider: str, prompt_tokens: int, completion_tokens: int) -> Decimal:
-    normalized_provider = normalize_ai_provider(provider)
-    if normalized_provider == AI_PROVIDER_OPENAI:
-        input_rate = SETTINGS.openai_input_cost_per_1m_tokens_usd
-        output_rate = SETTINGS.openai_output_cost_per_1m_tokens_usd
-    else:
-        input_rate = SETTINGS.ai_input_cost_per_1m_tokens_usd
-        output_rate = SETTINGS.ai_output_cost_per_1m_tokens_usd
+# Per-model pricing: (input_cost_per_1m, output_cost_per_1m)
+# These are used when the model name from the API response matches a key.
+MODEL_PRICING: dict[str, tuple[float, float]] = {
+    # OpenAI GPT-5.4 family
+    "gpt-5.4": (2.50, 15.00),
+    "gpt-5.4-mini": (0.75, 4.50),
+    "gpt-5.4-nano": (0.20, 1.25),
+    "gpt-5.4-pro": (30.00, 180.00),
+    # OpenAI GPT-4o family
+    "gpt-4o": (2.50, 10.00),
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4.1": (2.00, 8.00),
+    "gpt-4.1-mini": (0.40, 1.60),
+    "gpt-4.1-nano": (0.10, 0.40),
+    # Anthropic Claude family
+    "claude-opus-4-6": (15.00, 75.00),
+    "claude-sonnet-4-6": (3.00, 15.00),
+    "claude-3-5-sonnet-20240620": (3.00, 15.00),
+    "claude-3-5-sonnet-latest": (3.00, 15.00),
+    "claude-3-haiku-20240307": (0.25, 1.25),
+    "claude-haiku-4-5-20251001": (1.00, 5.00),
+}
 
+
+def _get_model_pricing(model: str, provider: str) -> tuple[float, float]:
+    """Look up per-model pricing. Falls back to provider-level config rates."""
+    if model in MODEL_PRICING:
+        return MODEL_PRICING[model]
+    # Try prefix matching (e.g. "gpt-5.4-mini-2026-03-01" -> "gpt-5.4-mini")
+    for key in sorted(MODEL_PRICING, key=len, reverse=True):
+        if model.startswith(key):
+            return MODEL_PRICING[key]
+    # Fallback to config-level rates
+    normalized = normalize_ai_provider(provider)
+    if normalized == AI_PROVIDER_OPENAI:
+        return (SETTINGS.openai_input_cost_per_1m_tokens_usd, SETTINGS.openai_output_cost_per_1m_tokens_usd)
+    return (SETTINGS.ai_input_cost_per_1m_tokens_usd, SETTINGS.ai_output_cost_per_1m_tokens_usd)
+
+
+def _estimate_cost(provider: str, prompt_tokens: int, completion_tokens: int, model: str = "") -> Decimal:
+    input_rate, output_rate = _get_model_pricing(model, provider)
     prompt_cost = Decimal(prompt_tokens) * Decimal(str(input_rate)) / Decimal("1000000")
     completion_cost = Decimal(completion_tokens) * Decimal(str(output_rate)) / Decimal("1000000")
     return _quantize_cost(prompt_cost + completion_cost)
@@ -204,7 +236,7 @@ def _usage_from_response(response_json: dict[str, Any], provider: str) -> AIUsag
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         total_tokens=total_tokens,
-        estimated_cost_usdt=_estimate_cost(normalized_provider, prompt_tokens, completion_tokens),
+        estimated_cost_usdt=_estimate_cost(normalized_provider, prompt_tokens, completion_tokens, model),
     )
 
 

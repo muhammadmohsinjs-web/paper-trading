@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { ColorType, createChart, type UTCTimestamp } from "lightweight-charts";
+import { ColorType, createChart } from "lightweight-charts";
 
+import { toEquitySeries } from "@/lib/chart";
 import type { EquityPoint } from "@/lib/types";
 
 type EquityChartProps = {
@@ -43,12 +44,7 @@ export function EquityChart({ points, comparePoints, compareLabel }: EquityChart
       bottomColor: "rgba(184, 255, 103, 0.04)"
     });
 
-    primary.setData(
-      points.map((point) => ({
-        time: Math.floor(new Date(point.timestamp).getTime() / 1000),
-        value: point.total_equity_usdt
-      })) as Array<{ time: UTCTimestamp; value: number }>
-    );
+    primary.setData(toEquitySeries(points));
 
     if (comparePoints?.length) {
       const secondary = chart.addLineSeries({
@@ -56,12 +52,7 @@ export function EquityChart({ points, comparePoints, compareLabel }: EquityChart
         lineWidth: 2,
         title: compareLabel
       });
-      secondary.setData(
-        comparePoints.map((point) => ({
-          time: Math.floor(new Date(point.timestamp).getTime() / 1000),
-          value: point.total_equity_usdt
-        })) as Array<{ time: UTCTimestamp; value: number }>
-      );
+      secondary.setData(toEquitySeries(comparePoints));
     }
 
     chart.timeScale().fitContent();

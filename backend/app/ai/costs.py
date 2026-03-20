@@ -3,6 +3,8 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
+from app.engine.ai_runtime import MODEL_PRICING, _get_model_pricing
+
 
 def estimate_cost(
     *,
@@ -15,17 +17,23 @@ def estimate_cost(
     model: str | None = None,
     strategy_id: str | None = None,
 ) -> Decimal:
-    """Estimate Anthropic token cost in USD/USDT-equivalent."""
-    del model, strategy_id
+    """Estimate token cost in USD/USDT-equivalent using model-based pricing."""
+    del strategy_id
 
     if response is not None:
         usage = getattr(response, "usage", usage)
         input_tokens = int(getattr(response, "input_tokens", input_tokens) or input_tokens)
         output_tokens = int(getattr(response, "output_tokens", output_tokens) or output_tokens)
+        if model is None:
+            model = getattr(response, "model", None)
 
     if usage is not None:
         input_tokens = int(getattr(usage, "input_tokens", input_tokens) or input_tokens)
         output_tokens = int(getattr(usage, "output_tokens", output_tokens) or output_tokens)
+
+    # Use model-based pricing if model is known
+    if model and model in MODEL_PRICING:
+        input_cost_per_1m_tokens_usd, output_cost_per_1m_tokens_usd = MODEL_PRICING[model]
 
     input_cost = (
         Decimal(input_tokens) * Decimal(str(input_cost_per_1m_tokens_usd)) / Decimal("1000000")

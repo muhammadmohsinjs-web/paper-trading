@@ -226,6 +226,63 @@ export type SignalData = {
   };
 };
 
+export type AILogEntry = {
+  id: string;
+  strategy_id: string;
+  strategy_name: string;
+  symbol: string;
+  status: string;
+  skip_reason: string | null;
+  action: string | null;
+  confidence: number | null;
+  reasoning: string | null;
+  error: string | null;
+  provider: string | null;
+  model: string | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cost_usdt: number;
+  created_at: string;
+};
+
+export type AILogResponse = {
+  total: number;
+  offset: number;
+  limit: number;
+  logs: AILogEntry[];
+};
+
+export type AILogStats = {
+  total_calls: number;
+  success: number;
+  skipped: number;
+  errors: number;
+  total_cost_usdt: number;
+  total_tokens: number;
+};
+
+export type OpenAIUsageResponse = {
+  configured: boolean;
+  error?: string;
+  days?: number;
+  filtered?: boolean;
+  api_key_id?: string;
+  project_id?: string;
+  costs?: {
+    total_usd: number;
+    daily: { date: string; cost_usd: number }[];
+  };
+  costs_error?: string;
+  usage?: {
+    total_input_tokens: number;
+    total_output_tokens: number;
+    total_requests: number;
+    by_model: Record<string, { input_tokens: number; output_tokens: number; requests: number }>;
+  };
+  usage_error?: string;
+};
+
 export type LiveEvent = {
   type?: string;
   event?: string;

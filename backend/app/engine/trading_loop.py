@@ -26,6 +26,7 @@ from app.engine.ai_runtime import (
 from app.engine.exit_manager import evaluate_exit
 from app.engine.position_sizer import calculate_position_size, streak_multiplier_for_losses
 from app.engine.wallet_manager import get_or_create_wallet, get_position
+from app.models.ai_call_log import AICallLog
 from app.market.data_store import DataStore
 from app.market.indicators import compute_indicators
 from app.models.snapshot import Snapshot
@@ -241,6 +242,42 @@ def _touch_ai_metrics(strategy: Strategy, decision: AIDecisionResult) -> None:
     strategy.ai_total_completion_tokens += usage.completion_tokens
     strategy.ai_total_tokens += usage.total_tokens
     strategy.ai_total_cost_usdt += usage.estimated_cost_usdt
+
+
+def _build_ai_log(
+    strategy_id: str,
+    symbol: str,
+    decision: AIDecisionResult | None = None,
+    *,
+    status: str | None = None,
+    skip_reason: str | None = None,
+    reason: str | None = None,
+) -> AICallLog:
+    if decision is not None:
+        usage = decision.usage
+        return AICallLog(
+            strategy_id=strategy_id,
+            symbol=symbol,
+            status=decision.status,
+            skip_reason=decision.skip_reason,
+            action=decision.signal,
+            confidence=Decimal(str(decision.confidence)) if decision.confidence is not None else None,
+            reasoning=decision.reason or decision.raw_response,
+            error=decision.error,
+            provider=usage.provider if usage else None,
+            model=usage.model if usage else None,
+            prompt_tokens=usage.prompt_tokens if usage else 0,
+            completion_tokens=usage.completion_tokens if usage else 0,
+            total_tokens=usage.total_tokens if usage else 0,
+            cost_usdt=usage.estimated_cost_usdt if usage else Decimal("0"),
+        )
+    return AICallLog(
+        strategy_id=strategy_id,
+        symbol=symbol,
+        status=status or "skipped",
+        skip_reason=skip_reason,
+        reasoning=reason,
+    )
 
 
 INTERVAL_TO_SECONDS: dict[str, int] = {
@@ -523,6 +560,14 @@ async def run_single_cycle(
                             _touch_ai_metrics(strategy, ai_result)
                     else:
                         _touch_ai_metrics(strategy, ai_result)
+                    session.add(_build_ai_log(strategy.id, symbol, ai_result))
+                    await session.commit()
+                else:
+                    session.add(_build_ai_log(
+                        strategy.id, symbol,
+                        status="skipped", skip_reason="cooldown",
+                        reason=f"AI cooldown active ({cooldown_remaining}s remaining)",
+                    ))
                     await session.commit()
 
             composite_result = compute_composite_score(
@@ -794,6 +839,12 @@ async def run_single_cycle(
             _, flat_metrics = analyze_flat_market(closes, ai_config["flat_market_threshold_pct"])
             cooldown_remaining = _cooldown_remaining(strategy, ai_config["ai_cooldown_seconds"])
             if cooldown_remaining > 0 and not force:
+                session.add(_build_ai_log(
+                    strategy.id, symbol,
+                    status="skipped", skip_reason="cooldown",
+                    reason=f"AI cooldown active ({cooldown_remaining}s remaining)",
+                ))
+                await session.commit()
                 return {
                     "status": "skipped",
                     "reason": "AI cooldown active",
@@ -838,6 +889,7 @@ async def run_single_cycle(
                 strategy.ai_last_reasoning = ai_result.reason or ai_result.error
                 if ai_result.usage is not None:
                     _touch_ai_metrics(strategy, ai_result)
+                session.add(_build_ai_log(strategy.id, symbol, ai_result))
                 await session.commit()
                 return {
                     "status": "hold" if ai_result.status == "error" else ai_result.status,
@@ -852,6 +904,7 @@ async def run_single_cycle(
                 }
 
             _touch_ai_metrics(strategy, ai_result)
+            session.add(_build_ai_log(strategy.id, symbol, ai_result))
 
             if ai_result.signal is None:
                 await session.commit()

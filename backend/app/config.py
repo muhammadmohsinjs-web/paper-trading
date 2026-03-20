@@ -90,8 +90,9 @@ class Settings:
     anthropic_base_url: str = "https://api.anthropic.com"
     anthropic_model: str = "claude-3-5-sonnet-20240620"
     openai_api_key: str = ""
+    openai_admin_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
-    openai_model: str = "gpt-4o-mini"
+    openai_model: str = "gpt-5.4-mini"
     ai_concurrent_calls: int = 3
     ai_timeout_seconds: int = 45
     ai_min_cooldown_seconds: int = 60
@@ -100,8 +101,8 @@ class Settings:
     ai_temperature: float = 0.2
     ai_input_cost_per_1m_tokens_usd: float = 3.0
     ai_output_cost_per_1m_tokens_usd: float = 15.0
-    openai_input_cost_per_1m_tokens_usd: float = 0.0
-    openai_output_cost_per_1m_tokens_usd: float = 0.0
+    openai_input_cost_per_1m_tokens_usd: float = 0.75
+    openai_output_cost_per_1m_tokens_usd: float = 4.50
 
     # Server
     host: str = "0.0.0.0"
@@ -158,6 +159,7 @@ class Settings:
             anthropic_base_url=_get_value("ANTHROPIC_BASE_URL", default=cls.anthropic_base_url),
             anthropic_model=_get_value("ANTHROPIC_MODEL", default=cls.anthropic_model),
             openai_api_key=_get_value("OPENAI_API_KEY", default=cls.openai_api_key),
+            openai_admin_key=_get_value("OPENAI_ADMIN_KEY", "OPENAI_ADMIN_API_KEY", default=cls.openai_admin_key),
             openai_base_url=_get_value("OPENAI_BASE_URL", default=cls.openai_base_url),
             openai_model=_get_value("OPENAI_MODEL", default=cls.openai_model),
             ai_concurrent_calls=int(_get_value("AI_CONCURRENT_CALLS", default=str(cls.ai_concurrent_calls))),

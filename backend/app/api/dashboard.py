@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db_session
+from app.models.ai_call_log import AICallLog
 from app.models.snapshot import Snapshot
 from app.models.strategy import Strategy
 from app.schemas.dashboard import DashboardResponse, EquityPoint, LeaderboardEntry
@@ -23,15 +24,22 @@ async def get_dashboard(session: AsyncSession = Depends(get_db_session)):
     stats_list = [await _build_stats(session, s) for s in strategies]
     active = sum(1 for s in stats_list if s.is_active)
     ai_enabled = sum(1 for s in stats_list if s.ai_enabled)
-    ai_total_calls = sum(s.ai_total_calls for s in stats_list)
-    ai_total_cost_usdt = round(sum(s.ai_total_cost_usdt for s in stats_list), 8)
+
+    # Get actual API call counts from logs table (excludes skipped/cooldown)
+    actual_calls = (await session.execute(
+        select(func.count()).select_from(AICallLog).where(AICallLog.status == "success")
+    )).scalar() or 0
+    total_log_cost = (await session.execute(
+        select(func.sum(AICallLog.cost_usdt)).where(AICallLog.status == "success")
+    )).scalar()
+    ai_total_cost_usdt = round(float(total_log_cost or 0), 8)
 
     return DashboardResponse(
         strategies=stats_list,
         total_strategies=len(stats_list),
         active_strategies=active,
         ai_enabled_strategies=ai_enabled,
-        ai_total_calls=ai_total_calls,
+        ai_total_calls=actual_calls,
         ai_total_cost_usdt=ai_total_cost_usdt,
     )
 

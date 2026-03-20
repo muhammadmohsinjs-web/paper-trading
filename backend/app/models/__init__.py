@@ -1,5 +1,6 @@
 """ORM models for the paper-trading backend."""
 
+from app.models.ai_call_log import AICallLog
 from app.models.base import Base
 from app.models.position import Position
 from app.models.price_cache import PriceCache
@@ -9,6 +10,7 @@ from app.models.trade import Trade
 from app.models.wallet import Wallet
 
 __all__ = [
+    "AICallLog",
     "Base",
     "Position",
     "PriceCache",
