@@ -89,3 +89,82 @@ def test_compute_composite_score_respects_configured_ai_disabled_weights():
     assert result.weights["rsi"] == 0.27
     assert result.weights["macd"] == 0.27
     assert result.signal == "SELL"
+
+
+def test_all_bullish_maximum_score():
+    indicators = {
+        "rsi": [15.0],
+        "macd": ([0.1, 0.5], [0.2, 0.4], [-0.1, 0.1]),
+        "sma_short": [99.0, 102.0],
+        "sma_long": [100.0, 100.5],
+        "ema_12": [100.0, 103.0],
+        "ema_26": [99.0, 101.0],
+        "volume_ratio": [2.0],
+        "latest_close": 105.0,
+        "previous_close": 100.0,
+    }
+    result = compute_composite_score(
+        indicators,
+        config={"confidence_gate": 0.1},
+        ai_vote_value=1.0,
+    )
+    assert result.composite_score > 0.5
+    assert result.signal == "BUY"
+
+
+def test_all_bearish_minimum_score():
+    indicators = {
+        "rsi": [85.0],
+        "macd": ([0.5, -0.1], [0.4, 0.0], [0.1, -0.1]),
+        "sma_short": [101.0, 98.0],
+        "sma_long": [100.0, 100.5],
+        "ema_12": [100.0, 97.0],
+        "ema_26": [99.0, 99.0],
+        "volume_ratio": [2.0],
+        "latest_close": 95.0,
+        "previous_close": 100.0,
+    }
+    result = compute_composite_score(
+        indicators,
+        config={"confidence_gate": 0.1},
+        ai_vote_value=-1.0,
+    )
+    assert result.composite_score < -0.5
+    assert result.signal == "SELL"
+
+
+def test_mixed_signals_hold():
+    indicators = {
+        "rsi": [50.0],
+        "macd": ([0.3, 0.5], [0.1, 0.2], [0.2, 0.3]),
+        "sma_short": [101.0, 98.0],
+        "sma_long": [100.0, 100.5],
+        "ema_12": [100.0, 100.0],
+        "ema_26": [100.0, 100.0],
+        "volume_ratio": [1.0],
+        "latest_close": 100.0,
+        "previous_close": 100.0,
+    }
+    result = compute_composite_score(indicators, config={"confidence_gate": 0.5})
+    assert result.signal == "HOLD"
+
+
+def test_dampening_with_low_volume():
+    indicators = {
+        "rsi": [15.0],
+        "macd": ([0.1, 0.5], [0.2, 0.4], [-0.1, 0.1]),
+        "sma_short": [99.0, 102.0],
+        "sma_long": [100.0, 100.5],
+        "ema_12": [100.0, 103.0],
+        "ema_26": [99.0, 101.0],
+        "volume_ratio": [0.3],
+        "latest_close": 105.0,
+        "previous_close": 100.0,
+    }
+    result = compute_composite_score(indicators)
+    assert result.dampening_multiplier == 0.5
+
+
+def test_ai_vote_with_complete_inputs():
+    vote = compute_ai_vote(1.0, 0.9, 0.8)
+    assert abs(vote - 0.72) < 0.001

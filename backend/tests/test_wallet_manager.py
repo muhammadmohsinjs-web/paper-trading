@@ -79,3 +79,51 @@ async def test_open_and_close_position(db_session: AsyncSession):
 
     await close_position(db_session, position)
     assert await get_position(db_session, "test-1", "BTCUSDT") is None
+
+
+@pytest.mark.asyncio
+async def test_equity_equals_cash_plus_position(db_session: AsyncSession):
+    """Equity = available USDT + position_qty * market_price."""
+    from app.engine.trading_loop import _compute_equity
+    from types import SimpleNamespace
+
+    wallet = await get_or_create_wallet(db_session, "test-1", Decimal("5000"))
+    position = await open_position(
+        db_session, "test-1", "BTCUSDT",
+        Decimal("0.1"), Decimal("50000"), Decimal("5"),
+    )
+    equity = _compute_equity(wallet, position, Decimal("60000"))
+    # 5000 + 0.1 * 60000 = 11000
+    assert equity == Decimal("5000") + Decimal("0.1") * Decimal("60000")
+
+
+@pytest.mark.asyncio
+async def test_multi_strategy_wallet_isolation(db_session: AsyncSession):
+    """Each strategy has its own independent wallet."""
+    # Create second strategy
+    strategy2 = Strategy(id="test-2", name="Test 2", config_json={})
+    db_session.add(strategy2)
+    await db_session.commit()
+
+    wallet1 = await get_or_create_wallet(db_session, "test-1", Decimal("1000"))
+    wallet2 = await get_or_create_wallet(db_session, "test-2", Decimal("2000"))
+
+    assert wallet1.available_usdt == Decimal("1000")
+    assert wallet2.available_usdt == Decimal("2000")
+
+    await debit_wallet(db_session, wallet1, Decimal("500"))
+    assert wallet1.available_usdt == Decimal("500")
+    assert wallet2.available_usdt == Decimal("2000")  # Unchanged
+
+
+@pytest.mark.asyncio
+async def test_peak_equity_tracked(db_session: AsyncSession):
+    wallet = await get_or_create_wallet(db_session, "test-1", Decimal("1000"))
+    assert wallet.peak_equity_usdt == Decimal("1000")
+
+    # Simulate profit: credit increases balance
+    await credit_wallet(db_session, wallet, Decimal("500"))
+    # Manually update peak like trading loop does
+    if wallet.available_usdt > wallet.peak_equity_usdt:
+        wallet.peak_equity_usdt = wallet.available_usdt
+    assert wallet.peak_equity_usdt == Decimal("1500")

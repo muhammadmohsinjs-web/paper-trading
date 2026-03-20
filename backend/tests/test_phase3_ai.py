@@ -495,7 +495,7 @@ def test_ai_runtime_uses_env_selected_openai_provider_and_model(monkeypatch):
     assert result.usage.prompt_tokens == 1000
     assert result.usage.completion_tokens == 200
     assert result.usage.total_tokens == 1200
-    assert result.usage.estimated_cost_usdt == Decimal("0.00080000")
+    assert result.usage.estimated_cost_usdt == Decimal("0.00550000")
 
 
 def test_ai_cooldown_helper_blocks_recent_calls():

@@ -118,3 +118,75 @@ def test_compute_indicators_includes_volume_ratio():
     assert len(result["volume_ratio"]) == 11
     assert result["latest_close"] == closes[-1]
     assert result["previous_close"] == closes[-2]
+
+
+def test_sma_period_1():
+    closes = [10.0, 20.0, 30.0]
+    result = sma(closes, 1)
+    assert result == closes
+
+
+def test_sma_period_equals_data_length():
+    closes = [10.0, 20.0, 30.0, 40.0, 50.0]
+    result = sma(closes, 5)
+    assert len(result) == 1
+    assert abs(result[0] - 30.0) < 0.001
+
+
+def test_rsi_all_gains():
+    closes = [float(100 + i) for i in range(30)]
+    result = rsi(closes, 14)
+    assert len(result) > 0
+    assert result[-1] > 95.0
+
+
+def test_rsi_all_losses():
+    closes = [float(100 - i) for i in range(30)]
+    result = rsi(closes, 14)
+    assert len(result) > 0
+    assert result[-1] < 5.0
+
+
+def test_rsi_equal_gains_losses():
+    closes = []
+    for i in range(30):
+        closes.append(100.0 + (1 if i % 2 == 0 else -1))
+    result = rsi(closes, 14)
+    assert len(result) > 0
+    assert abs(result[-1] - 50.0) < 10.0
+
+
+def test_macd_constant_input():
+    closes = [100.0] * 50
+    macd_line, signal_line, histogram = macd(closes)
+    if macd_line:
+        assert abs(macd_line[-1]) < 0.001
+    if histogram:
+        assert abs(histogram[-1]) < 0.001
+
+
+def test_atr_constant_range():
+    n = 30
+    highs = [101.0] * n
+    lows = [99.0] * n
+    closes = [100.0] * n
+    result = atr(highs, lows, closes, period=14)
+    assert len(result) > 0
+    for v in result:
+        assert abs(v - result[0]) < 0.1
+
+
+def test_bollinger_constant_input():
+    closes = [100.0] * 25
+    upper, middle, lower = bollinger_bands(closes, period=20)
+    assert len(upper) > 0
+    assert abs(upper[-1] - middle[-1]) < 0.001
+    assert abs(lower[-1] - middle[-1]) < 0.001
+
+
+def test_compute_indicators_no_optional_data():
+    closes = [float(100 + i) for i in range(60)]
+    result = compute_indicators(closes)
+    assert "atr" not in result
+    assert "volume_sma" not in result
+    assert "volume_ratio" not in result
