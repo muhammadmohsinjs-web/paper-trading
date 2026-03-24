@@ -511,6 +511,44 @@ def test_ai_runtime_prefers_strategy_selected_openai_model(monkeypatch):
     assert result.usage.estimated_cost_usdt == Decimal("0.00550000")
 
 
+@pytest.mark.asyncio
+async def test_call_openai_omits_temperature_for_gpt5_models(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    class DummyResponse:
+        status_code = 200
+        text = "{}"
+
+        def json(self) -> dict[str, Any]:
+            return {"choices": [{"message": {"content": "{}"}}]}
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class DummyClient:
+        async def post(self, url: str, *, headers: dict[str, str], json: dict[str, Any]) -> DummyResponse:
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["json"] = json
+            return DummyResponse()
+
+    monkeypatch.setattr(ai_runtime, "SETTINGS", Settings(openai_api_key="test-key"))
+
+    await ai_runtime._call_openai(
+        client=DummyClient(),
+        model="gpt-5-mini",
+        max_tokens=700,
+        temperature=Decimal("0.2"),
+        system_prompt="system",
+        user_message="user",
+    )
+
+    assert captured["url"] == "/chat/completions"
+    assert captured["json"]["model"] == "gpt-5-mini"
+    assert captured["json"]["max_completion_tokens"] == 700
+    assert "temperature" not in captured["json"]
+
+
 def test_ai_cooldown_helper_blocks_recent_calls():
     """A second AI call inside the cooldown window should be skipped."""
     trading_loop = _optional_import("app.engine.trading_loop")

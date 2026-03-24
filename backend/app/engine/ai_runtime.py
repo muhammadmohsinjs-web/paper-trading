@@ -514,16 +514,18 @@ async def _call_openai(
     # "max_completion_tokens" instead of the legacy "max_tokens".
     _new_api_models = ("gpt-4o", "gpt-5", "o1", "o3", "o4")
     use_new_param = any(model.startswith(prefix) for prefix in _new_api_models)
+    uses_fixed_temperature = model.startswith("gpt-5")
     token_key = "max_completion_tokens" if use_new_param else "max_tokens"
     request_body = {
         "model": model,
         token_key: max_tokens,
-        "temperature": float(temperature),
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
         ],
     }
+    if not uses_fixed_temperature:
+        request_body["temperature"] = float(temperature)
     logger.info("openai request model=%s max_tokens=%d msg_len=%d", model, max_tokens, len(user_message))
     response = await client.post(
         "/chat/completions",

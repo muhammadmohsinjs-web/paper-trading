@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
+from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.api.ws import ConnectionManager
 from app.config import default_ai_model_for_provider, get_settings, normalize_ai_provider
@@ -35,6 +36,9 @@ from app.strategies.registry import get_strategy_class
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+_CYCLE_LOCK_TTL = timedelta(minutes=10)
+_cycle_lock_table_ready = False
+_cycle_lock_table_guard = asyncio.Lock()
 
 
 def _as_aware(value: datetime | None) -> datetime | None:
@@ -43,6 +47,92 @@ def _as_aware(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value
+
+
+async def _ensure_cycle_lock_table() -> None:
+    global _cycle_lock_table_ready
+
+    if _cycle_lock_table_ready:
+        return
+
+    async with _cycle_lock_table_guard:
+        if _cycle_lock_table_ready:
+            return
+
+        async with SessionLocal() as session:
+            await session.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS strategy_cycle_locks (
+                        strategy_id VARCHAR(36) PRIMARY KEY,
+                        owner_id VARCHAR(36) NOT NULL,
+                        acquired_at TEXT NOT NULL
+                    )
+                    """
+                )
+            )
+            await session.commit()
+        _cycle_lock_table_ready = True
+
+
+async def _acquire_cycle_db_lock(strategy_id: str) -> str | None:
+    await _ensure_cycle_lock_table()
+
+    owner_id = str(uuid4())
+    now = datetime.now(timezone.utc)
+    stale_before = now - _CYCLE_LOCK_TTL
+
+    async with SessionLocal() as session:
+        await session.execute(
+            text(
+                """
+                INSERT INTO strategy_cycle_locks (strategy_id, owner_id, acquired_at)
+                VALUES (:strategy_id, :owner_id, :acquired_at)
+                ON CONFLICT(strategy_id) DO UPDATE SET
+                    owner_id = excluded.owner_id,
+                    acquired_at = excluded.acquired_at
+                WHERE strategy_cycle_locks.acquired_at < :stale_before
+                """
+            ),
+            {
+                "strategy_id": strategy_id,
+                "owner_id": owner_id,
+                "acquired_at": now.isoformat(),
+                "stale_before": stale_before.isoformat(),
+            },
+        )
+        await session.commit()
+
+        current_owner = (
+            await session.execute(
+                text(
+                    """
+                    SELECT owner_id
+                    FROM strategy_cycle_locks
+                    WHERE strategy_id = :strategy_id
+                    """
+                ),
+                {"strategy_id": strategy_id},
+            )
+        ).scalar_one_or_none()
+    return owner_id if current_owner == owner_id else None
+
+
+async def _release_cycle_db_lock(strategy_id: str, owner_id: str) -> None:
+    await _ensure_cycle_lock_table()
+
+    async with SessionLocal() as session:
+        await session.execute(
+            text(
+                """
+                DELETE FROM strategy_cycle_locks
+                WHERE strategy_id = :strategy_id
+                  AND owner_id = :owner_id
+                """
+            ),
+            {"strategy_id": strategy_id, "owner_id": owner_id},
+        )
+        await session.commit()
 
 
 def _strategy_last_ai_at(strategy: Any) -> datetime | None:
@@ -427,7 +517,21 @@ async def run_single_cycle(
         }
 
     async with lock:
-        return await _run_single_cycle_locked(strategy_id, symbol, interval, force)
+        owner_id = await _acquire_cycle_db_lock(strategy_id)
+        if owner_id is None:
+            logger.debug("database cycle lock busy strategy_id=%s, skipping", strategy_id)
+            return {
+                "status": "skipped",
+                "reason": "Cycle already in progress in another worker",
+                "symbol": symbol,
+                "strategy_id": strategy_id,
+                "decision_source": "database_concurrency_guard",
+            }
+
+        try:
+            return await _run_single_cycle_locked(strategy_id, symbol, interval, force)
+        finally:
+            await _release_cycle_db_lock(strategy_id, owner_id)
 
 
 async def _run_single_cycle_locked(
