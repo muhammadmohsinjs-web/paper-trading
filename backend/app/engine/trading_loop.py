@@ -29,6 +29,7 @@ from app.engine.position_sizer import calculate_position_size, streak_multiplier
 from app.engine.wallet_manager import get_or_create_wallet, get_position
 from app.models.ai_call_log import AICallLog
 from app.market.data_store import DataStore
+from app.notifications.whatsapp import send_trade_notification
 from app.market.indicators import compute_indicators
 from app.models.snapshot import Snapshot
 from app.models.strategy import Strategy
@@ -453,7 +454,7 @@ async def _force_stop_loss_sell(
             strategy_id, symbol, market_price, position.stop_loss_price,
         )
         await session.commit()
-        await manager.broadcast({
+        _stop_loss_event = {
             "type": "trade_executed",
             "strategy_id": strategy_id,
             "action": "SELL",
@@ -464,7 +465,12 @@ async def _force_stop_loss_sell(
             "pnl": float(result.trade.pnl) if result.trade.pnl is not None else None,
             "reason": "stop_loss_triggered",
             "decision_source": "risk",
-        })
+            "cost_usdt": float(result.trade.cost_usdt) if result.trade.cost_usdt else None,
+            "wallet_balance_before": float(result.trade.wallet_balance_before) if result.trade.wallet_balance_before else None,
+            "strategy_name": strategy.name,
+        }
+        await manager.broadcast(_stop_loss_event)
+        asyncio.create_task(send_trade_notification(_stop_loss_event))
         await manager.broadcast({
             "type": "position_changed",
             "strategy_id": strategy_id,
@@ -805,20 +811,23 @@ async def _run_single_cycle_locked(
 
                         await session.commit()
                         refreshed_position = await get_position(session, strategy_id, symbol)
-                        await manager.broadcast(
-                            {
-                                "type": "trade_executed",
-                                "strategy_id": strategy_id,
-                                "action": "SELL",
-                                "symbol": symbol,
-                                "price": float(result.trade.price),
-                                "quantity": float(result.trade.quantity),
-                                "fee": float(result.trade.fee),
-                                "pnl": float(result.trade.pnl) if result.trade.pnl is not None else None,
-                                "reason": exit_decision.reason,
-                                "decision_source": "hybrid_exit",
-                            }
-                        )
+                        _exit_event = {
+                            "type": "trade_executed",
+                            "strategy_id": strategy_id,
+                            "action": "SELL",
+                            "symbol": symbol,
+                            "price": float(result.trade.price),
+                            "quantity": float(result.trade.quantity),
+                            "fee": float(result.trade.fee),
+                            "pnl": float(result.trade.pnl) if result.trade.pnl is not None else None,
+                            "reason": exit_decision.reason,
+                            "decision_source": "hybrid_exit",
+                            "cost_usdt": float(result.trade.cost_usdt) if result.trade.cost_usdt else None,
+                            "wallet_balance_before": float(result.trade.wallet_balance_before) if result.trade.wallet_balance_before else None,
+                            "strategy_name": strategy.name,
+                        }
+                        await manager.broadcast(_exit_event)
+                        asyncio.create_task(send_trade_notification(_exit_event))
                         await manager.broadcast(
                             {
                                 "type": "position_changed",
@@ -991,20 +1000,23 @@ async def _run_single_cycle_locked(
                     wallet.peak_equity_usdt = new_equity
                     await session.commit()
 
-                await manager.broadcast(
-                    {
-                        "type": "trade_executed",
-                        "strategy_id": strategy_id,
-                        "action": "BUY",
-                        "symbol": symbol,
-                        "price": float(result.trade.price),
-                        "quantity": float(result.trade.quantity),
-                        "fee": float(result.trade.fee),
-                        "pnl": None,
-                        "reason": result.trade.ai_reasoning,
-                        "decision_source": "hybrid_entry",
-                    }
-                )
+                _entry_event = {
+                    "type": "trade_executed",
+                    "strategy_id": strategy_id,
+                    "action": "BUY",
+                    "symbol": symbol,
+                    "price": float(result.trade.price),
+                    "quantity": float(result.trade.quantity),
+                    "fee": float(result.trade.fee),
+                    "pnl": None,
+                    "reason": result.trade.ai_reasoning,
+                    "decision_source": "hybrid_entry",
+                    "cost_usdt": float(result.trade.cost_usdt) if result.trade.cost_usdt else None,
+                    "wallet_balance_before": float(result.trade.wallet_balance_before) if result.trade.wallet_balance_before else None,
+                    "strategy_name": strategy.name,
+                }
+                await manager.broadcast(_entry_event)
+                asyncio.create_task(send_trade_notification(_entry_event))
                 await manager.broadcast(
                     {
                         "type": "position_changed",

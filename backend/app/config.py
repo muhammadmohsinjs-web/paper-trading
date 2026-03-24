@@ -104,6 +104,12 @@ class Settings:
     openai_input_cost_per_1m_tokens_usd: float = 0.75
     openai_output_cost_per_1m_tokens_usd: float = 4.50
 
+    # Twilio WhatsApp notifications
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_whatsapp_from: str = "+14155238886"  # Twilio sandbox default
+    twilio_whatsapp_to: list[str] = field(default_factory=list)
+
     # Server
     host: str = "0.0.0.0"
     port: int = 8000
@@ -172,6 +178,10 @@ class Settings:
             ai_output_cost_per_1m_tokens_usd=float(_get_value("AI_OUTPUT_COST_PER_1M_TOKENS_USD", default=str(cls.ai_output_cost_per_1m_tokens_usd))),
             openai_input_cost_per_1m_tokens_usd=float(_get_value("OPENAI_INPUT_COST_PER_1M_TOKENS_USD", default=str(cls.openai_input_cost_per_1m_tokens_usd))),
             openai_output_cost_per_1m_tokens_usd=float(_get_value("OPENAI_OUTPUT_COST_PER_1M_TOKENS_USD", default=str(cls.openai_output_cost_per_1m_tokens_usd))),
+            twilio_account_sid=_get_value("TWILIO_ACCOUNT_SID", default=cls.twilio_account_sid),
+            twilio_auth_token=_get_value("TWILIO_AUTH_TOKEN", default=cls.twilio_auth_token),
+            twilio_whatsapp_from=_get_value("TWILIO_WHATSAPP_FROM", default=cls.twilio_whatsapp_from),
+            twilio_whatsapp_to=_get_list("TWILIO_WHATSAPP_TO"),
             host=_get_value("HOST", default=cls.host),
             port=int(_get_value("PORT", default=str(cls.port))),
         )
