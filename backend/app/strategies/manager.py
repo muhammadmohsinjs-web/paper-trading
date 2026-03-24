@@ -14,6 +14,13 @@ from app.models.strategy import Strategy
 logger = logging.getLogger(__name__)
 
 
+def resolve_strategy_interval(strategy: Strategy) -> int:
+    """Resolve runtime loop interval, never faster than the configured candle cadence."""
+    candle_seconds = INTERVAL_TO_SECONDS.get(strategy.candle_interval or "1h", 3600)
+    config_interval = ((strategy.config_json or {}).get("interval_seconds", candle_seconds))
+    return max(int(config_interval), candle_seconds)
+
+
 class StrategyManager:
     """Manages one asyncio.Task per active strategy."""
 
@@ -77,10 +84,7 @@ class StrategyManager:
             )
             strategies = result.scalars().all()
             for s in strategies:
-                candle_seconds = INTERVAL_TO_SECONDS.get(s.candle_interval or "1h", 3600)
-                config_interval = (s.config_json or {}).get("interval_seconds", candle_seconds)
-                # Never loop faster than the candle interval — no new data arrives sooner
-                interval = max(config_interval, candle_seconds)
+                interval = resolve_strategy_interval(s)
                 started = await self.start_strategy(s.id, interval)
                 if started:
                     count += 1

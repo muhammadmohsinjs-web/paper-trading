@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { LivePrice } from "@/components/live-price";
 import { useLiveFeed } from "@/hooks/use-live-feed";
 import { formatCurrency, formatNumber } from "@/lib/format";
@@ -24,6 +24,17 @@ export function DashboardClient({
 }: DashboardClientProps) {
   const live = useLiveFeed();
   const [showCreate, setShowCreate] = useState(false);
+  useEffect(() => {
+    for (const strategy of dashboard.strategies) {
+      if (!strategy.is_active) {
+        console.info("[dashboard] inactive strategy", {
+          id: strategy.id,
+          name: strategy.name,
+        });
+      }
+    }
+  }, [dashboard.strategies]);
+
   const latestPrice =
     live.latestPriceBySymbol[marketPrice?.symbol ?? "BTCUSDT"] ?? marketPrice?.price ?? null;
   const strategyNameById = useMemo(

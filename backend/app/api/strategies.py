@@ -26,7 +26,7 @@ from app.schemas.strategy import (
     StrategyWithStats,
 )
 from app.market.data_store import DataStore
-from app.strategies.manager import StrategyManager
+from app.strategies.manager import StrategyManager, resolve_strategy_interval
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
 settings = get_settings()
@@ -188,8 +188,10 @@ async def create_strategy(
 
     # Auto-start if active
     if strategy.is_active:
-        interval = config_json.get("interval_seconds", settings.trading_interval_seconds)
-        await StrategyManager.get_instance().start_strategy(strategy.id, interval)
+        await StrategyManager.get_instance().start_strategy(
+            strategy.id,
+            resolve_strategy_interval(strategy),
+        )
 
     return strategy
 
@@ -301,8 +303,7 @@ async def update_strategy(
     manager = StrategyManager.get_instance()
     if "is_active" in updates:
         if body.is_active:
-            interval = (strategy.config_json or {}).get("interval_seconds", 300)
-            await manager.start_strategy(strategy.id, interval)
+            await manager.start_strategy(strategy.id, resolve_strategy_interval(strategy))
         else:
             await manager.stop_strategy(strategy.id)
 

@@ -210,3 +210,94 @@ async def test_strategy_crud(test_app):
         # Verify deleted
         resp = await client.get(f"/api/strategies/{sid}")
         assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_create_active_strategy_clamps_loop_interval_to_candle_interval(test_app, monkeypatch):
+    """Creating an active strategy should not start a loop faster than its candle interval."""
+    captured: list[tuple[str, int]] = []
+
+    import app.api.strategies as strategies_api
+
+    class DummyManager:
+        async def start_strategy(self, strategy_id: str, interval_seconds: int = 3600) -> bool:
+            captured.append((strategy_id, interval_seconds))
+            return True
+
+    dummy_manager = DummyManager()
+    monkeypatch.setattr(
+        strategies_api.StrategyManager,
+        "get_instance",
+        classmethod(lambda cls: dummy_manager),
+    )
+
+    transport = ASGITransport(app=test_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/strategies",
+            json={
+                "name": "Hybrid Interval Clamp",
+                "config_json": {
+                    "strategy_type": "hybrid_composite",
+                    "interval_seconds": 300,
+                    "initial_balance": 1000,
+                },
+                "candle_interval": "1h",
+                "is_active": True,
+            },
+        )
+
+    assert resp.status_code == 201, resp.text
+    assert len(captured) == 1
+    assert captured[0][1] == 3600
+
+
+@pytest.mark.asyncio
+async def test_activate_strategy_clamps_loop_interval_to_candle_interval(test_app, monkeypatch):
+    """Activating an existing strategy should respect the candle interval floor."""
+    captured: list[tuple[str, int]] = []
+
+    import app.api.strategies as strategies_api
+
+    class DummyManager:
+        async def start_strategy(self, strategy_id: str, interval_seconds: int = 3600) -> bool:
+            captured.append((strategy_id, interval_seconds))
+            return True
+
+        async def stop_strategy(self, strategy_id: str) -> bool:
+            return True
+
+    dummy_manager = DummyManager()
+    monkeypatch.setattr(
+        strategies_api.StrategyManager,
+        "get_instance",
+        classmethod(lambda cls: dummy_manager),
+    )
+
+    transport = ASGITransport(app=test_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        create_resp = await client.post(
+            "/api/strategies",
+            json={
+                "name": "Toggle Interval Clamp",
+                "config_json": {
+                    "strategy_type": "hybrid_composite",
+                    "interval_seconds": 300,
+                    "initial_balance": 1000,
+                },
+                "candle_interval": "1h",
+                "is_active": False,
+            },
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        strategy_id = create_resp.json()["id"]
+
+        resp = await client.patch(
+            f"/api/strategies/{strategy_id}",
+            json={"is_active": True},
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert len(captured) == 1
+    assert captured[0][0] == strategy_id
+    assert captured[0][1] == 3600
