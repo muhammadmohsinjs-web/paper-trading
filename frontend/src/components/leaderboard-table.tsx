@@ -14,7 +14,8 @@ export function LeaderboardTable({ entries }: { entries: LeaderboardEntry[] }) {
             <tr>
               <th className="px-5 py-3 font-medium">Rank</th>
               <th className="px-5 py-3 font-medium">Strategy</th>
-              <th className="px-5 py-3 font-medium">P&L</th>
+              <th className="px-5 py-3 font-medium">Realized P&L</th>
+              <th className="px-5 py-3 font-medium">Unrealized P&L</th>
               <th className="px-5 py-3 font-medium">Win Rate</th>
               <th className="px-5 py-3 font-medium">Trades</th>
               <th className="px-5 py-3 font-medium">Equity</th>
@@ -32,6 +33,15 @@ export function LeaderboardTable({ entries }: { entries: LeaderboardEntry[] }) {
                 </td>
                 <td className={`px-5 py-4 ${entry.total_pnl >= 0 ? "text-rise" : "text-fall"}`}>
                   {formatCurrency(entry.total_pnl)}
+                </td>
+                <td className="px-5 py-4">
+                  {entry.has_open_position ? (
+                    <span className={entry.unrealized_pnl >= 0 ? "text-rise" : "text-fall"}>
+                      {formatCurrency(entry.unrealized_pnl)}
+                    </span>
+                  ) : (
+                    <span className="text-mist/40">&mdash;</span>
+                  )}
                 </td>
                 <td className="px-5 py-4">{formatPercent(entry.win_rate)}</td>
                 <td className="px-5 py-4">{entry.total_trades}</td>

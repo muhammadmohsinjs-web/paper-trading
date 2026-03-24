@@ -20,6 +20,15 @@ class TradeResponse(BaseModel):
     pnl: float | None
     pnl_pct: float | None
     ai_reasoning: str | None
+    strategy_name: str | None = None
+    strategy_type: str | None = None
+    decision_source: str | None = None
+    indicator_snapshot: dict | None = None
+    cost_usdt: float | None = None
+    composite_score: float | None = None
+    composite_confidence: float | None = None
+    wallet_balance_before: float | None = None
+    wallet_balance_after: float | None = None
     executed_at: datetime
 
     model_config = {"from_attributes": True}
@@ -36,3 +45,10 @@ class TradeSummary(BaseModel):
     avg_pnl: float
     best_trade: float
     worst_trade: float
+
+
+class TradeLogResponse(BaseModel):
+    total: int
+    offset: int
+    limit: int
+    trades: list[TradeResponse]

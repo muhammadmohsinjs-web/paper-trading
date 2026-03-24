@@ -22,6 +22,8 @@ class LeaderboardEntry(BaseModel):
     strategy_id: str
     strategy_name: str
     total_pnl: float
+    unrealized_pnl: float = 0.0
+    has_open_position: bool = False
     win_rate: float
     total_trades: int
     total_equity: float

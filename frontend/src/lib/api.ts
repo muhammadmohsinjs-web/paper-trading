@@ -15,6 +15,7 @@ import type {
   SignalData,
   StrategyWithStats,
   Trade,
+  TradeLogResponse,
   TradeSummary,
   Wallet
 } from "@/lib/types";
@@ -166,6 +167,25 @@ export function aiPreview(strategyId: string) {
     `/engine/strategies/${strategyId}/ai-preview`,
     { method: "POST" }
   );
+}
+
+export function getTradeLogs(params?: {
+  strategy_id?: string;
+  side?: string;
+  decision_source?: string;
+  strategy_type?: string;
+  limit?: number;
+  offset?: number;
+}) {
+  const query = new URLSearchParams();
+  if (params?.strategy_id) query.set("strategy_id", params.strategy_id);
+  if (params?.side) query.set("side", params.side);
+  if (params?.decision_source) query.set("decision_source", params.decision_source);
+  if (params?.strategy_type) query.set("strategy_type", params.strategy_type);
+  if (params?.limit) query.set("limit", String(params.limit));
+  if (params?.offset) query.set("offset", String(params.offset));
+  const qs = query.toString();
+  return request<TradeLogResponse>(`/trade-logs${qs ? `?${qs}` : ""}`);
 }
 
 export function getAILogs(params?: { strategy_id?: string; status?: string; limit?: number; offset?: number }) {

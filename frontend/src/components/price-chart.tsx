@@ -68,13 +68,15 @@ export function PriceChart({
         }))
       );
       series.setMarkers(
-        trades.map((trade) => ({
-          time: Math.floor(new Date(trade.executed_at).getTime() / 1000) as UTCTimestamp,
-          position: trade.side === "BUY" ? "belowBar" : "aboveBar",
-          color: trade.side === "BUY" ? "#b8ff67" : "#ff7b5a",
-          shape: trade.side === "BUY" ? "arrowUp" : "arrowDown",
-          text: trade.side
-        }))
+        trades
+          .map((trade) => ({
+            time: Math.floor(new Date(trade.executed_at).getTime() / 1000) as UTCTimestamp,
+            position: trade.side === "BUY" ? ("belowBar" as const) : ("aboveBar" as const),
+            color: trade.side === "BUY" ? "#b8ff67" : "#ff7b5a",
+            shape: trade.side === "BUY" ? ("arrowUp" as const) : ("arrowDown" as const),
+            text: trade.side
+          }))
+          .sort((a, b) => (a.time as number) - (b.time as number))
       );
     } else {
       const series = chart.addAreaSeries({

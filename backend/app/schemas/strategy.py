@@ -97,4 +97,6 @@ class StrategyWithStats(StrategyResponse):
     total_trades: int = 0
     winning_trades: int = 0
     total_pnl: float = 0.0
+    unrealized_pnl: float = 0.0
+    has_open_position: bool = False
     win_rate: float = 0.0

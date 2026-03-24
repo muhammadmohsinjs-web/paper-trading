@@ -78,6 +78,8 @@ export type StrategyWithStats = {
   total_trades: number;
   winning_trades: number;
   total_pnl: number;
+  unrealized_pnl: number;
+  has_open_position: boolean;
   win_rate: number;
 };
 
@@ -94,6 +96,8 @@ export type LeaderboardEntry = {
   strategy_id: string;
   strategy_name: string;
   total_pnl: number;
+  unrealized_pnl: number;
+  has_open_position: boolean;
   win_rate: number;
   total_trades: number;
   total_equity: number;
@@ -132,7 +136,23 @@ export type Trade = {
   pnl: number | null;
   pnl_pct: number | null;
   ai_reasoning: string | null;
+  strategy_name: string | null;
+  strategy_type: string | null;
+  decision_source: string | null;
+  indicator_snapshot: Record<string, number> | null;
+  cost_usdt: number | null;
+  composite_score: number | null;
+  composite_confidence: number | null;
+  wallet_balance_before: number | null;
+  wallet_balance_after: number | null;
   executed_at: string;
+};
+
+export type TradeLogResponse = {
+  total: number;
+  offset: number;
+  limit: number;
+  trades: Trade[];
 };
 
 export type TradeSummary = {

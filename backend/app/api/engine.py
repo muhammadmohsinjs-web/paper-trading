@@ -62,7 +62,11 @@ async def manual_execute(
     if strategy is None:
         raise HTTPException(404, "Strategy not found")
 
-    return await run_single_cycle(strategy_id, force=force)
+    lock = StrategyManager.get_instance().get_lock(strategy_id)
+    if lock.locked():
+        return {"status": "skipped", "reason": "Strategy cycle already in progress"}
+    async with lock:
+        return await run_single_cycle(strategy_id, force=force)
 
 
 @router.post("/strategies/{strategy_id}/ai-preview")

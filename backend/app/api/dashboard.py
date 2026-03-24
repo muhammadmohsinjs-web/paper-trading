@@ -64,6 +64,8 @@ async def get_leaderboard(
                 strategy_id=s.id,
                 strategy_name=s.name,
                 total_pnl=stats.total_pnl,
+                unrealized_pnl=stats.unrealized_pnl,
+                has_open_position=stats.has_open_position,
                 win_rate=stats.win_rate,
                 total_trades=stats.total_trades,
                 total_equity=stats.total_equity or 0.0,

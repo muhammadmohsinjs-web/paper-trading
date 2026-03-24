@@ -21,6 +21,13 @@ class StrategyManager:
 
     def __init__(self) -> None:
         self._tasks: dict[str, asyncio.Task] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    def get_lock(self, strategy_id: str) -> asyncio.Lock:
+        """Return (creating if needed) a per-strategy lock to prevent concurrent cycles."""
+        if strategy_id not in self._locks:
+            self._locks[strategy_id] = asyncio.Lock()
+        return self._locks[strategy_id]
 
     @classmethod
     def get_instance(cls) -> StrategyManager:

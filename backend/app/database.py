@@ -114,11 +114,61 @@ async def _ensure_risk_management_columns() -> None:
                 await connection.execute(text(f"ALTER TABLE strategies ADD COLUMN {name} {definition}"))
 
 
+async def _ensure_trade_log_columns() -> None:
+    """Add trade log context columns (backward-compatible)."""
+    if engine.url.get_backend_name() != "sqlite":
+        return
+
+    column_defs = {
+        "strategy_name": "VARCHAR(128)",
+        "strategy_type": "VARCHAR(64)",
+        "decision_source": "VARCHAR(32)",
+        "indicator_snapshot": "TEXT",  # JSON stored as TEXT in SQLite
+        "composite_score": "NUMERIC(8,4)",
+        "composite_confidence": "NUMERIC(8,4)",
+        "cost_usdt": "NUMERIC(18,8)",
+        "wallet_balance_before": "NUMERIC(18,8)",
+        "wallet_balance_after": "NUMERIC(18,8)",
+    }
+
+    async with engine.begin() as connection:
+        result = await connection.execute(text("PRAGMA table_info(trades)"))
+        existing = {row[1] for row in result}
+        for name, definition in column_defs.items():
+            if name not in existing:
+                await connection.execute(text(f"ALTER TABLE trades ADD COLUMN {name} {definition}"))
+
+
+async def _backfill_trade_log_columns() -> None:
+    """Backfill cost_usdt, strategy_name, strategy_type for existing trades."""
+    if engine.url.get_backend_name() != "sqlite":
+        return
+
+    async with engine.begin() as connection:
+        # Backfill cost_usdt = quantity * price for trades missing it
+        await connection.execute(text(
+            "UPDATE trades SET cost_usdt = quantity * price WHERE cost_usdt IS NULL"
+        ))
+        # Backfill strategy_name and strategy_type from strategies table
+        await connection.execute(text(
+            "UPDATE trades SET strategy_name = ("
+            "  SELECT s.name FROM strategies s WHERE s.id = trades.strategy_id"
+            ") WHERE strategy_name IS NULL"
+        ))
+        await connection.execute(text(
+            "UPDATE trades SET strategy_type = ("
+            "  SELECT json_extract(s.config_json, '$.strategy_type') FROM strategies s WHERE s.id = trades.strategy_id"
+            ") WHERE strategy_type IS NULL"
+        ))
+
+
 async def init_database() -> None:
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     await _ensure_phase3_strategy_columns()
     await _ensure_risk_management_columns()
+    await _ensure_trade_log_columns()
+    await _backfill_trade_log_columns()
 
 
 async def dispose_database() -> None:

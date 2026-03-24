@@ -49,8 +49,17 @@ async def execute_buy(
     quantity_pct: Decimal = Decimal("1.0"),
     fee_rate: Decimal = SPOT_FEE_RATE,
     reason: str = "",
+    *,
+    strategy_name: str | None = None,
+    strategy_type: str | None = None,
+    decision_source: str | None = None,
+    indicator_snapshot: dict | None = None,
+    composite_score: Decimal | None = None,
+    composite_confidence: Decimal | None = None,
 ) -> ExecutionResult:
     """Execute a BUY order: calculate cost, apply slippage/fees, debit wallet, open position."""
+    wallet_balance_before = wallet.available_usdt
+
     # Determine how much USDT to spend
     spend_usdt = (wallet.available_usdt * quantity_pct).quantize(Decimal("0.00000001"))
     if spend_usdt <= Decimal("0"):
@@ -84,6 +93,8 @@ async def execute_buy(
     else:
         await open_position(session, strategy_id, symbol, quantity, exec_price, fee)
 
+    wallet_balance_after = wallet.available_usdt
+
     # Record trade
     trade = Trade(
         id=str(uuid4()),
@@ -98,6 +109,15 @@ async def execute_buy(
         pnl=None,
         pnl_pct=None,
         ai_reasoning=reason or None,
+        cost_usdt=spend_usdt,
+        strategy_name=strategy_name,
+        strategy_type=strategy_type,
+        decision_source=decision_source,
+        indicator_snapshot=indicator_snapshot,
+        composite_score=composite_score,
+        composite_confidence=composite_confidence,
+        wallet_balance_before=wallet_balance_before,
+        wallet_balance_after=wallet_balance_after,
     )
     session.add(trade)
     await session.flush()
@@ -114,8 +134,17 @@ async def execute_sell(
     quantity_pct: Decimal = Decimal("1.0"),
     fee_rate: Decimal = SPOT_FEE_RATE,
     reason: str = "",
+    *,
+    strategy_name: str | None = None,
+    strategy_type: str | None = None,
+    decision_source: str | None = None,
+    indicator_snapshot: dict | None = None,
+    composite_score: Decimal | None = None,
+    composite_confidence: Decimal | None = None,
 ) -> ExecutionResult:
     """Execute a SELL order: close position, calculate P&L, credit wallet."""
+    wallet_balance_before = wallet.available_usdt
+
     position = await get_position(session, strategy_id, symbol)
     if position is None:
         return ExecutionResult(trade=None, success=False, error="No position to sell")  # type: ignore[arg-type]
@@ -154,6 +183,8 @@ async def execute_sell(
         position.entry_fee = position.entry_fee - entry_fee_portion
         await session.flush()
 
+    wallet_balance_after = wallet.available_usdt
+
     # Record trade
     trade = Trade(
         id=str(uuid4()),
@@ -168,6 +199,15 @@ async def execute_sell(
         pnl=pnl,
         pnl_pct=pnl_pct,
         ai_reasoning=reason or None,
+        cost_usdt=net_proceeds,
+        strategy_name=strategy_name,
+        strategy_type=strategy_type,
+        decision_source=decision_source,
+        indicator_snapshot=indicator_snapshot,
+        composite_score=composite_score,
+        composite_confidence=composite_confidence,
+        wallet_balance_before=wallet_balance_before,
+        wallet_balance_after=wallet_balance_after,
     )
     session.add(trade)
     await session.flush()

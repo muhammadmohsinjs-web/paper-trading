@@ -280,9 +280,45 @@ def _build_ai_log(
     )
 
 
+def _build_indicator_snapshot(indicators: dict[str, Any]) -> dict[str, Any]:
+    """Extract key indicator values for trade log context."""
+    snap: dict[str, Any] = {}
+    for key in ("rsi", "atr", "volume_ratio"):
+        vals = indicators.get(key)
+        if isinstance(vals, (list, tuple)) and vals:
+            snap[key] = round(float(vals[-1]), 4)
+        elif isinstance(vals, (int, float)):
+            snap[key] = round(float(vals), 4)
+
+    for key in ("sma_short", "sma_long", "ema_short", "ema_long"):
+        vals = indicators.get(key)
+        if isinstance(vals, (list, tuple)) and vals:
+            snap[key] = round(float(vals[-1]), 2)
+
+    macd_line = indicators.get("macd_line")
+    macd_signal = indicators.get("signal_line") or indicators.get("macd_signal")
+    macd_hist = indicators.get("macd_histogram") or indicators.get("histogram")
+    if isinstance(macd_line, (list, tuple)) and macd_line:
+        snap["macd_line"] = round(float(macd_line[-1]), 4)
+    if isinstance(macd_signal, (list, tuple)) and macd_signal:
+        snap["macd_signal"] = round(float(macd_signal[-1]), 4)
+    if isinstance(macd_hist, (list, tuple)) and macd_hist:
+        snap["macd_histogram"] = round(float(macd_hist[-1]), 4)
+
+    for key in ("bb_upper", "bb_middle", "bb_lower"):
+        vals = indicators.get(key)
+        if isinstance(vals, (list, tuple)) and vals:
+            snap[key] = round(float(vals[-1]), 2)
+
+    return snap
+
+
 INTERVAL_TO_SECONDS: dict[str, int] = {
     "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400,
 }
+
+# Per-strategy lock to prevent concurrent execution of run_single_cycle
+_strategy_locks: dict[str, asyncio.Lock] = {}
 
 
 def _compute_equity(wallet: Any, position: Any, market_price: Decimal) -> Decimal:
@@ -306,10 +342,14 @@ async def _force_stop_loss_sell(
     """Execute an immediate full sell triggered by stop-loss."""
     from app.engine.executor import execute_sell  # already imported at module level
 
+    config = strategy.config_json or {}
     result = await execute_sell(
         session, strategy_id, wallet, symbol, market_price,
         Decimal("1.0"),
         reason=f"Stop-loss triggered at {market_price} (stop={position.stop_loss_price})",
+        strategy_name=strategy.name,
+        strategy_type=config.get("strategy_type", "unknown"),
+        decision_source="risk",
     )
     if result.success:
         _update_strategy_streak(strategy, result.trade.pnl)
@@ -367,6 +407,32 @@ async def run_single_cycle(
     force: bool = False,
 ) -> dict[str, Any]:
     """Execute one decision cycle for a strategy."""
+    # Acquire per-strategy lock to prevent duplicate concurrent trades
+    if strategy_id not in _strategy_locks:
+        _strategy_locks[strategy_id] = asyncio.Lock()
+    lock = _strategy_locks[strategy_id]
+
+    if lock.locked():
+        logger.debug("cycle already running strategy_id=%s, skipping", strategy_id)
+        return {
+            "status": "skipped",
+            "reason": "Cycle already in progress",
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "concurrency_guard",
+        }
+
+    async with lock:
+        return await _run_single_cycle_locked(strategy_id, symbol, interval, force)
+
+
+async def _run_single_cycle_locked(
+    strategy_id: str,
+    symbol: str = "BTCUSDT",
+    interval: str = "1h",
+    force: bool = False,
+) -> dict[str, Any]:
+    """Execute one decision cycle for a strategy (must be called under lock)."""
     store = DataStore.get_instance()
     manager = ConnectionManager.get_instance()
     candles = store.get_candles(symbol, interval)
@@ -612,6 +678,12 @@ async def run_single_cycle(
                         market_price,
                         exit_decision.quantity_pct,
                         reason=exit_decision.reason,
+                        strategy_name=strategy.name,
+                        strategy_type=strategy_type,
+                        decision_source="hybrid_exit",
+                        indicator_snapshot=_build_indicator_snapshot(indicators),
+                        composite_score=Decimal(str(round(composite_result.composite_score, 4))),
+                        composite_confidence=Decimal(str(round(composite_result.confidence, 4))),
                     )
                     if result.success:
                         _update_strategy_streak(strategy, result.trade.pnl)
@@ -699,7 +771,7 @@ async def run_single_cycle(
 
             # ── Conflict gate: AI and algorithm must agree to trade ──
             ai_action = (ai_result.action or "HOLD").upper() if ai_result else "HOLD"
-            algo_direction = pre_composite.direction  # computed WITHOUT AI vote
+            algo_direction = pre_composite.signal  # computed WITHOUT AI vote (gated)
             if ai_action != "HOLD" and algo_direction != "HOLD" and ai_action != algo_direction:
                 return {
                     "status": "hold",
@@ -788,6 +860,12 @@ async def run_single_cycle(
                     f"Hybrid BUY score={composite_result.composite_score:.3f} "
                     f"confidence={composite_result.confidence:.3f}"
                 ),
+                strategy_name=strategy.name,
+                strategy_type=strategy_type,
+                decision_source="hybrid_entry",
+                indicator_snapshot=_build_indicator_snapshot(indicators),
+                composite_score=Decimal(str(round(composite_result.composite_score, 4))),
+                composite_confidence=Decimal(str(round(composite_result.confidence, 4))),
             )
 
             if result.success:
@@ -978,15 +1056,24 @@ async def run_single_cycle(
                 signal.quantity_pct = max(capped_pct, Decimal("0"))
 
         # Execute
+        _decision_source = "ai" if ai_config["ai_enabled"] else "rule"
+        _trade_log_kwargs = dict(
+            strategy_name=strategy.name,
+            strategy_type=strategy_type,
+            decision_source=_decision_source,
+            indicator_snapshot=_build_indicator_snapshot(indicators),
+        )
         if signal.action.value == "BUY":
             result = await execute_buy(
                 session, strategy_id, wallet, symbol, market_price,
                 signal.quantity_pct, reason=signal.reason,
+                **_trade_log_kwargs,
             )
         else:
             result = await execute_sell(
                 session, strategy_id, wallet, symbol, market_price,
                 signal.quantity_pct, reason=signal.reason,
+                **_trade_log_kwargs,
             )
 
         if result.success:
@@ -1115,9 +1202,13 @@ async def strategy_loop(strategy_id: str, interval_seconds: int = 3600) -> None:
     symbol = "BTCUSDT"
     cycle = 0
 
+    from app.strategies.manager import StrategyManager
+
     while True:
         try:
-            result = await run_single_cycle(strategy_id, symbol)
+            lock = StrategyManager.get_instance().get_lock(strategy_id)
+            async with lock:
+                result = await run_single_cycle(strategy_id, symbol)
             cycle += 1
 
             if result.get("status") == "executed":
