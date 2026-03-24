@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { backendBaseUrl } from "@/lib/env";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -49,7 +50,7 @@ export default function RootLayout({
                   </Link>
                 ))}
                 <a
-                  href="http://127.0.0.1:8000/docs"
+                  href={`${backendBaseUrl}/docs`}
                   target="_blank"
                   rel="noreferrer"
                   className="rounded-full border border-gold/40 bg-gold/10 px-4 py-2 text-sm text-gold transition hover:bg-gold/15"
