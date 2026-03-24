@@ -8,12 +8,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import default_ai_model_for_provider, get_settings
+from app.config import get_settings
 from app.database import get_db_session
 from app.engine.ai_runtime import (
     build_ai_context,
     evaluate_ai_decision,
     normalize_ai_strategy_key,
+    resolve_runtime_provider_and_model,
 )
 from app.engine.trading_loop import run_single_cycle
 from app.market.data_store import DataStore
@@ -119,11 +120,17 @@ async def ai_preview(
     position = position_result.scalar_one_or_none()
 
     # Resolve AI config
-    provider = settings.ai_provider
+    provider, ai_model = resolve_runtime_provider_and_model(
+        {
+            "strategy": {
+                "ai_provider": strategy.ai_provider or config.get("ai_provider"),
+                "ai_model": strategy.ai_model or config.get("ai_model"),
+            }
+        }
+    )
     ai_strategy_key = normalize_ai_strategy_key(
         strategy.ai_strategy_key or config.get("ai_strategy_key") or config.get("strategy_type")
     )
-    ai_model = str(default_ai_model_for_provider(provider, settings))
     ai_cooldown = int(strategy.ai_cooldown_seconds or config.get("ai_cooldown_seconds") or 60)
     ai_max_tokens = int(strategy.ai_max_tokens or config.get("ai_max_tokens") or settings.ai_max_tokens)
     ai_temperature = Decimal(str(strategy.ai_temperature or config.get("ai_temperature", 0.2)))

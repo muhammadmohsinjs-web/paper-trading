@@ -76,6 +76,9 @@ AI_STRATEGY_ALIASES = {
     "d": "chart_patterns",
     "chart_patterns": "chart_patterns",
     "chart-patterns": "chart_patterns",
+    "hybrid": "hybrid_composite",
+    "hybrid_composite": "hybrid_composite",
+    "hybrid-composite": "hybrid_composite",
 }
 
 
@@ -123,12 +126,33 @@ PROMPT_TEMPLATES: dict[str, str] = {
         "Prioritize triangles, flags, double tops/bottoms, channels, and breakout confirmation.\n"
         "Return only valid JSON."
     ),
+    "hybrid_composite": (
+        "You are a crypto trading assistant for a hybrid composite strategy.\n"
+        "Use the provided algorithmic composite score, confidence, and indicator votes as the primary signal.\n"
+        "Confirm or challenge that signal using RSI, MACD, SMA, EMA, volume ratio, and flat-market context.\n"
+        "Favor HOLD when the composite confidence is weak, volume is dry, or signals conflict.\n"
+        "Return only valid JSON."
+    ),
 }
 
 
 def normalize_ai_strategy_key(value: str | None, fallback: str = "rsi_ma") -> str:
     key = (value or fallback or "rsi_ma").strip().lower().replace(" ", "_")
     return AI_STRATEGY_ALIASES.get(key, key if key in PROMPT_TEMPLATES else fallback)
+
+
+def resolve_runtime_provider_and_model(
+    context: dict[str, Any],
+) -> tuple[str, str]:
+    strategy_context = context.get("strategy", {}) if isinstance(context, dict) else {}
+    configured_provider = strategy_context.get("ai_provider")
+    provider = normalize_ai_provider(str(configured_provider) if configured_provider else SETTINGS.ai_provider)
+
+    configured_model = strategy_context.get("ai_model")
+    if configured_model:
+        return provider, str(configured_model)
+
+    return provider, str(default_ai_model_for_provider(provider, SETTINGS))
 
 
 def _system_prompt(strategy_key: str) -> str:
@@ -542,7 +566,7 @@ async def evaluate_ai_decision(
             skip_reason="flat_market",
         )
 
-    provider = SETTINGS.ai_provider
+    provider, model = resolve_runtime_provider_and_model(context)
     if provider == AI_PROVIDER_OPENAI:
         api_key = ai_api_key_for_provider(provider, SETTINGS)
         base_url = ai_base_url_for_provider(provider, SETTINGS)
@@ -559,9 +583,6 @@ async def evaluate_ai_decision(
             skip_reason="missing_api_key",
         )
 
-    model = str(
-        default_ai_model_for_provider(provider, SETTINGS)
-    )
     max_tokens = int(context.get("strategy", {}).get("ai_max_tokens") or SETTINGS.ai_max_tokens)
     temperature = Decimal(str(context.get("strategy", {}).get("ai_temperature") or SETTINGS.ai_temperature))
     normalized_key = normalize_ai_strategy_key(strategy_key)

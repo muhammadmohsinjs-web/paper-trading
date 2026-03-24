@@ -127,6 +127,19 @@ def _is_skip_result(result: Any) -> bool:
     return bool(result)
 
 
+def test_resolve_runtime_provider_and_model_prefers_strategy_context():
+    provider, model = ai_runtime.resolve_runtime_provider_and_model(
+        {"strategy": {"ai_provider": "openai", "ai_model": "gpt-5-mini"}}
+    )
+
+    assert provider == "openai"
+    assert model == "gpt-5-mini"
+
+
+def test_normalize_ai_strategy_key_supports_hybrid_composite():
+    assert ai_runtime.normalize_ai_strategy_key("hybrid_composite") == "hybrid_composite"
+
+
 @pytest.fixture
 def phase3_app(tmp_path, monkeypatch):
     """Create an isolated app instance with a seeded AI strategy."""
@@ -421,7 +434,7 @@ def test_ai_runtime_tracks_usage_and_estimated_cost_without_network(monkeypatch)
     assert result.usage.estimated_cost_usdt == Decimal("0.00810000")
 
 
-def test_ai_runtime_uses_env_selected_openai_provider_and_model(monkeypatch):
+def test_ai_runtime_prefers_strategy_selected_openai_model(monkeypatch):
     monkeypatch.setattr(
         ai_runtime,
         "SETTINGS",
@@ -489,7 +502,7 @@ def test_ai_runtime_uses_env_selected_openai_provider_and_model(monkeypatch):
     assert result.action == "SELL"
     assert result.confidence == 0.74
     assert result.reason == "Momentum rolled over"
-    assert captured["model"] == "gpt-5.4"
+    assert captured["model"] == "gpt-4o-mini"
     assert result.usage is not None
     assert result.usage.provider == "openai"
     assert result.usage.prompt_tokens == 1000

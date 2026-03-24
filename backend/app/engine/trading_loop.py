@@ -11,7 +11,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.api.ws import ConnectionManager
-from app.config import default_ai_model_for_provider, get_settings
+from app.config import default_ai_model_for_provider, get_settings, normalize_ai_provider
 from app.database import SessionLocal
 from app.engine.composite_scorer import compute_ai_vote, compute_composite_score
 from app.engine.executor import execute_buy, execute_sell
@@ -55,7 +55,9 @@ def _strategy_last_ai_at(strategy: Any) -> datetime | None:
 
 def _normalize_ai_counters(strategy: Strategy) -> dict[str, Any]:
     config = strategy.config_json or {}
-    ai_provider = settings.ai_provider
+    ai_provider = normalize_ai_provider(
+        strategy.ai_provider or config.get("ai_provider") or settings.ai_provider
+    )
     cooldown_seconds = int(
         strategy.ai_cooldown_seconds
         or config.get("ai_cooldown_seconds")
@@ -68,7 +70,9 @@ def _normalize_ai_counters(strategy: Strategy) -> dict[str, Any]:
             strategy.ai_strategy_key or config.get("ai_strategy_key") or config.get("strategy_type"),
         ),
         "ai_model": str(
-            default_ai_model_for_provider(ai_provider, settings)
+            strategy.ai_model
+            or config.get("ai_model")
+            or default_ai_model_for_provider(ai_provider, settings)
         ),
         "ai_cooldown_seconds": max(cooldown_seconds, settings.ai_min_cooldown_seconds),
         "ai_max_tokens": int(strategy.ai_max_tokens or config.get("ai_max_tokens") or settings.ai_max_tokens),

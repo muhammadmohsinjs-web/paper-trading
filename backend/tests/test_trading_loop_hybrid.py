@@ -4,7 +4,11 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 from app.engine.ai_runtime import AIDecisionResult
-from app.engine.trading_loop import _hybrid_ai_vote_value, _update_strategy_streak
+from app.engine.trading_loop import (
+    _hybrid_ai_vote_value,
+    _normalize_ai_counters,
+    _update_strategy_streak,
+)
 
 
 def test_hybrid_ai_vote_uses_action_and_confidence():
@@ -39,3 +43,22 @@ def test_update_strategy_streak_increments_on_losses_and_resets_on_profit():
     assert strategy.consecutive_losses == 0
     assert strategy.max_consecutive_losses == 3
     assert strategy.streak_size_multiplier == Decimal("1.0")
+
+
+def test_normalize_ai_counters_prefers_strategy_provider_and_model():
+    strategy = SimpleNamespace(
+        config_json={"strategy_type": "hybrid_composite", "ai_enabled": True},
+        ai_enabled=True,
+        ai_provider="openai",
+        ai_strategy_key=None,
+        ai_model="gpt-5-mini",
+        ai_cooldown_seconds=60,
+        ai_max_tokens=700,
+        ai_temperature=Decimal("0.2"),
+    )
+
+    result = _normalize_ai_counters(strategy)
+
+    assert result["ai_provider"] == "openai"
+    assert result["ai_model"] == "gpt-5-mini"
+    assert result["ai_strategy_key"] == "hybrid_composite"
