@@ -92,7 +92,7 @@ async def _build_stats(session: AsyncSession, strategy: Strategy) -> StrategyWit
     )
     total_trades = total_trade_result.scalar() or 0
 
-    # Equity = cash + cost basis of open position (no BTC price appreciation)
+    # Equity = cash + current market value of open position
     store = DataStore.get_instance()
     price = store.get_latest_price("BTCUSDT")
     position_result = await session.execute(
@@ -100,7 +100,7 @@ async def _build_stats(session: AsyncSession, strategy: Strategy) -> StrategyWit
     )
     position = position_result.scalar_one_or_none()
 
-    cost_basis = 0.0
+    position_value = 0.0
     unrealized_pnl = 0.0
     has_open_position = position is not None
     if position:
@@ -108,9 +108,12 @@ async def _build_stats(session: AsyncSession, strategy: Strategy) -> StrategyWit
         if price:
             current_value = float(position.quantity) * price
             unrealized_pnl = round(current_value - cost_basis - float(position.entry_fee), 2)
+            position_value = current_value
+        else:
+            position_value = cost_basis
 
-    # Equity reflects actual USDT value: cash + what was spent on open position
-    total_equity = float(wallet.available_usdt) + cost_basis if wallet else 0.0
+    # Equity reflects live USDT value: cash + current market value of position
+    total_equity = float(wallet.available_usdt) + position_value if wallet else 0.0
 
     return StrategyWithStats(
         id=strategy.id,

@@ -28,7 +28,7 @@ export function WalletSummary({ strategy, summary }: WalletSummaryProps) {
             ) : null}
           </div>
         </div>
-        <div className="mt-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <div className="mt-6 grid grid-cols-2 gap-4 lg:grid-cols-3">
           <div>
             <div className="text-sm text-mist/55">Initial</div>
             <div className="mt-1 text-xl font-medium">{formatCurrency(strategy.initial_balance_usdt)}</div>
@@ -40,6 +40,22 @@ export function WalletSummary({ strategy, summary }: WalletSummaryProps) {
           <div>
             <div className="text-sm text-mist/55">Equity</div>
             <div className="mt-1 text-xl font-medium">{formatCurrency(strategy.total_equity)}</div>
+          </div>
+          <div>
+            <div className="text-sm text-mist/55">Realized P&L</div>
+            <div className={`mt-1 text-xl font-medium ${strategy.total_pnl >= 0 ? "text-rise" : "text-fall"}`}>
+              {formatCurrency(strategy.total_pnl)}
+            </div>
+          </div>
+          <div>
+            <div className="text-sm text-mist/55">Unrealized P&L</div>
+            <div className={`mt-1 text-xl font-medium ${
+              strategy.has_open_position
+                ? (strategy.unrealized_pnl ?? 0) >= 0 ? "text-rise" : "text-fall"
+                : "text-mist/40"
+            }`}>
+              {strategy.has_open_position ? formatCurrency(strategy.unrealized_pnl ?? 0) : "—"}
+            </div>
           </div>
           <div>
             <div className="text-sm text-mist/55">Win Rate</div>

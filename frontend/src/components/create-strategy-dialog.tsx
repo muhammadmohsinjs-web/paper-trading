@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createStrategy } from "@/lib/api";
-import { STRATEGY_TYPE_META, type StrategyType } from "@/lib/types";
+import { STRATEGY_TYPE_META, type StrategyType, type StrategyWithStats } from "@/lib/types";
 
 const STRATEGY_TYPES = Object.keys(STRATEGY_TYPE_META) as StrategyType[];
 
@@ -55,9 +55,10 @@ const DEFAULT_CONFIGS: Record<StrategyType, Record<string, unknown>> = {
 type Props = {
   open: boolean;
   onClose: () => void;
+  existingStrategies?: StrategyWithStats[];
 };
 
-export function CreateStrategyDialog({ open, onClose }: Props) {
+export function CreateStrategyDialog({ open, onClose, existingStrategies = [] }: Props) {
   const router = useRouter();
   const [selectedType, setSelectedType] = useState<StrategyType>("sma_crossover");
   const [name, setName] = useState("");
@@ -69,6 +70,11 @@ export function CreateStrategyDialog({ open, onClose }: Props) {
   if (!open) return null;
 
   const meta = STRATEGY_TYPE_META[selectedType];
+
+  const existingTypes = new Set(
+    existingStrategies.map((s) => s.config_json?.strategy_type as string).filter(Boolean)
+  );
+  const isDuplicate = existingTypes.has(selectedType);
 
   async function handleCreate() {
     if (!name.trim()) {
@@ -123,6 +129,7 @@ export function CreateStrategyDialog({ open, onClose }: Props) {
             {STRATEGY_TYPES.map((type) => {
               const m = STRATEGY_TYPE_META[type];
               const isSelected = type === selectedType;
+              const alreadyExists = existingTypes.has(type);
               return (
                 <button
                   key={type}
@@ -132,12 +139,17 @@ export function CreateStrategyDialog({ open, onClose }: Props) {
                       setName(m.label);
                     }
                   }}
-                  className={`rounded-lg border px-3 py-2.5 text-left text-xs transition ${
+                  className={`relative rounded-lg border px-3 py-2.5 text-left text-xs transition ${
                     isSelected
                       ? `${m.color} border-current`
                       : "border-white/10 text-mist/60 hover:border-white/20 hover:text-mist"
                   }`}
                 >
+                  {alreadyExists && (
+                    <span className="absolute -top-1.5 -right-1.5 rounded-full bg-mist/20 px-1.5 py-0.5 text-[9px] font-medium text-mist/70">
+                      Active
+                    </span>
+                  )}
                   <span className="font-medium">{m.short}</span>
                   <p className="mt-0.5 text-[10px] opacity-70">{m.label}</p>
                 </button>
@@ -199,6 +211,15 @@ export function CreateStrategyDialog({ open, onClose }: Props) {
           <span className="text-sm text-mist/70">Start trading immediately</span>
         </div>
 
+        {/* Duplicate warning */}
+        {isDuplicate && (
+          <div className="mt-3 rounded-lg border border-gold/20 bg-gold/5 px-3 py-2">
+            <p className="text-xs text-gold/80">
+              You already have a <strong>{meta.label}</strong> strategy running. Consider adjusting your existing one instead.
+            </p>
+          </div>
+        )}
+
         {/* Error */}
         {error && (
           <p className="mt-3 text-xs text-fall">{error}</p>
@@ -215,9 +236,13 @@ export function CreateStrategyDialog({ open, onClose }: Props) {
           <button
             onClick={handleCreate}
             disabled={loading}
-            className="rounded-lg bg-gold/90 px-5 py-2 text-sm font-medium text-black transition hover:bg-gold disabled:opacity-50"
+            className={`rounded-lg px-5 py-2 text-sm font-medium transition disabled:opacity-50 ${
+              isDuplicate
+                ? "border border-gold/40 bg-gold/10 text-gold hover:bg-gold/20"
+                : "bg-gold/90 text-black hover:bg-gold"
+            }`}
           >
-            {loading ? "Creating..." : "Create Strategy"}
+            {loading ? "Creating..." : isDuplicate ? "Create Anyway" : "Create Strategy"}
           </button>
         </div>
       </div>

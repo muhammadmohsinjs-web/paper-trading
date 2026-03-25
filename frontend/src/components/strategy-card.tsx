@@ -10,7 +10,8 @@ import { STRATEGY_TYPE_META, type StrategyType, type StrategyWithStats } from "@
 export function StrategyCard({ strategy }: { strategy: StrategyWithStats }) {
   const router = useRouter();
   const [toggling, setToggling] = useState(false);
-  const pnlAccent = strategy.total_pnl >= 0 ? "text-rise" : "text-fall";
+  const combinedPnl = strategy.total_pnl + (strategy.has_open_position ? (strategy.unrealized_pnl ?? 0) : 0);
+  const pnlAccent = combinedPnl >= 0 ? "text-rise" : "text-fall";
 
   const strategyType = (strategy.config_json?.strategy_type as StrategyType) || "sma_crossover";
   const meta = STRATEGY_TYPE_META[strategyType] || STRATEGY_TYPE_META.sma_crossover;
@@ -81,8 +82,8 @@ export function StrategyCard({ strategy }: { strategy: StrategyWithStats }) {
           <p className="mt-0.5 text-lg font-medium text-sand">{formatPercent(strategy.win_rate)}</p>
         </div>
         <div>
-          <p className="text-mist/45 text-xs">P&L</p>
-          <p className={`mt-0.5 text-lg font-medium ${pnlAccent}`}>{formatCurrency(strategy.total_pnl)}</p>
+          <p className="text-mist/45 text-xs">Total P&L</p>
+          <p className={`mt-0.5 text-lg font-medium ${pnlAccent}`}>{formatCurrency(combinedPnl)}</p>
         </div>
         <div>
           <p className="text-mist/45 text-xs">Trades</p>

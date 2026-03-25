@@ -136,7 +136,7 @@ export function DashboardClient({
         </div>
       </section>
 
-      <CreateStrategyDialog open={showCreate} onClose={() => setShowCreate(false)} />
+      <CreateStrategyDialog open={showCreate} onClose={() => setShowCreate(false)} existingStrategies={dashboard.strategies} />
     </div>
   );
 }
