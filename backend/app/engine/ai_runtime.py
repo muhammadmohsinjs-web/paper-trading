@@ -105,6 +105,18 @@ class AIDecisionResult:
     skip_reason: str | None = None
 
 
+@dataclass
+class AIValidationResult:
+    status: str
+    approved: bool | None = None
+    confidence_adjustment: float | None = None
+    reason: str | None = None
+    usage: AIUsage | None = None
+    raw_response: str | None = None
+    error: str | None = None
+    skip_reason: str | None = None
+
+
 PROMPT_TEMPLATES: dict[str, str] = {
     "rsi_ma": (
         "You are a crypto trading assistant using RSI and moving averages.\n"
@@ -172,6 +184,23 @@ def _system_prompt(strategy_key: str) -> str:
         "- quantity_pct must be between 0 and 1.\n"
         "- confidence must honestly reflect the strength of evidence (mixed signals = low confidence).\n"
         "- Do not wrap the JSON in markdown or add extra commentary."
+    )
+
+
+def _validation_system_prompt(proposed_action: str) -> str:
+    return (
+        "You are a crypto trade validator.\n"
+        f"The algorithm already proposed a {proposed_action} trade.\n"
+        "You cannot create a new trade direction and you cannot reverse the action.\n"
+        "Return exactly one JSON object with these fields:\n"
+        '{ "approve": true, "confidence_adjustment": -0.10, "reason": "short rationale" }\n'
+        "Rules:\n"
+        "- approve must be true or false.\n"
+        "- confidence_adjustment must be between -0.30 and 0.00.\n"
+        "- Use false only when the setup quality is poor or the risk is unacceptable.\n"
+        "- Never return a positive confidence adjustment.\n"
+        "- Base your answer only on the supplied numeric context.\n"
+        "- Do not add markdown or commentary outside the JSON object."
     )
 
 
@@ -337,6 +366,14 @@ def _coerce_confidence(payload: dict[str, Any]) -> float | None:
     if confidence > 1:
         return 1.0
     return confidence
+
+
+def _coerce_validation_payload(payload: dict[str, Any]) -> tuple[bool, float, str]:
+    approved = bool(payload.get("approve", True))
+    raw_adjustment = float(payload.get("confidence_adjustment", 0.0) or 0.0)
+    adjustment = max(-0.30, min(0.0, raw_adjustment))
+    reason = str(payload.get("reason", "")).strip() or "AI validation"
+    return approved, adjustment, reason
 
 
 def _flat_market_metrics(
@@ -678,6 +715,94 @@ async def evaluate_ai_decision(
     return AIDecisionResult(
         status="error",
         reason="AI decision failed; defaulted to HOLD",
+        error=last_error,
+        usage=last_usage,
+    )
+
+
+async def evaluate_ai_validation(
+    *,
+    context: dict[str, Any],
+    proposed_action: str,
+) -> AIValidationResult:
+    provider, model = resolve_runtime_provider_and_model(context)
+    api_key = ai_api_key_for_provider(provider, SETTINGS)
+    base_url = ai_base_url_for_provider(provider, SETTINGS)
+    provider_label = "OpenAI" if provider == AI_PROVIDER_OPENAI else "Anthropic"
+
+    if not api_key:
+        return AIValidationResult(
+            status="skipped",
+            reason=f"{provider_label} API key is not configured",
+            skip_reason="missing_api_key",
+        )
+
+    max_tokens = int(context.get("strategy", {}).get("ai_max_tokens") or SETTINGS.ai_max_tokens)
+    temperature = Decimal(str(context.get("strategy", {}).get("ai_temperature") or SETTINGS.ai_temperature))
+    user_message = json.dumps(context, separators=(",", ":"), default=str)
+    system_prompt = _validation_system_prompt(proposed_action)
+    last_error: str | None = None
+    last_usage: AIUsage | None = None
+
+    async with AI_CALL_SEMAPHORE:
+        async with httpx.AsyncClient(base_url=base_url, timeout=SETTINGS.ai_timeout_seconds) as client:
+            for attempt in range(2):
+                try:
+                    prompt = system_prompt if attempt == 0 else f"{system_prompt}\nPrevious response was invalid. Return only strict JSON."
+                    symbol = str(context.get("market", {}).get("symbol") or "BTCUSDT")
+                    _log_ai_prompt(provider, model, prompt, symbol)
+                    print(f"{_BOLD}{_YELLOW}⏳ Waiting for {provider.upper()} validation...{_RESET}", flush=True)
+                    t0 = time.monotonic()
+                    if provider == AI_PROVIDER_OPENAI:
+                        response_json = await _call_openai(
+                            client=client,
+                            model=model,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                            system_prompt=prompt,
+                            user_message=user_message,
+                        )
+                        raw_text = _extract_openai_text(response_json)
+                    else:
+                        response_json = await _call_anthropic(
+                            client=client,
+                            model=model,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                            system_prompt=prompt,
+                            user_message=user_message,
+                        )
+                        raw_text = _extract_anthropic_text(response_json)
+                    elapsed = time.monotonic() - t0
+                    print(f"{_BOLD}{_GREEN}✅ Validation received in {elapsed:.2f}s{_RESET}", flush=True)
+                    _log_ai_response(provider, raw_text or "(empty)", symbol)
+                    if not raw_text:
+                        raise ValueError(f"{provider_label} validation response did not contain text content")
+                    last_usage = _usage_from_response(response_json, provider)
+                    payload = _extract_json_payload(raw_text)
+                    approved, confidence_adjustment, reason = _coerce_validation_payload(payload)
+                    return AIValidationResult(
+                        status="validated" if approved else "rejected",
+                        approved=approved,
+                        confidence_adjustment=confidence_adjustment,
+                        reason=reason,
+                        usage=last_usage,
+                        raw_response=raw_text,
+                    )
+                except (httpx.HTTPError, ValueError, json.JSONDecodeError) as exc:
+                    last_error = str(exc)
+                    logger.warning(
+                        "ai validation retry provider=%s attempt=%d error=%s",
+                        provider,
+                        attempt + 1,
+                        exc,
+                    )
+                    if attempt == 0:
+                        continue
+
+    return AIValidationResult(
+        status="error",
+        reason="AI validation failed; continuing without validator",
         error=last_error,
         usage=last_usage,
     )

@@ -27,6 +27,9 @@ class TradeResponse(BaseModel):
     cost_usdt: float | None = None
     composite_score: float | None = None
     composite_confidence: float | None = None
+    entry_confidence_raw: float | None = None
+    entry_confidence_final: float | None = None
+    entry_confidence_bucket: str | None = None
     wallet_balance_before: float | None = None
     wallet_balance_after: float | None = None
     executed_at: datetime

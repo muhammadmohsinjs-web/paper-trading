@@ -40,7 +40,7 @@ def test_compute_ai_vote_returns_none_without_complete_inputs():
     assert compute_ai_vote(0.7, None, 1.0) is None
 
 
-def test_compute_composite_score_uses_ai_fallback_weights_when_ai_missing():
+def test_compute_composite_score_normalizes_weights_without_ai():
     indicators = {
         "rsi": [25.0],
         "macd": ([0.4, 0.5], [0.45, 0.4], [-0.05, 0.1]),
@@ -62,7 +62,7 @@ def test_compute_composite_score_uses_ai_fallback_weights_when_ai_missing():
     assert result.composite_score > 0
 
 
-def test_compute_composite_score_respects_configured_ai_disabled_weights():
+def test_compute_composite_score_respects_configured_weights():
     indicators = {
         "rsi": [75.0],
         "macd": ([-0.4, -0.5], [-0.3, -0.4], [-0.1, -0.1]),
@@ -80,7 +80,6 @@ def test_compute_composite_score_respects_configured_ai_disabled_weights():
         "weight_sma": 0.20,
         "weight_ema": 0.13,
         "weight_volume": 0.13,
-        "weight_ai": 0.0,
         "confidence_gate": 0.5,
     }
 
@@ -88,6 +87,7 @@ def test_compute_composite_score_respects_configured_ai_disabled_weights():
 
     assert result.weights["rsi"] == 0.27
     assert result.weights["macd"] == 0.27
+    assert "ai" not in result.weights
     assert result.signal == "SELL"
 
 
@@ -106,7 +106,6 @@ def test_all_bullish_maximum_score():
     result = compute_composite_score(
         indicators,
         config={"confidence_gate": 0.1},
-        ai_vote_value=1.0,
     )
     assert result.composite_score > 0.5
     assert result.signal == "BUY"
@@ -127,7 +126,6 @@ def test_all_bearish_minimum_score():
     result = compute_composite_score(
         indicators,
         config={"confidence_gate": 0.1},
-        ai_vote_value=-1.0,
     )
     assert result.composite_score < -0.5
     assert result.signal == "SELL"
@@ -168,3 +166,22 @@ def test_dampening_with_low_volume():
 def test_ai_vote_with_complete_inputs():
     vote = compute_ai_vote(1.0, 0.9, 0.8)
     assert abs(vote - 0.72) < 0.001
+
+
+def test_confidence_gets_regime_bonus_in_supportive_market():
+    indicators = {
+        "rsi": [25.0],
+        "macd": ([0.4, 0.5], [0.45, 0.4], [-0.05, 0.1]),
+        "sma_short": [100.0, 102.0],
+        "sma_long": [101.0, 101.5],
+        "ema_12": [100.0, 103.0],
+        "ema_26": [99.0, 101.0],
+        "volume_ratio": [1.6],
+        "latest_close": 105.0,
+        "previous_close": 104.0,
+    }
+
+    trending = compute_composite_score(indicators, regime="trending_up")
+    crash = compute_composite_score(indicators, regime="crash")
+
+    assert trending.confidence > crash.confidence

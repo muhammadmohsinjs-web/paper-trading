@@ -2,6 +2,7 @@
 
 from decimal import Decimal
 
+from app.market.indicators import compute_indicators
 from app.strategies.sma_crossover import SMACrossoverStrategy
 from app.strategies.rsi_mean_reversion import RSIMeanReversionStrategy
 from app.strategies.macd_momentum import MACDMomentumStrategy
@@ -45,6 +46,22 @@ class TestSMACrossover:
         signal = self.strategy.decide(indicators, has_position=False, available_usdt=USDT)
         assert signal is not None
         assert signal.action.value == "BUY"
+
+    def test_golden_cross_accepts_live_volume_ratio_shape(self):
+        live_indicators = compute_indicators(
+            closes=list(range(1, 80)),
+            highs=[float(v + 1) for v in range(1, 80)],
+            lows=[float(v - 1) for v in range(1, 80)],
+            volumes=[100.0] * 79,
+        )
+        indicators = {
+            "sma_short": [99.0, 101.0],
+            "sma_long": [100.0, 100.0],
+            "volume_ratio": live_indicators["volume_ratio"],
+        }
+
+        signal = self.strategy.decide(indicators, has_position=False, available_usdt=USDT)
+        assert signal is None
 
     def test_death_cross_sell(self):
         indicators = {

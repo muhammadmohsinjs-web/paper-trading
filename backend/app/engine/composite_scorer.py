@@ -10,11 +10,10 @@ DEFAULT_WEIGHTS = {
     "macd": 0.25,
     "sma": 0.15,
     "ema": 0.10,
-    "volume": 0.15,
-    "ai": 0.15,
+    "volume": 0.30,
 }
 
-DEFAULT_CONFIDENCE_GATE = 0.2
+DEFAULT_CONFIDENCE_GATE = 0.35
 DEFAULT_VOLUME_DAMPENING_MULTIPLIER = 0.5
 
 
@@ -152,16 +151,65 @@ def _configured_weights(config: dict[str, Any] | None) -> dict[str, float]:
     return weights
 
 
-def _resolve_weights(config: dict[str, Any] | None, ai_vote: float | None) -> dict[str, float]:
+def _resolve_weights(config: dict[str, Any] | None) -> dict[str, float]:
     weights = _configured_weights(config)
-    if ai_vote is not None:
-        return weights
-
-    non_ai_weights = {key: value for key, value in weights.items() if key != "ai"}
-    total = sum(non_ai_weights.values())
+    total = sum(weights.values())
     if total <= 0:
-        return {**DEFAULT_WEIGHTS, "ai": 0.0}
-    return {key: value / total for key, value in non_ai_weights.items()}
+        return DEFAULT_WEIGHTS.copy()
+    return {key: value / total for key, value in weights.items()}
+
+
+def _volume_quality(volume_ratio: float | None) -> float:
+    if volume_ratio is None:
+        return 0.3
+    if volume_ratio >= 1.5:
+        return 1.0
+    if volume_ratio >= 1.0:
+        return 0.7
+    if volume_ratio >= 0.7:
+        return 0.4
+    if volume_ratio >= 0.5:
+        return 0.2
+    return 0.0
+
+
+def _regime_alignment_bonus(regime: str | None, direction: str) -> float:
+    if direction != "BUY":
+        return 0.0
+
+    normalized = (regime or "").strip().lower()
+    if normalized in {"trending_up", "ranging"}:
+        return 1.0
+    if normalized == "high_volatility":
+        return 0.5
+    return 0.0
+
+
+def _confidence_from_components(
+    *,
+    votes: dict[str, float],
+    composite_score: float,
+    volume_ratio: float | None,
+    regime: str | None,
+) -> float:
+    active_votes = [vote for vote in votes.values() if abs(vote) > 1e-9]
+    if active_votes and composite_score != 0:
+        score_sign = 1 if composite_score > 0 else -1
+        agreement_ratio = sum(1 for vote in active_votes if vote * score_sign > 0) / len(active_votes)
+    else:
+        agreement_ratio = 0.0
+
+    magnitude = min(abs(composite_score), 1.0)
+    volume_quality = _volume_quality(volume_ratio)
+    direction = "BUY" if composite_score > 0 else "SELL" if composite_score < 0 else "HOLD"
+    regime_bonus = _regime_alignment_bonus(regime, direction)
+    confidence = (
+        agreement_ratio * 0.40
+        + magnitude * 0.30
+        + volume_quality * 0.20
+        + regime_bonus * 0.10
+    )
+    return max(0.0, min(confidence, 1.0))
 
 
 def compute_composite_score(
@@ -169,6 +217,7 @@ def compute_composite_score(
     *,
     config: dict[str, Any] | None = None,
     ai_vote_value: float | None = None,
+    regime: str | None = None,
 ) -> CompositeScoreResult:
     latest_rsi = indicators.get("rsi", [None])[-1] if indicators.get("rsi") else None
     macd_line, signal_line, histogram = indicators.get("macd", ([], [], []))
@@ -187,14 +236,15 @@ def compute_composite_score(
     )
     votes["volume"] = volume_vote_value
 
-    ai_vote_present = ai_vote_value is not None
-    if ai_vote_present:
-        votes["ai"] = float(ai_vote_value)
-
-    weights = _resolve_weights(config, ai_vote_value)
+    weights = _resolve_weights(config)
     weighted_sum = sum(votes[key] * weights.get(key, 0.0) for key in votes)
     composite_score = max(min(weighted_sum * dampening_multiplier, 1.0), -1.0)
-    confidence = abs(composite_score)
+    confidence = _confidence_from_components(
+        votes=votes,
+        composite_score=composite_score,
+        volume_ratio=latest_volume_ratio,
+        regime=regime,
+    )
 
     if composite_score > 0:
         direction = "BUY"
@@ -214,5 +264,5 @@ def compute_composite_score(
         direction=direction,
         signal=signal,
         dampening_multiplier=dampening_multiplier,
-        ai_vote_present=ai_vote_present,
+        ai_vote_present=False,
     )

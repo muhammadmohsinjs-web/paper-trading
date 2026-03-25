@@ -35,6 +35,9 @@ class PositionResponse(BaseModel):
     take_profit_price: float | None = None
     trailing_stop_price: float | None = None
     entry_atr: float | None = None
+    entry_confidence_raw: float | None = None
+    entry_confidence_final: float | None = None
+    entry_confidence_bucket: str | None = None
     current_price: float | None = None
     unrealized_pnl: float | None = None
 

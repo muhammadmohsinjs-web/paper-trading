@@ -56,6 +56,9 @@ async def execute_buy(
     indicator_snapshot: dict | None = None,
     composite_score: Decimal | None = None,
     composite_confidence: Decimal | None = None,
+    entry_confidence_raw: Decimal | None = None,
+    entry_confidence_final: Decimal | None = None,
+    entry_confidence_bucket: str | None = None,
 ) -> ExecutionResult:
     """Execute a BUY order: calculate cost, apply slippage/fees, debit wallet, open position."""
     wallet_balance_before = wallet.available_usdt
@@ -89,9 +92,25 @@ async def execute_buy(
         ).quantize(Decimal("0.00000001"))
         existing.quantity = total_qty
         existing.entry_fee = existing.entry_fee + fee
+        if entry_confidence_raw is not None:
+            existing.entry_confidence_raw = entry_confidence_raw
+        if entry_confidence_final is not None:
+            existing.entry_confidence_final = entry_confidence_final
+        if entry_confidence_bucket is not None:
+            existing.entry_confidence_bucket = entry_confidence_bucket
         await session.flush()
     else:
-        await open_position(session, strategy_id, symbol, quantity, exec_price, fee)
+        await open_position(
+            session,
+            strategy_id,
+            symbol,
+            quantity,
+            exec_price,
+            fee,
+            entry_confidence_raw=entry_confidence_raw,
+            entry_confidence_final=entry_confidence_final,
+            entry_confidence_bucket=entry_confidence_bucket,
+        )
 
     wallet_balance_after = wallet.available_usdt
 
@@ -116,6 +135,9 @@ async def execute_buy(
         indicator_snapshot=indicator_snapshot,
         composite_score=composite_score,
         composite_confidence=composite_confidence,
+        entry_confidence_raw=entry_confidence_raw,
+        entry_confidence_final=entry_confidence_final,
+        entry_confidence_bucket=entry_confidence_bucket,
         wallet_balance_before=wallet_balance_before,
         wallet_balance_after=wallet_balance_after,
     )

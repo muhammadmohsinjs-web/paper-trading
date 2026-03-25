@@ -26,6 +26,21 @@ class PositionSizingResult:
     entry_atr: Decimal
 
 
+def calculate_exit_levels(
+    *,
+    entry_price: Decimal,
+    atr: Decimal,
+    atr_multiplier: Decimal = Decimal("2.0"),
+    take_profit_ratio: Decimal = Decimal("2.0"),
+) -> tuple[Decimal, Decimal]:
+    stop_distance = atr * atr_multiplier
+    stop_loss_price = (entry_price - stop_distance).quantize(Decimal("0.00000001"))
+    take_profit_price = (
+        entry_price + (stop_distance * take_profit_ratio)
+    ).quantize(Decimal("0.00000001"))
+    return stop_loss_price, take_profit_price
+
+
 def streak_multiplier_for_losses(losing_streak_count: int) -> Decimal:
     if losing_streak_count >= 5:
         return Decimal("0.25")
@@ -63,8 +78,12 @@ def calculate_position_size(
 
     stop_distance = atr * atr_multiplier
     stop_distance_pct = stop_distance / entry_price
-    stop_loss_price = entry_price - stop_distance
-    take_profit_price = entry_price + (stop_distance * take_profit_ratio)
+    stop_loss_price, take_profit_price = calculate_exit_levels(
+        entry_price=entry_price,
+        atr=atr,
+        atr_multiplier=atr_multiplier,
+        take_profit_ratio=take_profit_ratio,
+    )
     risk_amount = equity * (risk_per_trade_pct / Decimal("100"))
     confidence_multiplier = CONFIDENCE_MULTIPLIERS.get(confidence_tier, Decimal("1.0"))
     streak_multiplier = streak_multiplier_for_losses(losing_streak_count)
@@ -86,8 +105,8 @@ def calculate_position_size(
 
     return PositionSizingResult(
         quantity_pct=quantity_pct,
-        stop_loss_price=stop_loss_price.quantize(Decimal("0.00000001")),
-        take_profit_price=take_profit_price.quantize(Decimal("0.00000001")),
+        stop_loss_price=stop_loss_price,
+        take_profit_price=take_profit_price,
         risk_amount=adjusted_risk.quantize(Decimal("0.00000001")),
         position_value=final_position_value.quantize(Decimal("0.00000001")),
         stop_distance=stop_distance.quantize(Decimal("0.00000001")),

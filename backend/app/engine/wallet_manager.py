@@ -66,6 +66,10 @@ async def open_position(
     quantity: Decimal,
     entry_price: Decimal,
     entry_fee: Decimal,
+    *,
+    entry_confidence_raw: Decimal | None = None,
+    entry_confidence_final: Decimal | None = None,
+    entry_confidence_bucket: str | None = None,
 ) -> Position:
     """Create a new LONG position."""
     position = Position(
@@ -76,6 +80,9 @@ async def open_position(
         quantity=quantity,
         entry_price=entry_price,
         entry_fee=entry_fee,
+        entry_confidence_raw=entry_confidence_raw,
+        entry_confidence_final=entry_confidence_final,
+        entry_confidence_bucket=entry_confidence_bucket,
     )
     session.add(position)
     await session.flush()

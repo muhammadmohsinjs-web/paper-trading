@@ -258,6 +258,17 @@ async def get_strategy_positions(
             take_profit_price=float(position.take_profit_price) if position.take_profit_price is not None else None,
             trailing_stop_price=float(position.trailing_stop_price) if position.trailing_stop_price is not None else None,
             entry_atr=float(position.entry_atr) if position.entry_atr is not None else None,
+            entry_confidence_raw=(
+                float(position.entry_confidence_raw)
+                if position.entry_confidence_raw is not None
+                else None
+            ),
+            entry_confidence_final=(
+                float(position.entry_confidence_final)
+                if position.entry_confidence_final is not None
+                else None
+            ),
+            entry_confidence_bucket=position.entry_confidence_bucket,
             current_price=store.get_latest_price(position.symbol),
             unrealized_pnl=(
                 (float(store.get_latest_price(position.symbol)) - float(position.entry_price))

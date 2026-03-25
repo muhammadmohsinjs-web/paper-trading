@@ -1,9 +1,16 @@
-"""Main trading loop — one asyncio.Task per strategy."""
+"""Main trading loop — one asyncio.Task per strategy.
+
+Refactored to delegate to extracted components:
+- HybridCompositeStrategy (strategies/hybrid_composite.py)
+- PostTradePipeline (engine/post_trade.py)
+- StrategyContext (strategies/base.py)
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
@@ -14,26 +21,35 @@ from sqlalchemy import select, text
 from app.api.ws import ConnectionManager
 from app.config import default_ai_model_for_provider, get_settings, normalize_ai_provider
 from app.database import SessionLocal
-from app.engine.composite_scorer import compute_ai_vote, compute_composite_score
-from app.engine.executor import execute_buy, execute_sell
 from app.engine.ai_runtime import (
-    AIDecisionResult,
+    AIValidationResult,
     AIUsage,
     build_ai_context,
     analyze_flat_market,
-    evaluate_ai_decision,
+    evaluate_ai_validation,
     normalize_ai_strategy_key,
 )
+from app.engine.executor import execute_buy, execute_sell
 from app.engine.exit_manager import evaluate_exit
-from app.engine.position_sizer import calculate_position_size, streak_multiplier_for_losses
+from app.engine.position_sizer import calculate_exit_levels
+from app.engine.post_trade import (
+    compute_equity,
+    handle_post_trade,
+)
 from app.engine.wallet_manager import get_or_create_wallet, get_position
 from app.models.ai_call_log import AICallLog
 from app.market.data_store import DataStore
-from app.notifications.whatsapp import send_trade_notification
 from app.market.indicators import compute_indicators
 from app.models.snapshot import Snapshot
 from app.models.strategy import Strategy
+from app.regime.classifier import RegimeClassifier
+from app.regime.types import MarketRegime, RegimeResult
+from app.strategies.base import StrategyContext
+from app.strategies.hybrid_composite import HybridCompositeStrategy, HybridDecision
 from app.strategies.registry import get_strategy_class
+from app.ai.trade_validator import validate_trade_signal
+
+_regime_classifier = RegimeClassifier()
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -276,56 +292,33 @@ def _serialize_composite_result(result: Any) -> dict[str, Any]:
     }
 
 
-def _hybrid_ai_bias(action: str | None) -> float | None:
-    normalized = (action or "").strip().upper()
-    if normalized == "BUY":
-        return 1.0
-    if normalized == "SELL":
-        return -1.0
-    if normalized == "HOLD":
-        return 0.0
-    return None
+@dataclass
+class LiveTradeDecision:
+    action: str
+    reason: str
+    raw_confidence: float
+    final_confidence: float
+    regime: str
+    quantity_pct: Decimal = Decimal("0")
+    validator_reason: str | None = None
+    decision_source: str = "rule_entry"
+    composite_result: Any | None = None
+    entry_confidence_bucket: str | None = None
 
 
-def _hybrid_ai_vote_value(decision: AIDecisionResult | None) -> float | None:
-    if decision is None:
-        return None
-    return compute_ai_vote(_hybrid_ai_bias(decision.action), decision.confidence, 1.0)
-
-
-def _update_strategy_streak(strategy: Strategy, pnl: Decimal | None) -> None:
-    if pnl is None:
+def _touch_ai_metrics(
+    strategy: Strategy,
+    *,
+    status: str,
+    reason: str | None,
+    usage: AIUsage | None,
+) -> None:
+    strategy.ai_last_decision_status = status
+    strategy.ai_last_reasoning = reason
+    if usage is None:
         return
 
-    if pnl < 0:
-        strategy.consecutive_losses += 1
-        strategy.max_consecutive_losses = max(
-            strategy.max_consecutive_losses,
-            strategy.consecutive_losses,
-        )
-    elif pnl > 0:
-        strategy.consecutive_losses = 0
-
-    strategy.streak_size_multiplier = streak_multiplier_for_losses(strategy.consecutive_losses)
-
-
-def _accumulate_wallet_losses(wallet: Any, pnl: Decimal | None) -> None:
-    """Track daily/weekly losses on the wallet for limit enforcement."""
-    if pnl is None or pnl >= 0:
-        return
-    loss = abs(pnl)
-    wallet.daily_loss_usdt = (wallet.daily_loss_usdt or Decimal("0")) + loss
-    wallet.weekly_loss_usdt = (wallet.weekly_loss_usdt or Decimal("0")) + loss
-
-
-def _touch_ai_metrics(strategy: Strategy, decision: AIDecisionResult) -> None:
-    if decision.usage is None:
-        return
-
-    usage = decision.usage
     strategy.ai_last_decision_at = datetime.now(timezone.utc)
-    strategy.ai_last_decision_status = decision.status
-    strategy.ai_last_reasoning = decision.reason or decision.raw_response
     strategy.ai_last_provider = usage.provider
     strategy.ai_last_model = usage.model
     strategy.ai_last_prompt_tokens = usage.prompt_tokens
@@ -339,26 +332,27 @@ def _touch_ai_metrics(strategy: Strategy, decision: AIDecisionResult) -> None:
     strategy.ai_total_cost_usdt += usage.estimated_cost_usdt
 
 
-def _build_ai_log(
+def _build_ai_validation_log(
     strategy_id: str,
     symbol: str,
-    decision: AIDecisionResult | None = None,
+    validation: AIValidationResult | None = None,
     *,
     status: str | None = None,
     skip_reason: str | None = None,
     reason: str | None = None,
+    proposed_action: str | None = None,
 ) -> AICallLog:
-    if decision is not None:
-        usage = decision.usage
+    if validation is not None:
+        usage = validation.usage
         return AICallLog(
             strategy_id=strategy_id,
             symbol=symbol,
-            status=decision.status,
-            skip_reason=decision.skip_reason,
-            action=decision.signal,
-            confidence=Decimal(str(decision.confidence)) if decision.confidence is not None else None,
-            reasoning=decision.reason or decision.raw_response,
-            error=decision.error,
+            status=validation.status,
+            skip_reason=validation.skip_reason,
+            action=proposed_action,
+            confidence=None,
+            reasoning=validation.reason or validation.raw_response,
+            error=validation.error,
             provider=usage.provider if usage else None,
             model=usage.model if usage else None,
             prompt_tokens=usage.prompt_tokens if usage else 0,
@@ -375,6 +369,400 @@ def _build_ai_log(
     )
 
 
+def _clamp_confidence(value: float) -> float:
+    return max(0.0, min(float(value), 1.0))
+
+
+def _signal_confidence(signal: Any) -> float:
+    quantity_pct = getattr(signal, "quantity_pct", Decimal("0"))
+    if getattr(getattr(signal, "action", None), "value", getattr(signal, "action", None)) == "SELL":
+        return 1.0
+    return _clamp_confidence(float(quantity_pct))
+
+
+def _base_entry_gate(strategy_type: str, config: dict[str, Any]) -> float:
+    default_gate = 0.35 if strategy_type == "hybrid_composite" else 0.30
+    return float(config.get("confidence_gate", default_gate))
+
+
+def _confidence_bucket(confidence: float) -> str:
+    bounded = min(max(confidence, 0.0), 0.9999)
+    lower = int(bounded * 10) * 10
+    return f"{lower:02d}-{lower + 9:02d}"
+
+
+def _hybrid_calibration_multiplier(config: dict[str, Any], bucket: str) -> float:
+    calibration = (config.get("hybrid_confidence_calibration") or {}).get(bucket, {})
+    trades = int(calibration.get("trades", 0) or 0)
+    if trades < 20:
+        return 1.0
+    win_rate = float(calibration.get("wins", 0) or 0) / trades if trades > 0 else 0.0
+    return max(0.75, min(1.25, 0.75 + 0.50 * win_rate))
+
+
+def _update_hybrid_calibration(strategy: Strategy, position: Any, trade: Any) -> None:
+    bucket = getattr(position, "entry_confidence_bucket", None)
+    pnl_pct = getattr(trade, "pnl_pct", None)
+    if not bucket or pnl_pct is None:
+        return
+
+    config = dict(strategy.config_json or {})
+    calibration = dict(config.get("hybrid_confidence_calibration") or {})
+    stats = dict(calibration.get(bucket) or {})
+    trades = int(stats.get("trades", 0) or 0) + 1
+    wins = int(stats.get("wins", 0) or 0) + (1 if (trade.pnl or Decimal("0")) > 0 else 0)
+    prev_avg = float(stats.get("avg_pnl_pct", 0.0) or 0.0)
+    next_avg = ((prev_avg * (trades - 1)) + float(pnl_pct)) / trades
+    calibration[bucket] = {
+        "trades": trades,
+        "wins": wins,
+        "avg_pnl_pct": round(next_avg, 6),
+    }
+    config["hybrid_confidence_calibration"] = calibration
+    strategy.config_json = config
+
+
+def _refresh_loss_counters(wallet: Any) -> None:
+    today = datetime.now(timezone.utc).date()
+    if wallet.daily_loss_reset_date != today:
+        wallet.daily_loss_usdt = Decimal("0")
+        wallet.daily_loss_reset_date = today
+
+    week_start = today - timedelta(days=today.weekday())
+    if wallet.weekly_loss_reset_date is None or wallet.weekly_loss_reset_date < week_start:
+        wallet.weekly_loss_usdt = Decimal("0")
+        wallet.weekly_loss_reset_date = week_start
+
+
+def _entry_risk_status(
+    strategy: Strategy,
+    wallet: Any,
+    equity: Decimal,
+    config: dict[str, Any],
+) -> str | None:
+    peak = wallet.peak_equity_usdt or equity
+    if equity > peak:
+        wallet.peak_equity_usdt = equity
+        peak = equity
+    if peak > 0:
+        drawdown_pct = (peak - equity) / peak * 100
+        max_dd = Decimal(str(strategy.max_drawdown_pct or settings.default_max_drawdown_pct))
+        if drawdown_pct >= max_dd:
+            return f"Max drawdown {drawdown_pct:.2f}% exceeds limit {max_dd}%"
+
+    _refresh_loss_counters(wallet)
+    daily_limit = Decimal(str(config.get("daily_loss_limit_usdt", 0)))
+    weekly_limit = Decimal(str(config.get("weekly_loss_limit_usdt", 0)))
+    if daily_limit > 0 and wallet.daily_loss_usdt >= daily_limit:
+        return f"Daily loss ${wallet.daily_loss_usdt} exceeds limit ${daily_limit}"
+    if weekly_limit > 0 and wallet.weekly_loss_usdt >= weekly_limit:
+        return f"Weekly loss ${wallet.weekly_loss_usdt} exceeds limit ${weekly_limit}"
+    return None
+
+
+def _regime_entry_policy(
+    strategy_type: str,
+    regime: MarketRegime,
+    base_gate: float,
+) -> tuple[bool, Decimal, float, str | None]:
+    if regime in {MarketRegime.CRASH, MarketRegime.TRENDING_DOWN}:
+        return False, Decimal("1.0"), base_gate, f"{regime.value} blocks new long entries"
+
+    if regime == MarketRegime.HIGH_VOLATILITY:
+        if strategy_type not in {"hybrid_composite", "macd_momentum"}:
+            return False, Decimal("1.0"), base_gate + 0.10, "High volatility blocks this strategy"
+        return True, Decimal("0.5"), base_gate + 0.10, None
+
+    if regime == MarketRegime.RANGING:
+        if strategy_type not in {"rsi_mean_reversion", "bollinger_bounce", "hybrid_composite"}:
+            return False, Decimal("1.0"), base_gate, "Ranging regime blocks this strategy"
+        return True, Decimal("1.0"), base_gate, None
+
+    if regime == MarketRegime.TRENDING_UP:
+        if strategy_type not in {"sma_crossover", "macd_momentum", "hybrid_composite"}:
+            return False, Decimal("1.0"), base_gate, "Trending-up regime blocks this strategy"
+        return True, Decimal("1.0"), base_gate, None
+
+    return True, Decimal("1.0"), base_gate, None
+
+
+def _cap_quantity_pct(
+    *,
+    quantity_pct: Decimal,
+    wallet: Any,
+    equity: Decimal,
+    max_position_size_pct: Decimal,
+) -> Decimal:
+    if wallet.available_usdt <= 0:
+        return Decimal("0")
+    max_spend = equity * (max_position_size_pct / Decimal("100"))
+    capped_pct = min(quantity_pct, max_spend / wallet.available_usdt)
+    return max(capped_pct, Decimal("0"))
+
+
+def _decision_reason(decision: LiveTradeDecision) -> str:
+    if decision.validator_reason:
+        return f"{decision.reason} | validator={decision.validator_reason}"
+    return decision.reason
+
+
+def _precompute_entry_levels(
+    indicators: dict[str, Any],
+    market_price: Decimal,
+    config: dict[str, Any],
+) -> tuple[Decimal, Decimal, Decimal] | None:
+    atr_values = indicators.get("atr", [])
+    if not atr_values:
+        return None
+    entry_atr = Decimal(str(atr_values[-1]))
+    stop_loss, take_profit = calculate_exit_levels(
+        entry_price=market_price,
+        atr=entry_atr,
+        atr_multiplier=Decimal(str(config.get("atr_stop_multiplier", 2.0))),
+        take_profit_ratio=Decimal(str(config.get("take_profit_ratio", 2.0))),
+    )
+    return stop_loss, take_profit, entry_atr
+
+
+def _build_validation_context(
+    *,
+    strategy: Strategy,
+    symbol: str,
+    interval: str,
+    indicators: dict[str, Any],
+    ai_config: dict[str, Any],
+    highs: list[float],
+    lows: list[float],
+    volumes: list[float],
+    closes: list[float],
+    wallet: Any,
+    position: Any,
+    market_price: Decimal,
+    decision: LiveTradeDecision,
+) -> dict[str, Any]:
+    flat_metrics = analyze_flat_market(
+        closes,
+        ai_config.get("flat_market_threshold_pct", settings.ai_flat_market_threshold_pct),
+        indicators.get("atr"),
+    )[1]
+    return build_ai_context(
+        strategy_id=strategy.id,
+        strategy_name=strategy.name,
+        symbol=symbol,
+        interval=interval,
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+        indicators=indicators,
+        wallet_available_usdt=wallet.available_usdt,
+        has_position=position is not None,
+        position_quantity=position.quantity if position else None,
+        position_entry_price=position.entry_price if position else None,
+        current_price=market_price,
+        ai_strategy_key=ai_config["ai_strategy_key"],
+        ai_provider=ai_config["ai_provider"],
+        ai_model=ai_config["ai_model"],
+        ai_cooldown_seconds=ai_config["ai_cooldown_seconds"],
+        ai_max_tokens=ai_config["ai_max_tokens"],
+        ai_temperature=ai_config["ai_temperature"],
+        flat_market_metrics=flat_metrics or {"threshold_pct": ai_config["flat_market_threshold_pct"]},
+        algorithmic_signal={
+            "action": decision.action,
+            "reason": decision.reason,
+            "raw_confidence": round(decision.raw_confidence, 4),
+            "final_confidence": round(decision.final_confidence, 4),
+            "regime": decision.regime,
+            **(
+                {
+                    "composite_score": round(decision.composite_result.composite_score, 4),
+                    "direction": decision.composite_result.direction,
+                    "votes": {k: round(v, 4) for k, v in decision.composite_result.votes.items()},
+                }
+                if decision.composite_result is not None
+                else {}
+            ),
+        },
+    )
+
+
+async def _apply_ai_validation(
+    session: Any,
+    strategy: Strategy,
+    symbol: str,
+    interval: str,
+    indicators: dict[str, Any],
+    ai_config: dict[str, Any],
+    highs: list[float],
+    lows: list[float],
+    volumes: list[float],
+    closes: list[float],
+    wallet: Any,
+    position: Any,
+    market_price: Decimal,
+    decision: LiveTradeDecision,
+    force: bool,
+) -> LiveTradeDecision:
+    if decision.action != "BUY" or not ai_config["ai_enabled"]:
+        return decision
+
+    cooldown_remaining = _cooldown_remaining(strategy, ai_config["ai_cooldown_seconds"])
+    if cooldown_remaining > 0 and not force:
+        session.add(
+            _build_ai_validation_log(
+                strategy.id,
+                symbol,
+                status="skipped",
+                skip_reason="cooldown",
+                reason=f"AI cooldown active ({cooldown_remaining}s remaining)",
+                proposed_action=decision.action,
+            )
+        )
+        await session.commit()
+        return decision
+
+    context = _build_validation_context(
+        strategy=strategy,
+        symbol=symbol,
+        interval=interval,
+        indicators=indicators,
+        ai_config=ai_config,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+        closes=closes,
+        wallet=wallet,
+        position=position,
+        market_price=market_price,
+        decision=decision,
+    )
+    validation = await evaluate_ai_validation(context=context, proposed_action=decision.action)
+
+    if validation.usage is not None:
+        _touch_ai_metrics(
+            strategy,
+            status=validation.status,
+            reason=validation.reason or validation.error or validation.raw_response,
+            usage=validation.usage,
+        )
+    else:
+        strategy.ai_last_decision_status = validation.status
+        strategy.ai_last_reasoning = validation.reason or validation.error
+
+    session.add(
+        _build_ai_validation_log(
+            strategy.id,
+            symbol,
+            validation=validation,
+            proposed_action=decision.action,
+        )
+    )
+    await session.commit()
+
+    if validation.approved is None:
+        return decision
+
+    validation_result = validate_trade_signal(
+        decision.action,
+        decision.final_confidence,
+        indicators,
+        decision.regime,
+        ai_response={
+            "approve": validation.approved,
+            "confidence_adjustment": validation.confidence_adjustment or 0.0,
+            "reason": validation.reason or "AI validation",
+        },
+    )
+    decision.final_confidence = validation_result.adjusted_confidence
+    decision.validator_reason = validation_result.reason
+    return decision
+
+
+async def _execute_shared_exit(
+    session: Any,
+    manager: ConnectionManager,
+    strategy: Strategy,
+    strategy_id: str,
+    wallet: Any,
+    position: Any,
+    symbol: str,
+    market_price: Decimal,
+    quantity_pct: Decimal,
+    reason: str,
+    decision_source: str,
+    indicators: dict[str, Any],
+    *,
+    composite_result: Any = None,
+    exit_decision: Any = None,
+) -> dict[str, Any]:
+    result = await execute_sell(
+        session,
+        strategy_id,
+        wallet,
+        symbol,
+        market_price,
+        quantity_pct,
+        reason=reason,
+        strategy_name=strategy.name,
+        strategy_type=(strategy.config_json or {}).get("strategy_type", "unknown"),
+        decision_source=decision_source,
+        indicator_snapshot=_build_indicator_snapshot(indicators),
+        composite_score=(
+            Decimal(str(round(composite_result.composite_score, 4)))
+            if composite_result is not None
+            else None
+        ),
+        composite_confidence=(
+            Decimal(str(round(composite_result.confidence, 4)))
+            if composite_result is not None
+            else None
+        ),
+    )
+    composite_dict = _serialize_composite_result(composite_result) if composite_result is not None else {}
+    if result.success:
+        if decision_source == "hybrid_exit" and quantity_pct >= Decimal("0.99999999"):
+            _update_hybrid_calibration(strategy, position, result.trade)
+
+        await handle_post_trade(
+            session,
+            manager,
+            result=result,
+            strategy=strategy,
+            strategy_id=strategy_id,
+            wallet=wallet,
+            symbol=symbol,
+            market_price=market_price,
+            action="SELL",
+            reason=reason,
+            decision_source=decision_source,
+            is_sell=True,
+            exit_decision=exit_decision,
+        )
+        return {
+            "status": "executed",
+            "strategy_id": strategy_id,
+            "action": "SELL",
+            "symbol": symbol,
+            "price": str(result.trade.price),
+            "quantity": str(result.trade.quantity),
+            "fee": str(result.trade.fee),
+            "pnl": str(result.trade.pnl) if result.trade.pnl else None,
+            "reason": reason,
+            "decision_source": decision_source,
+            "composite": composite_dict,
+        }
+
+    await session.rollback()
+    return {
+        "status": "failed",
+        "reason": result.error,
+        "strategy_id": strategy_id,
+        "symbol": symbol,
+        "decision_source": decision_source,
+        "composite": composite_dict,
+    }
+
+
 def _build_indicator_snapshot(indicators: dict[str, Any]) -> dict[str, Any]:
     """Extract key indicator values for trade log context."""
     snap: dict[str, Any] = {}
@@ -385,14 +773,12 @@ def _build_indicator_snapshot(indicators: dict[str, Any]) -> dict[str, Any]:
         elif isinstance(vals, (int, float)):
             snap[key] = round(float(vals), 4)
 
-    for key in ("sma_short", "sma_long", "ema_short", "ema_long"):
+    for key in ("sma_short", "sma_long", "ema_12", "ema_26"):
         vals = indicators.get(key)
         if isinstance(vals, (list, tuple)) and vals:
             snap[key] = round(float(vals[-1]), 2)
 
-    macd_line = indicators.get("macd_line")
-    macd_signal = indicators.get("signal_line") or indicators.get("macd_signal")
-    macd_hist = indicators.get("macd_histogram") or indicators.get("histogram")
+    macd_line, macd_signal, macd_hist = indicators.get("macd", ([], [], []))
     if isinstance(macd_line, (list, tuple)) and macd_line:
         snap["macd_line"] = round(float(macd_line[-1]), 4)
     if isinstance(macd_signal, (list, tuple)) and macd_signal:
@@ -400,8 +786,8 @@ def _build_indicator_snapshot(indicators: dict[str, Any]) -> dict[str, Any]:
     if isinstance(macd_hist, (list, tuple)) and macd_hist:
         snap["macd_histogram"] = round(float(macd_hist[-1]), 4)
 
-    for key in ("bb_upper", "bb_middle", "bb_lower"):
-        vals = indicators.get(key)
+    bb_upper, bb_middle, bb_lower = indicators.get("bollinger_bands", ([], [], []))
+    for key, vals in (("bb_upper", bb_upper), ("bb_middle", bb_middle), ("bb_lower", bb_lower)):
         if isinstance(vals, (list, tuple)) and vals:
             snap[key] = round(float(vals[-1]), 2)
 
@@ -414,90 +800,6 @@ INTERVAL_TO_SECONDS: dict[str, int] = {
 
 # Per-strategy lock to prevent concurrent execution of run_single_cycle
 _strategy_locks: dict[str, asyncio.Lock] = {}
-
-
-def _compute_equity(wallet: Any, position: Any, market_price: Decimal) -> Decimal:
-    """Cash + mark-to-market position value."""
-    equity = wallet.available_usdt
-    if position is not None:
-        equity += position.quantity * market_price
-    return equity
-
-
-async def _force_stop_loss_sell(
-    session: Any,
-    strategy: Strategy,
-    strategy_id: str,
-    wallet: Any,
-    position: Any,
-    symbol: str,
-    market_price: Decimal,
-    manager: Any,
-) -> dict[str, Any]:
-    """Execute an immediate full sell triggered by stop-loss."""
-    from app.engine.executor import execute_sell  # already imported at module level
-
-    config = strategy.config_json or {}
-    result = await execute_sell(
-        session, strategy_id, wallet, symbol, market_price,
-        Decimal("1.0"),
-        reason=f"Stop-loss triggered at {market_price} (stop={position.stop_loss_price})",
-        strategy_name=strategy.name,
-        strategy_type=config.get("strategy_type", "unknown"),
-        decision_source="risk",
-    )
-    if result.success:
-        _update_strategy_streak(strategy, result.trade.pnl)
-        _accumulate_wallet_losses(wallet, result.trade.pnl)
-        logger.info(
-            "stop-loss executed strategy_id=%s symbol=%s price=%s stop=%s",
-            strategy_id, symbol, market_price, position.stop_loss_price,
-        )
-        await session.commit()
-        _stop_loss_event = {
-            "type": "trade_executed",
-            "strategy_id": strategy_id,
-            "action": "SELL",
-            "symbol": symbol,
-            "price": float(result.trade.price),
-            "quantity": float(result.trade.quantity),
-            "fee": float(result.trade.fee),
-            "pnl": float(result.trade.pnl) if result.trade.pnl is not None else None,
-            "reason": "stop_loss_triggered",
-            "decision_source": "risk",
-            "cost_usdt": float(result.trade.cost_usdt) if result.trade.cost_usdt else None,
-            "wallet_balance_before": float(result.trade.wallet_balance_before) if result.trade.wallet_balance_before else None,
-            "strategy_name": strategy.name,
-        }
-        await manager.broadcast(_stop_loss_event)
-        asyncio.create_task(send_trade_notification(_stop_loss_event))
-        await manager.broadcast({
-            "type": "position_changed",
-            "strategy_id": strategy_id,
-            "symbol": symbol,
-            "has_position": False,
-            "quantity": 0.0,
-            "entry_price": None,
-            "available_usdt": float(wallet.available_usdt),
-        })
-        return {
-            "status": "executed",
-            "action": "SELL",
-            "reason": "stop_loss_triggered",
-            "symbol": symbol,
-            "strategy_id": strategy_id,
-            "decision_source": "risk",
-            "price": str(result.trade.price),
-            "pnl": str(result.trade.pnl) if result.trade.pnl else None,
-        }
-    await session.rollback()
-    return {
-        "status": "failed",
-        "reason": f"Stop-loss sell failed: {result.error}",
-        "symbol": symbol,
-        "strategy_id": strategy_id,
-        "decision_source": "risk",
-    }
 
 
 async def run_single_cycle(
@@ -555,9 +857,7 @@ async def _run_single_cycle_locked(
     if len(closes) < 50:
         logger.warning(
             "insufficient candles strategy_id=%s symbol=%s candles=%d required=50",
-            strategy_id,
-            symbol,
-            len(closes),
+            strategy_id, symbol, len(closes),
         )
         return {
             "status": "skipped",
@@ -588,6 +888,8 @@ async def _run_single_cycle_locked(
         # Get strategy config
         config = strategy.config_json or {}
         strategy_type = config.get("strategy_type", "sma_crossover")
+        if strategy_type == "ai":
+            strategy_type = str(config.get("base_strategy_type", "sma_crossover"))
         ai_config = _normalize_ai_counters(strategy)
 
         # Get wallet and position
@@ -610,691 +912,579 @@ async def _run_single_cycle_locked(
 
         market_price = Decimal(str(current_price))
 
-        # ── Risk check 1: Stop-loss ──────────────────────────────────────
-        if (
-            position is not None
-            and position.stop_loss_price is not None
-            and market_price <= position.stop_loss_price
-        ):
-            return await _force_stop_loss_sell(
-                session, strategy, strategy_id, wallet, position, symbol, market_price, manager,
-            )
-
-        # ── Risk check 2: Max drawdown circuit breaker ───────────────────
-        equity = _compute_equity(wallet, position, market_price)
-        peak = wallet.peak_equity_usdt or equity
-        if equity > peak:
-            wallet.peak_equity_usdt = equity
-            peak = equity
-        if peak > 0:
-            drawdown_pct = (peak - equity) / peak * 100
-            max_dd = Decimal(str(strategy.max_drawdown_pct or settings.default_max_drawdown_pct))
-            if drawdown_pct >= max_dd:
-                await session.commit()
-                logger.warning(
-                    "max drawdown hit strategy_id=%s drawdown=%.2f%% limit=%s%%",
-                    strategy_id, drawdown_pct, max_dd,
-                )
-                return {
-                    "status": "halted",
-                    "reason": f"Max drawdown {drawdown_pct:.2f}% exceeds limit {max_dd}%",
-                    "symbol": symbol,
-                    "strategy_id": strategy_id,
-                    "decision_source": "risk",
-                }
-
-        # ── Risk check 3: Daily / weekly loss limits ──────────────────
-        today = datetime.now(timezone.utc).date()
-        if wallet.daily_loss_reset_date != today:
-            wallet.daily_loss_usdt = Decimal("0")
-            wallet.daily_loss_reset_date = today
-
-        from datetime import timedelta
-        week_start = today
-        days_since_monday = today.weekday()  # Monday=0
-        week_start = today - timedelta(days=days_since_monday)
-        if wallet.weekly_loss_reset_date is None or wallet.weekly_loss_reset_date < week_start:
-            wallet.weekly_loss_usdt = Decimal("0")
-            wallet.weekly_loss_reset_date = week_start
-
-        daily_limit = Decimal(str(config.get("daily_loss_limit_usdt", 0)))
-        weekly_limit = Decimal(str(config.get("weekly_loss_limit_usdt", 0)))
-        if daily_limit > 0 and wallet.daily_loss_usdt >= daily_limit:
-            await session.commit()
-            logger.warning(
-                "daily loss limit hit strategy_id=%s loss=%s limit=%s",
-                strategy_id, wallet.daily_loss_usdt, daily_limit,
-            )
-            return {
-                "status": "halted",
-                "reason": f"Daily loss ${wallet.daily_loss_usdt} exceeds limit ${daily_limit}",
-                "symbol": symbol,
-                "strategy_id": strategy_id,
-                "decision_source": "risk",
-            }
-        if weekly_limit > 0 and wallet.weekly_loss_usdt >= weekly_limit:
-            await session.commit()
-            logger.warning(
-                "weekly loss limit hit strategy_id=%s loss=%s limit=%s",
-                strategy_id, wallet.weekly_loss_usdt, weekly_limit,
-            )
-            return {
-                "status": "halted",
-                "reason": f"Weekly loss ${wallet.weekly_loss_usdt} exceeds limit ${weekly_limit}",
-                "symbol": symbol,
-                "strategy_id": strategy_id,
-                "decision_source": "risk",
-            }
-
         # ── Compute indicators (pass highs/lows for ATR) ────────────────
         highs = [candle.high for candle in candles]
         lows = [candle.low for candle in candles]
         volumes = [candle.volume for candle in candles]
         indicators = compute_indicators(closes, config, highs=highs, lows=lows, volumes=volumes)
+        equity = compute_equity(wallet, position, market_price)
 
+        # ── Regime detection ─────────────────────────────────────────────
+        regime_result = _regime_classifier.classify(indicators)
+        logger.debug(
+            "regime detected strategy_id=%s regime=%s confidence=%.2f",
+            strategy_id, regime_result.regime.value, regime_result.confidence,
+        )
+
+        # ── HYBRID COMPOSITE PATH ────────────────────────────────────────
         if strategy_type == "hybrid_composite":
-            ai_result: AIDecisionResult | None = None
-            flat_metrics: dict[str, float] | None = None
-            # Pre-compute composite score WITHOUT AI so we can pass it to the AI
-            pre_composite = compute_composite_score(indicators, config=config, ai_vote_value=None)
-            if ai_config["ai_enabled"]:
-                flat_metrics = analyze_flat_market(
-                    closes,
-                    ai_config["flat_market_threshold_pct"],
-                    indicators.get("atr"),
-                )[1]
-                cooldown_remaining = _cooldown_remaining(strategy, ai_config["ai_cooldown_seconds"])
-                if cooldown_remaining <= 0 or force:
-                    ai_context = build_ai_context(
-                        strategy_id=strategy.id,
-                        strategy_name=strategy.name,
-                        symbol=symbol,
-                        interval=interval,
-                        closes=closes,
-                        highs=highs,
-                        lows=lows,
-                        volumes=volumes,
-                        indicators=indicators,
-                        wallet_available_usdt=wallet.available_usdt,
-                        has_position=has_position,
-                        position_quantity=position.quantity if position else None,
-                        position_entry_price=position.entry_price if position else None,
-                        current_price=market_price,
-                        ai_strategy_key=ai_config["ai_strategy_key"],
-                        ai_provider=ai_config["ai_provider"],
-                        ai_model=ai_config["ai_model"],
-                        ai_cooldown_seconds=ai_config["ai_cooldown_seconds"],
-                        ai_max_tokens=ai_config["ai_max_tokens"],
-                        ai_temperature=ai_config["ai_temperature"],
-                        flat_market_metrics=flat_metrics or {
-                            "threshold_pct": ai_config["flat_market_threshold_pct"]
-                        },
-                        algorithmic_signal={
-                            "composite_score": round(pre_composite.composite_score, 4),
-                            "confidence": round(pre_composite.confidence, 4),
-                            "signal": pre_composite.signal,
-                            "direction": pre_composite.direction,
-                            "votes": {k: round(v, 4) for k, v in pre_composite.votes.items()},
-                            "dampening_multiplier": pre_composite.dampening_multiplier,
-                        },
-                    )
-                    ai_result = await evaluate_ai_decision(
-                        strategy_key=ai_config["ai_strategy_key"],
-                        context=ai_context,
-                        force=force,
-                    )
-                    if ai_result.status in {"skipped", "error"}:
-                        strategy.ai_last_decision_status = ai_result.status
-                        strategy.ai_last_reasoning = ai_result.reason or ai_result.error
-                        if ai_result.usage is not None:
-                            _touch_ai_metrics(strategy, ai_result)
-                    else:
-                        _touch_ai_metrics(strategy, ai_result)
-                    session.add(_build_ai_log(strategy.id, symbol, ai_result))
-                    await session.commit()
-                else:
-                    session.add(_build_ai_log(
-                        strategy.id, symbol,
-                        status="skipped", skip_reason="cooldown",
-                        reason=f"AI cooldown active ({cooldown_remaining}s remaining)",
-                    ))
-                    await session.commit()
-
-            composite_result = compute_composite_score(
-                indicators,
-                config=config,
-                ai_vote_value=_hybrid_ai_vote_value(ai_result),
+            return await _run_hybrid_cycle(
+                session, manager, strategy, strategy_id, wallet, position,
+                symbol, interval, market_price, equity, indicators,
+                config, ai_config, highs, lows, volumes, closes, force, regime_result,
             )
 
-            if position is not None:
-                prior_trailing_stop = position.trailing_stop_price
-                exit_decision = evaluate_exit(
-                    position=position,
-                    current_price=market_price,
-                    composite_score=composite_result.composite_score,
-                    config=config,
-                    now=datetime.now(timezone.utc),
-                )
+        # ── RULE-BASED / AI PATH ─────────────────────────────────────────
+        return await _run_rule_based_cycle(
+            session, manager, strategy, strategy_id, wallet, position,
+            symbol, interval, market_price, equity, indicators,
+            config, ai_config, highs, lows, volumes, closes, force,
+            strategy_type, has_position, regime_result,
+        )
 
-                if (
-                    exit_decision.updated_trailing_stop_price is not None
-                    and exit_decision.updated_trailing_stop_price != prior_trailing_stop
-                ):
-                    position.trailing_stop_price = exit_decision.updated_trailing_stop_price
-                    await session.flush()
 
-                if exit_decision.action == "SELL":
-                    result = await execute_sell(
-                        session,
-                        strategy_id,
-                        wallet,
-                        symbol,
-                        market_price,
-                        exit_decision.quantity_pct,
-                        reason=exit_decision.reason,
-                        strategy_name=strategy.name,
-                        strategy_type=strategy_type,
-                        decision_source="hybrid_exit",
-                        indicator_snapshot=_build_indicator_snapshot(indicators),
-                        composite_score=Decimal(str(round(composite_result.composite_score, 4))),
-                        composite_confidence=Decimal(str(round(composite_result.confidence, 4))),
-                    )
-                    if result.success:
-                        _update_strategy_streak(strategy, result.trade.pnl)
-                        _accumulate_wallet_losses(wallet, result.trade.pnl)
-                        refreshed_position = await get_position(session, strategy_id, symbol)
-                        if refreshed_position is not None:
-                            if exit_decision.consume_take_profit:
-                                refreshed_position.take_profit_price = None
-                            if exit_decision.updated_trailing_stop_price is not None:
-                                refreshed_position.trailing_stop_price = exit_decision.updated_trailing_stop_price
+async def _run_hybrid_cycle(
+    session: Any,
+    manager: ConnectionManager,
+    strategy: Strategy,
+    strategy_id: str,
+    wallet: Any,
+    position: Any,
+    symbol: str,
+    interval: str,
+    market_price: Decimal,
+    equity: Decimal,
+    indicators: dict[str, Any],
+    config: dict[str, Any],
+    ai_config: dict[str, Any],
+    highs: list[float],
+    lows: list[float],
+    volumes: list[float],
+    closes: list[float],
+    force: bool,
+    regime_result: RegimeResult,
+) -> dict[str, Any]:
+    """Execute the deterministic hybrid path with shared validation and exits."""
+    strategy_type = "hybrid_composite"
+    has_position = position is not None
 
-                        await session.commit()
-                        refreshed_position = await get_position(session, strategy_id, symbol)
-                        _exit_event = {
-                            "type": "trade_executed",
-                            "strategy_id": strategy_id,
-                            "action": "SELL",
-                            "symbol": symbol,
-                            "price": float(result.trade.price),
-                            "quantity": float(result.trade.quantity),
-                            "fee": float(result.trade.fee),
-                            "pnl": float(result.trade.pnl) if result.trade.pnl is not None else None,
-                            "reason": exit_decision.reason,
-                            "decision_source": "hybrid_exit",
-                            "cost_usdt": float(result.trade.cost_usdt) if result.trade.cost_usdt else None,
-                            "wallet_balance_before": float(result.trade.wallet_balance_before) if result.trade.wallet_balance_before else None,
-                            "strategy_name": strategy.name,
-                        }
-                        await manager.broadcast(_exit_event)
-                        asyncio.create_task(send_trade_notification(_exit_event))
-                        await manager.broadcast(
-                            {
-                                "type": "position_changed",
-                                "strategy_id": strategy_id,
-                                "symbol": symbol,
-                                "has_position": refreshed_position is not None,
-                                "quantity": float(refreshed_position.quantity) if refreshed_position else 0.0,
-                                "entry_price": float(refreshed_position.entry_price) if refreshed_position else None,
-                                "available_usdt": float(wallet.available_usdt),
-                            }
-                        )
-                        return {
-                            "status": "executed",
-                            "strategy_id": strategy_id,
-                            "action": "SELL",
-                            "symbol": symbol,
-                            "price": str(result.trade.price),
-                            "quantity": str(result.trade.quantity),
-                            "fee": str(result.trade.fee),
-                            "pnl": str(result.trade.pnl) if result.trade.pnl else None,
-                            "reason": exit_decision.reason,
-                            "decision_source": "hybrid_exit",
-                            "composite": _serialize_composite_result(composite_result),
-                        }
+    ctx = StrategyContext(
+        symbol=symbol,
+        interval=interval,
+        market_price=market_price,
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+        has_position=has_position,
+        position=position,
+        wallet=wallet,
+        equity=equity,
+        strategy_id=strategy_id,
+        strategy_name=strategy.name,
+        strategy_type=strategy_type,
+        config=config,
+        ai_config=ai_config,
+        regime=regime_result.regime.value,
+        risk_per_trade_pct=Decimal(str(strategy.risk_per_trade_pct)),
+        max_position_size_pct=Decimal(str(strategy.max_position_size_pct)),
+        stop_loss_pct=Decimal(str(strategy.stop_loss_pct or settings.default_stop_loss_pct)),
+        consecutive_losses=strategy.consecutive_losses,
+        force=force,
+    )
 
-                    await session.rollback()
-                    return {
-                        "status": "failed",
-                        "reason": result.error,
-                        "strategy_id": strategy_id,
-                        "symbol": symbol,
-                        "decision_source": "hybrid_exit",
-                        "composite": _serialize_composite_result(composite_result),
-                    }
+    hybrid_strategy = HybridCompositeStrategy()
+    decision: HybridDecision = await hybrid_strategy.decide_hybrid_async(indicators, ctx)
 
-                if (
-                    exit_decision.updated_trailing_stop_price is not None
-                    and exit_decision.updated_trailing_stop_price != prior_trailing_stop
-                ):
-                    await session.commit()
-                    return {
-                        "status": "hold",
-                        "reason": "Trailing stop updated",
-                        "symbol": symbol,
-                        "strategy_id": strategy_id,
-                        "decision_source": "hybrid_exit",
-                        "composite": _serialize_composite_result(composite_result),
-                    }
+    composite_dict = (
+        _serialize_composite_result(decision.composite_result)
+        if decision.composite_result
+        else {}
+    )
 
+    # Handle exit decisions
+    if decision.decision_source == "hybrid_exit" and decision.signal is not None:
+        return await _execute_shared_exit(
+            session,
+            manager,
+            strategy,
+            strategy_id,
+            wallet,
+            position,
+            symbol,
+            market_price,
+            decision.signal.quantity_pct,
+            reason=decision.signal.reason,
+            decision_source="hybrid_exit",
+            indicators=indicators,
+            composite_result=decision.composite_result,
+            exit_decision=decision.exit_decision,
+        )
+
+    # Handle trailing stop update (hold with trailing stop change)
+    if (
+        decision.decision_source == "hybrid_exit"
+        and decision.exit_decision is not None
+        and decision.exit_decision.updated_trailing_stop_price is not None
+    ):
+        if position is not None:
+            prior = position.trailing_stop_price
+            new_ts = decision.exit_decision.updated_trailing_stop_price
+            if new_ts != prior:
+                position.trailing_stop_price = new_ts
+                await session.commit()
                 return {
                     "status": "hold",
-                    "reason": "Position open; no hybrid exit signal",
+                    "reason": "Trailing stop updated",
                     "symbol": symbol,
                     "strategy_id": strategy_id,
                     "decision_source": "hybrid_exit",
-                    "composite": _serialize_composite_result(composite_result),
+                    "composite": composite_dict,
                 }
 
-            # ── Conflict gate: AI and algorithm must agree to trade ──
-            ai_action = (ai_result.action or "HOLD").upper() if ai_result else "HOLD"
-            algo_direction = pre_composite.signal  # computed WITHOUT AI vote (gated)
-            if ai_action != "HOLD" and algo_direction != "HOLD" and ai_action != algo_direction:
-                return {
-                    "status": "hold",
-                    "reason": (
-                        f"AI/algorithm conflict: AI says {ai_action} but "
-                        f"algorithm says {algo_direction} (score={pre_composite.composite_score:.3f}). "
-                        f"No trade executed."
-                    ),
-                    "symbol": symbol,
-                    "strategy_id": strategy_id,
-                    "decision_source": "conflict_gate",
-                    "composite": _serialize_composite_result(composite_result),
-                }
+    if decision.status != "candidate" or decision.composite_result is None or decision.raw_confidence is None:
+        return {
+            "status": decision.status,
+            "reason": decision.reason,
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": decision.decision_source,
+            "composite": composite_dict,
+        }
 
-            if composite_result.signal != "BUY":
-                return {
-                    "status": "hold",
-                    "reason": "Hybrid composite gate not met",
-                    "symbol": symbol,
-                    "strategy_id": strategy_id,
-                    "decision_source": "hybrid_entry",
-                    "composite": _serialize_composite_result(composite_result),
-                }
+    raw_confidence = _clamp_confidence(decision.raw_confidence)
+    entry_bucket = _confidence_bucket(raw_confidence)
+    calibration_multiplier = _hybrid_calibration_multiplier(config, entry_bucket)
+    live_decision = LiveTradeDecision(
+        action="BUY",
+        reason=decision.reason,
+        raw_confidence=raw_confidence,
+        final_confidence=_clamp_confidence(raw_confidence * calibration_multiplier),
+        regime=regime_result.regime.value,
+        decision_source="hybrid_entry",
+        composite_result=decision.composite_result,
+        entry_confidence_bucket=entry_bucket,
+    )
 
-            atr_values = indicators.get("atr", [])
-            if not atr_values:
-                return {
-                    "status": "skipped",
-                    "reason": "ATR unavailable for hybrid sizing",
-                    "symbol": symbol,
-                    "strategy_id": strategy_id,
-                    "decision_source": "hybrid_entry",
-                    "composite": _serialize_composite_result(composite_result),
-                }
+    risk_reason = _entry_risk_status(strategy, wallet, equity, config)
+    if risk_reason is not None:
+        await session.commit()
+        return {
+            "status": "halted",
+            "reason": risk_reason,
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "risk",
+            "composite": composite_dict,
+        }
 
-            take_profit_ratio = Decimal(str(config.get("take_profit_ratio", 2.0)))
-            min_reward_risk_ratio = Decimal(str(config.get("min_reward_risk_ratio", 1.5)))
-            if take_profit_ratio < min_reward_risk_ratio:
-                return {
-                    "status": "skipped",
-                    "reason": "Configured reward/risk ratio below minimum",
-                    "symbol": symbol,
-                    "strategy_id": strategy_id,
-                    "decision_source": "hybrid_entry",
-                    "composite": _serialize_composite_result(composite_result),
-                }
+    base_gate = _base_entry_gate(strategy_type, config)
+    allowed, size_multiplier, min_confidence, regime_reason = _regime_entry_policy(
+        strategy_type,
+        regime_result.regime,
+        base_gate,
+    )
+    if not allowed:
+        return {
+            "status": "skipped",
+            "reason": regime_reason or "Regime gate blocked entry",
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "regime",
+            "composite": composite_dict,
+        }
 
-            # Map composite confidence to position sizing tiers
-            comp_conf = composite_result.confidence
-            confidence_tier = (
-                "full" if comp_conf >= 0.8
-                else "reduced" if comp_conf >= 0.6
-                else "small"
-            )
+    live_decision = await _apply_ai_validation(
+        session,
+        strategy,
+        symbol,
+        interval,
+        indicators,
+        ai_config,
+        highs,
+        lows,
+        volumes,
+        closes,
+        wallet,
+        position,
+        market_price,
+        live_decision,
+        force,
+    )
+    if live_decision.final_confidence < min_confidence:
+        return {
+            "status": "skipped",
+            "reason": f"Hybrid confidence {live_decision.final_confidence:.3f} below gate {min_confidence:.3f}",
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "confidence_gate",
+            "composite": composite_dict,
+        }
 
-            sizing = calculate_position_size(
-                equity=equity,
-                entry_price=market_price,
-                atr=Decimal(str(atr_values[-1])),
-                atr_multiplier=Decimal(str(config.get("atr_stop_multiplier", 2.0))),
-                risk_per_trade_pct=Decimal(str(strategy.risk_per_trade_pct)),
-                confidence_tier=confidence_tier,
-                losing_streak_count=strategy.consecutive_losses,
-                max_position_pct=Decimal(str(strategy.max_position_size_pct)),
-                take_profit_ratio=take_profit_ratio,
-            )
+    sizing_result = hybrid_strategy.compute_sizing(indicators, ctx, live_decision.final_confidence)
+    if sizing_result is None:
+        return {
+            "status": "skipped",
+            "reason": "ATR unavailable or sizing produced zero",
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "hybrid_entry",
+            "composite": composite_dict,
+        }
+    sizing, skip_reason = sizing_result
+    if skip_reason:
+        return {
+            "status": "skipped",
+            "reason": skip_reason,
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "hybrid_entry",
+            "composite": composite_dict,
+        }
 
-            if sizing.quantity_pct <= Decimal("0"):
-                return {
-                    "status": "skipped",
-                    "reason": "Hybrid sizing produced zero quantity",
-                    "symbol": symbol,
-                    "strategy_id": strategy_id,
-                    "decision_source": "hybrid_entry",
-                    "composite": _serialize_composite_result(composite_result),
-                }
+    quantity_pct = sizing.quantity_pct * size_multiplier
+    quantity_pct = _cap_quantity_pct(
+        quantity_pct=quantity_pct,
+        wallet=wallet,
+        equity=equity,
+        max_position_size_pct=Decimal(str(strategy.max_position_size_pct)),
+    )
+    if quantity_pct <= Decimal("0"):
+        return {
+            "status": "skipped",
+            "reason": "Hybrid sizing produced zero quantity after caps",
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "hybrid_entry",
+            "composite": composite_dict,
+        }
 
-            result = await execute_buy(
+    live_decision.quantity_pct = quantity_pct
+    result = await execute_buy(
+        session,
+        strategy_id,
+        wallet,
+        symbol,
+        market_price,
+        quantity_pct,
+        reason=_decision_reason(live_decision),
+        strategy_name=strategy.name,
+        strategy_type=strategy_type,
+        decision_source="hybrid_entry",
+        indicator_snapshot=_build_indicator_snapshot(indicators),
+        composite_score=Decimal(str(round(decision.composite_result.composite_score, 4))),
+        composite_confidence=Decimal(str(round(live_decision.final_confidence, 4))),
+        entry_confidence_raw=Decimal(str(round(live_decision.raw_confidence, 4))),
+        entry_confidence_final=Decimal(str(round(live_decision.final_confidence, 4))),
+        entry_confidence_bucket=entry_bucket,
+    )
+    if not result.success:
+        await session.rollback()
+        return {
+            "status": "failed",
+            "reason": result.error,
+            "strategy_id": strategy_id,
+            "symbol": symbol,
+            "decision_source": "hybrid_entry",
+            "composite": composite_dict,
+        }
+
+    refreshed_position = await get_position(session, strategy_id, symbol)
+    if refreshed_position is not None:
+        refreshed_position.stop_loss_price = sizing.stop_loss_price
+        refreshed_position.take_profit_price = sizing.take_profit_price
+        refreshed_position.trailing_stop_price = None
+        refreshed_position.entry_atr = sizing.entry_atr
+        refreshed_position.entry_confidence_raw = Decimal(str(round(live_decision.raw_confidence, 4)))
+        refreshed_position.entry_confidence_final = Decimal(str(round(live_decision.final_confidence, 4)))
+        refreshed_position.entry_confidence_bucket = entry_bucket
+
+    await handle_post_trade(
+        session,
+        manager,
+        result=result,
+        strategy=strategy,
+        strategy_id=strategy_id,
+        wallet=wallet,
+        symbol=symbol,
+        market_price=market_price,
+        action="BUY",
+        reason=_decision_reason(live_decision),
+        decision_source="hybrid_entry",
+        is_sell=False,
+    )
+    return {
+        "status": "executed",
+        "strategy_id": strategy_id,
+        "action": "BUY",
+        "symbol": symbol,
+        "price": str(result.trade.price),
+        "quantity": str(result.trade.quantity),
+        "fee": str(result.trade.fee),
+        "pnl": None,
+        "reason": _decision_reason(live_decision),
+        "decision_source": "hybrid_entry",
+        "composite": composite_dict,
+        "signal": _serialize_signal_result({
+            "action": "BUY",
+            "symbol": symbol,
+            "quantity_pct": quantity_pct,
+            "reason": _decision_reason(live_decision),
+        }),
+    }
+
+
+async def _run_rule_based_cycle(
+    session: Any,
+    manager: ConnectionManager,
+    strategy: Strategy,
+    strategy_id: str,
+    wallet: Any,
+    position: Any,
+    symbol: str,
+    interval: str,
+    market_price: Decimal,
+    equity: Decimal,
+    indicators: dict[str, Any],
+    config: dict[str, Any],
+    ai_config: dict[str, Any],
+    highs: list[float],
+    lows: list[float],
+    volumes: list[float],
+    closes: list[float],
+    force: bool,
+    strategy_type: str,
+    has_position: bool,
+    regime_result: RegimeResult,
+) -> dict[str, Any]:
+    """Execute deterministic rule strategies with shared exits and validation."""
+    strategy_impl = get_strategy_class(strategy_type)()
+
+    if position is not None:
+        exit_decision = evaluate_exit(
+            position=position,
+            current_price=market_price,
+            composite_score=None,
+            config=config,
+            now=datetime.now(timezone.utc),
+        )
+        if exit_decision.action == "SELL":
+            return await _execute_shared_exit(
                 session,
+                manager,
+                strategy,
                 strategy_id,
                 wallet,
+                position,
                 symbol,
                 market_price,
-                sizing.quantity_pct,
-                reason=(
-                    f"Hybrid BUY score={composite_result.composite_score:.3f} "
-                    f"confidence={composite_result.confidence:.3f}"
-                ),
-                strategy_name=strategy.name,
-                strategy_type=strategy_type,
-                decision_source="hybrid_entry",
-                indicator_snapshot=_build_indicator_snapshot(indicators),
-                composite_score=Decimal(str(round(composite_result.composite_score, 4))),
-                composite_confidence=Decimal(str(round(composite_result.confidence, 4))),
+                exit_decision.quantity_pct,
+                exit_decision.reason,
+                "rule_exit",
+                indicators,
+                exit_decision=exit_decision,
             )
 
-            if result.success:
-                refreshed_position = await get_position(session, strategy_id, symbol)
-                if refreshed_position is not None:
-                    refreshed_position.stop_loss_price = sizing.stop_loss_price
-                    refreshed_position.take_profit_price = sizing.take_profit_price
-                    refreshed_position.trailing_stop_price = None
-                    refreshed_position.entry_atr = sizing.entry_atr
-
-                await session.commit()
-                refreshed_position = await get_position(session, strategy_id, symbol)
-                new_equity = _compute_equity(wallet, refreshed_position, market_price)
-                if new_equity > wallet.peak_equity_usdt:
-                    wallet.peak_equity_usdt = new_equity
-                    await session.commit()
-
-                _entry_event = {
-                    "type": "trade_executed",
-                    "strategy_id": strategy_id,
-                    "action": "BUY",
-                    "symbol": symbol,
-                    "price": float(result.trade.price),
-                    "quantity": float(result.trade.quantity),
-                    "fee": float(result.trade.fee),
-                    "pnl": None,
-                    "reason": result.trade.ai_reasoning,
-                    "decision_source": "hybrid_entry",
-                    "cost_usdt": float(result.trade.cost_usdt) if result.trade.cost_usdt else None,
-                    "wallet_balance_before": float(result.trade.wallet_balance_before) if result.trade.wallet_balance_before else None,
-                    "strategy_name": strategy.name,
-                }
-                await manager.broadcast(_entry_event)
-                asyncio.create_task(send_trade_notification(_entry_event))
-                await manager.broadcast(
-                    {
-                        "type": "position_changed",
-                        "strategy_id": strategy_id,
-                        "symbol": symbol,
-                        "has_position": refreshed_position is not None,
-                        "quantity": float(refreshed_position.quantity) if refreshed_position else 0.0,
-                        "entry_price": float(refreshed_position.entry_price) if refreshed_position else None,
-                        "available_usdt": float(wallet.available_usdt),
-                    }
-                )
-                return {
-                    "status": "executed",
-                    "strategy_id": strategy_id,
-                    "action": "BUY",
-                    "symbol": symbol,
-                    "price": str(result.trade.price),
-                    "quantity": str(result.trade.quantity),
-                    "fee": str(result.trade.fee),
-                    "pnl": None,
-                    "reason": result.trade.ai_reasoning,
-                    "decision_source": "hybrid_entry",
-                    "composite": _serialize_composite_result(composite_result),
-                    "signal": _serialize_signal_result(
-                        {
-                            "action": "BUY",
-                            "symbol": symbol,
-                            "quantity_pct": sizing.quantity_pct,
-                            "reason": result.trade.ai_reasoning or "",
-                        }
-                    ),
-                }
-
-            await session.rollback()
-            return {
-                "status": "failed",
-                "reason": result.error,
-                "strategy_id": strategy_id,
-                "symbol": symbol,
-                "decision_source": "hybrid_entry",
-                "composite": _serialize_composite_result(composite_result),
-            }
-
-        if ai_config["ai_enabled"] and strategy_type != "hybrid_composite":
-            _, flat_metrics = analyze_flat_market(closes, ai_config["flat_market_threshold_pct"])
-            cooldown_remaining = _cooldown_remaining(strategy, ai_config["ai_cooldown_seconds"])
-            if cooldown_remaining > 0 and not force:
-                session.add(_build_ai_log(
-                    strategy.id, symbol,
-                    status="skipped", skip_reason="cooldown",
-                    reason=f"AI cooldown active ({cooldown_remaining}s remaining)",
-                ))
-                await session.commit()
-                return {
-                    "status": "skipped",
-                    "reason": "AI cooldown active",
-                    "cooldown_remaining_seconds": cooldown_remaining,
-                    "symbol": symbol,
-                    "strategy_id": strategy_id,
-                    "decision_source": "cooldown",
-                }
-
-            ai_context = build_ai_context(
-                strategy_id=strategy.id,
-                strategy_name=strategy.name,
-                symbol=symbol,
-                interval=interval,
-                closes=closes,
-                highs=highs,
-                lows=lows,
-                volumes=volumes,
-                indicators=indicators,
-                wallet_available_usdt=wallet.available_usdt,
-                has_position=has_position,
-                position_quantity=position.quantity if position else None,
-                position_entry_price=position.entry_price if position else None,
-                current_price=market_price,
-                ai_strategy_key=ai_config["ai_strategy_key"],
-                ai_provider=ai_config["ai_provider"],
-                ai_model=ai_config["ai_model"],
-                ai_cooldown_seconds=ai_config["ai_cooldown_seconds"],
-                ai_max_tokens=ai_config["ai_max_tokens"],
-                ai_temperature=ai_config["ai_temperature"],
-                flat_market_metrics=flat_metrics or {"threshold_pct": ai_config["flat_market_threshold_pct"]},
-            )
-
-            ai_result = await evaluate_ai_decision(
-                strategy_key=ai_config["ai_strategy_key"],
-                context=ai_context,
-                force=force,
-            )
-
-            if ai_result.status in {"skipped", "error"}:
-                strategy.ai_last_decision_status = ai_result.status
-                strategy.ai_last_reasoning = ai_result.reason or ai_result.error
-                if ai_result.usage is not None:
-                    _touch_ai_metrics(strategy, ai_result)
-                session.add(_build_ai_log(strategy.id, symbol, ai_result))
-                await session.commit()
-                return {
-                    "status": "hold" if ai_result.status == "error" else ai_result.status,
-                    "reason": ai_result.reason,
-                    "error": ai_result.error,
-                    "skip_reason": ai_result.skip_reason,
-                    "usage": _serialize_usage(ai_result.usage),
-                    "symbol": symbol,
-                    "strategy_id": strategy_id,
-                    "decision_source": "ai",
-                    "raw_response": ai_result.raw_response,
-                }
-
-            _touch_ai_metrics(strategy, ai_result)
-            session.add(_build_ai_log(strategy.id, symbol, ai_result))
-
-            if ai_result.signal is None:
-                await session.commit()
-                return {
-                    "status": "hold",
-                    "reason": ai_result.reason or "AI returned HOLD",
-                    "usage": _serialize_usage(ai_result.usage),
-                    "symbol": symbol,
-                    "strategy_id": strategy_id,
-                    "decision_source": "ai",
-                    "raw_response": ai_result.raw_response,
-                }
-
-            signal = ai_result.signal
-        else:
-            # Make decision with the rule-based strategy
-            strategy_impl = get_strategy_class(strategy_type)()
-            signal = strategy_impl.decide(indicators, has_position, wallet.available_usdt)
-
-        if signal is None:
-            if ai_config["ai_enabled"]:
-                await session.commit()
+        if (
+            exit_decision.updated_trailing_stop_price is not None
+            and exit_decision.updated_trailing_stop_price != position.trailing_stop_price
+        ):
+            position.trailing_stop_price = exit_decision.updated_trailing_stop_price
+            await session.commit()
             return {
                 "status": "hold",
-                "reason": "No trade signal",
+                "reason": "Trailing stop updated",
                 "symbol": symbol,
                 "strategy_id": strategy_id,
-                "decision_source": "ai" if ai_config["ai_enabled"] else "rule",
+                "decision_source": "rule_exit",
             }
 
-        # ── Risk check 3: Position size cap for BUY signals ──────────────
-        if signal.action.value == "BUY":
-            max_pos_pct = Decimal(str(
-                strategy.max_position_size_pct or settings.default_max_position_size_pct
-            )) / 100
-            max_spend = equity * max_pos_pct
-            if wallet.available_usdt > 0:
-                capped_pct = min(signal.quantity_pct, max_spend / wallet.available_usdt)
-                if capped_pct < signal.quantity_pct:
-                    logger.info(
-                        "position size capped strategy_id=%s original=%.2f capped=%.2f",
-                        strategy_id, signal.quantity_pct, capped_pct,
-                    )
-                signal.quantity_pct = max(capped_pct, Decimal("0"))
-
-        # Execute
-        _decision_source = "ai" if ai_config["ai_enabled"] else "rule"
-        _trade_log_kwargs = dict(
-            strategy_name=strategy.name,
-            strategy_type=strategy_type,
-            decision_source=_decision_source,
-            indicator_snapshot=_build_indicator_snapshot(indicators),
-        )
-        if signal.action.value == "BUY":
-            result = await execute_buy(
-                session, strategy_id, wallet, symbol, market_price,
-                signal.quantity_pct, reason=signal.reason,
-                **_trade_log_kwargs,
-            )
-        else:
-            result = await execute_sell(
-                session, strategy_id, wallet, symbol, market_price,
-                signal.quantity_pct, reason=signal.reason,
-                **_trade_log_kwargs,
-            )
-
-        if result.success:
-            logger.info(
-                "trade executed strategy_id=%s action=%s symbol=%s price=%s quantity=%s fee=%s source=%s",
+        signal = strategy_impl.decide(indicators, True, wallet.available_usdt)
+        if signal is not None and signal.action.value == "SELL":
+            return await _execute_shared_exit(
+                session,
+                manager,
+                strategy,
                 strategy_id,
-                signal.action.value,
+                wallet,
+                position,
                 symbol,
-                result.trade.price,
-                result.trade.quantity,
-                result.trade.fee,
-                "ai" if ai_config["ai_enabled"] else "rule",
+                market_price,
+                signal.quantity_pct,
+                signal.reason,
+                "rule_exit",
+                indicators,
             )
+        return {
+            "status": "hold",
+            "reason": "Position open; no shared exit signal",
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "rule_exit",
+        }
 
-            # ── Risk check 4: Set stop-loss on new BUY position ─────────
-            if signal.action.value == "BUY":
-                refreshed_position = await get_position(session, strategy_id, symbol)
-                if refreshed_position is not None:
-                    sl_pct = Decimal(str(
-                        strategy.stop_loss_pct or settings.default_stop_loss_pct
-                    )) / 100
-                    refreshed_position.stop_loss_price = (
-                        refreshed_position.entry_price * (1 - sl_pct)
-                    ).quantize(Decimal("0.00000001"))
-            else:
-                _update_strategy_streak(strategy, result.trade.pnl)
-                _accumulate_wallet_losses(wallet, result.trade.pnl)
+    signal = strategy_impl.decide(indicators, has_position, wallet.available_usdt)
+    if signal is None or signal.action.value != "BUY":
+        return {
+            "status": "hold",
+            "reason": "No trade signal",
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "rule_entry",
+        }
 
-            await session.commit()
-            refreshed_position = await get_position(session, strategy_id, symbol)
+    levels = _precompute_entry_levels(indicators, market_price, config)
+    if levels is None:
+        return {
+            "status": "skipped",
+            "reason": "ATR unavailable for shared exit levels",
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "rule_entry",
+        }
+    stop_loss_price, take_profit_price, entry_atr = levels
 
-            # ── Risk check 5: Update peak equity after trade ─────────────
-            new_equity = _compute_equity(wallet, refreshed_position, market_price)
-            if new_equity > wallet.peak_equity_usdt:
-                wallet.peak_equity_usdt = new_equity
-                await session.commit()
+    live_decision = LiveTradeDecision(
+        action="BUY",
+        reason=signal.reason,
+        raw_confidence=_signal_confidence(signal),
+        final_confidence=_signal_confidence(signal),
+        regime=regime_result.regime.value,
+        quantity_pct=signal.quantity_pct,
+        decision_source="rule_entry",
+    )
 
-            _rule_event = {
-                    "type": "trade_executed",
-                    "strategy_id": strategy_id,
-                    "action": signal.action.value,
-                    "symbol": symbol,
-                    "price": float(result.trade.price),
-                    "quantity": float(result.trade.quantity),
-                    "fee": float(result.trade.fee),
-                    "pnl": float(result.trade.pnl) if result.trade.pnl is not None else None,
-                    "reason": signal.reason,
-                    "decision_source": "ai" if ai_config["ai_enabled"] else "rule",
-                    "cost_usdt": float(result.trade.cost_usdt) if result.trade.cost_usdt else None,
-                    "wallet_balance_before": float(result.trade.wallet_balance_before) if result.trade.wallet_balance_before else None,
-                    "strategy_name": strategy.name,
-            }
-            await manager.broadcast(_rule_event)
-            asyncio.create_task(send_trade_notification(_rule_event))
-            await manager.broadcast(
-                {
-                    "type": "position_changed",
-                    "strategy_id": strategy_id,
-                    "symbol": symbol,
-                    "has_position": refreshed_position is not None,
-                    "quantity": float(refreshed_position.quantity) if refreshed_position else 0.0,
-                    "entry_price": float(refreshed_position.entry_price) if refreshed_position else None,
-                    "available_usdt": float(wallet.available_usdt),
-                }
-            )
-            return {
-                "status": "executed",
-                "strategy_id": strategy_id,
-                "action": signal.action.value,
-                "symbol": symbol,
-                "price": str(result.trade.price),
-                "quantity": str(result.trade.quantity),
-                "fee": str(result.trade.fee),
-                "pnl": str(result.trade.pnl) if result.trade.pnl else None,
-                "reason": signal.reason,
-                "decision_source": "ai" if ai_config["ai_enabled"] else "rule",
-                "usage": _serialize_usage(ai_result.usage) if ai_config["ai_enabled"] else None,
-                "signal": _serialize_signal_result(
-                    {
-                        "action": signal.action.value,
-                        "symbol": signal.symbol,
-                        "quantity_pct": signal.quantity_pct,
-                        "reason": signal.reason,
-                    }
-                ),
-            }
-        else:
-            logger.warning(
-                "trade rejected strategy_id=%s symbol=%s error=%s",
-                strategy_id,
-                symbol,
-                result.error,
-            )
-            await session.rollback()
-            return {
-                "status": "failed",
-                "reason": result.error,
-                "strategy_id": strategy_id,
-                "symbol": symbol,
-                "decision_source": "ai" if ai_config["ai_enabled"] else "rule",
-            }
+    risk_reason = _entry_risk_status(strategy, wallet, equity, config)
+    if risk_reason is not None:
+        await session.commit()
+        return {
+            "status": "halted",
+            "reason": risk_reason,
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "risk",
+        }
+
+    base_gate = _base_entry_gate(strategy_type, config)
+    allowed, size_multiplier, min_confidence, regime_reason = _regime_entry_policy(
+        strategy_type,
+        regime_result.regime,
+        base_gate,
+    )
+    if not allowed:
+        return {
+            "status": "skipped",
+            "reason": regime_reason or "Regime gate blocked entry",
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "regime",
+        }
+    live_decision.quantity_pct *= size_multiplier
+
+    live_decision = await _apply_ai_validation(
+        session,
+        strategy,
+        symbol,
+        interval,
+        indicators,
+        ai_config,
+        highs,
+        lows,
+        volumes,
+        closes,
+        wallet,
+        position,
+        market_price,
+        live_decision,
+        force,
+    )
+    if live_decision.final_confidence < min_confidence:
+        return {
+            "status": "skipped",
+            "reason": f"Entry confidence {live_decision.final_confidence:.3f} below gate {min_confidence:.3f}",
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "confidence_gate",
+        }
+
+    quantity_pct = _cap_quantity_pct(
+        quantity_pct=live_decision.quantity_pct,
+        wallet=wallet,
+        equity=equity,
+        max_position_size_pct=Decimal(str(strategy.max_position_size_pct)),
+    )
+    if quantity_pct <= Decimal("0"):
+        return {
+            "status": "skipped",
+            "reason": "Position size capped to zero",
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "risk",
+        }
+
+    live_decision.quantity_pct = quantity_pct
+    result = await execute_buy(
+        session,
+        strategy_id,
+        wallet,
+        symbol,
+        market_price,
+        quantity_pct,
+        reason=_decision_reason(live_decision),
+        strategy_name=strategy.name,
+        strategy_type=strategy_type,
+        decision_source="rule_entry",
+        indicator_snapshot=_build_indicator_snapshot(indicators),
+    )
+    if not result.success:
+        await session.rollback()
+        return {
+            "status": "failed",
+            "reason": result.error,
+            "strategy_id": strategy_id,
+            "symbol": symbol,
+            "decision_source": "rule_entry",
+        }
+
+    refreshed_position = await get_position(session, strategy_id, symbol)
+    if refreshed_position is not None:
+        refreshed_position.stop_loss_price = stop_loss_price
+        refreshed_position.take_profit_price = take_profit_price
+        refreshed_position.trailing_stop_price = None
+        refreshed_position.entry_atr = entry_atr
+
+    await handle_post_trade(
+        session,
+        manager,
+        result=result,
+        strategy=strategy,
+        strategy_id=strategy_id,
+        wallet=wallet,
+        symbol=symbol,
+        market_price=market_price,
+        action="BUY",
+        reason=_decision_reason(live_decision),
+        decision_source="rule_entry",
+        is_sell=False,
+    )
+    return {
+        "status": "executed",
+        "strategy_id": strategy_id,
+        "action": "BUY",
+        "symbol": symbol,
+        "price": str(result.trade.price),
+        "quantity": str(result.trade.quantity),
+        "fee": str(result.trade.fee),
+        "pnl": None,
+        "reason": _decision_reason(live_decision),
+        "decision_source": "rule_entry",
+        "signal": _serialize_signal_result({
+            "action": "BUY",
+            "symbol": signal.symbol,
+            "quantity_pct": quantity_pct,
+            "reason": _decision_reason(live_decision),
+        }),
+    }
 
 
 async def take_equity_snapshot(strategy_id: str, symbol: str = "BTCUSDT") -> None:
@@ -1337,19 +1527,14 @@ async def strategy_loop(strategy_id: str, interval_seconds: int = 3600) -> None:
             if result.get("status") == "executed":
                 logger.info(
                     "cycle complete strategy_id=%s cycle=%d status=executed action=%s",
-                    strategy_id,
-                    cycle,
-                    result.get("action"),
+                    strategy_id, cycle, result.get("action"),
                 )
                 # Snapshot after every trade
                 await take_equity_snapshot(strategy_id, symbol)
             elif result.get("status") in {"skipped", "hold"}:
                 logger.debug(
                     "cycle complete strategy_id=%s cycle=%d status=%s reason=%s",
-                    strategy_id,
-                    cycle,
-                    result.get("status"),
-                    result.get("reason"),
+                    strategy_id, cycle, result.get("status"), result.get("reason"),
                 )
 
             # Snapshot every cycle

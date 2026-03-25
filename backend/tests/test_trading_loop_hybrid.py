@@ -3,28 +3,44 @@
 from decimal import Decimal
 from types import SimpleNamespace
 
-from app.engine.ai_runtime import AIDecisionResult
+from app.engine.post_trade import update_strategy_streak as _update_strategy_streak
 from app.engine.trading_loop import (
-    _hybrid_ai_vote_value,
+    _confidence_bucket,
+    _hybrid_calibration_multiplier,
     _normalize_ai_counters,
-    _update_strategy_streak,
+    _regime_entry_policy,
 )
+from app.regime.types import MarketRegime
 
 
-def test_hybrid_ai_vote_uses_action_and_confidence():
-    buy_vote = _hybrid_ai_vote_value(
-        AIDecisionResult(status="signal", action="BUY", confidence=0.8)
-    )
-    sell_vote = _hybrid_ai_vote_value(
-        AIDecisionResult(status="signal", action="SELL", confidence=0.35)
-    )
-    hold_vote = _hybrid_ai_vote_value(
-        AIDecisionResult(status="hold", action="HOLD", confidence=0.9)
-    )
+def test_confidence_bucket_groups_deciles():
+    assert _confidence_bucket(0.04) == "00-09"
+    assert _confidence_bucket(0.35) == "30-39"
+    assert _confidence_bucket(0.89) == "80-89"
 
-    assert buy_vote == 0.8
-    assert sell_vote == -0.35
-    assert hold_vote == 0.0
+
+def test_hybrid_calibration_multiplier_uses_bucket_win_rate_after_minimum_sample():
+    config = {
+        "hybrid_confidence_calibration": {
+            "80-89": {"trades": 25, "wins": 20, "avg_pnl_pct": 3.2}
+        }
+    }
+    assert _hybrid_calibration_multiplier(config, "80-89") == 1.15
+
+
+def test_regime_entry_policy_blocks_downtrend_and_scales_high_volatility():
+    allowed, size_multiplier, min_confidence, reason = _regime_entry_policy(
+        "sma_crossover", MarketRegime.TRENDING_DOWN, 0.30
+    )
+    assert allowed is False
+    assert "blocks new long entries" in reason
+
+    allowed, size_multiplier, min_confidence, reason = _regime_entry_policy(
+        "macd_momentum", MarketRegime.HIGH_VOLATILITY, 0.30
+    )
+    assert allowed is True
+    assert size_multiplier == Decimal("0.5")
+    assert min_confidence == 0.40
 
 
 def test_update_strategy_streak_increments_on_losses_and_resets_on_profit():

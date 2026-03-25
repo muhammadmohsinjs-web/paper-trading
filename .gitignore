@@ -13,3 +13,4 @@ backend/paper_trading.db
 frontend/node_modules/
 frontend/.next/
 frontend/.next-dev/
+frontend/.env.local

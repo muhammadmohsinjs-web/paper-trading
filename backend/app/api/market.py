@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Query
 from app.market.data_store import DataStore
 from app.market.indicators import compute_indicators
 from app.engine.composite_scorer import compute_composite_score
+from app.regime.classifier import RegimeClassifier
 
 router = APIRouter(prefix="/market", tags=["market"])
 
@@ -95,4 +96,35 @@ async def get_signal(
             "full_conviction": 0.8,
             "reduced_conviction": 0.6,
         },
+    }
+
+
+@router.get("/regime/{symbol}")
+async def get_regime(
+    symbol: str,
+    interval: str = Query("1h"),
+):
+    """Return the current market regime classification for a symbol."""
+    store = DataStore.get_instance()
+    candles = store.get_candles(symbol.upper(), interval, 200)
+    if len(candles) < 50:
+        raise HTTPException(400, f"Not enough candle data ({len(candles)}/50)")
+
+    closes = [c.close for c in candles]
+    highs = [c.high for c in candles]
+    lows = [c.low for c in candles]
+    volumes = [c.volume for c in candles]
+
+    indicators = compute_indicators(closes, highs=highs, lows=lows, volumes=volumes)
+    classifier = RegimeClassifier()
+    result = classifier.classify(indicators)
+
+    return {
+        "symbol": symbol.upper(),
+        "interval": interval,
+        "regime": result.regime.value,
+        "confidence": round(result.confidence, 3),
+        "reasoning": result.reasoning,
+        "metrics": result.metrics,
+        "candles_used": len(candles),
     }

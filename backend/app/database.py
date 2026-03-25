@@ -80,6 +80,12 @@ async def _ensure_risk_management_columns() -> None:
             await connection.execute(text("ALTER TABLE positions ADD COLUMN trailing_stop_price NUMERIC(24,12)"))
         if "entry_atr" not in existing:
             await connection.execute(text("ALTER TABLE positions ADD COLUMN entry_atr NUMERIC(24,12)"))
+        if "entry_confidence_raw" not in existing:
+            await connection.execute(text("ALTER TABLE positions ADD COLUMN entry_confidence_raw NUMERIC(8,4)"))
+        if "entry_confidence_final" not in existing:
+            await connection.execute(text("ALTER TABLE positions ADD COLUMN entry_confidence_final NUMERIC(8,4)"))
+        if "entry_confidence_bucket" not in existing:
+            await connection.execute(text("ALTER TABLE positions ADD COLUMN entry_confidence_bucket VARCHAR(16)"))
 
         # -- wallets table --
         result = await connection.execute(text("PRAGMA table_info(wallets)"))
@@ -126,6 +132,9 @@ async def _ensure_trade_log_columns() -> None:
         "indicator_snapshot": "TEXT",  # JSON stored as TEXT in SQLite
         "composite_score": "NUMERIC(8,4)",
         "composite_confidence": "NUMERIC(8,4)",
+        "entry_confidence_raw": "NUMERIC(8,4)",
+        "entry_confidence_final": "NUMERIC(8,4)",
+        "entry_confidence_bucket": "VARCHAR(16)",
         "cost_usdt": "NUMERIC(18,8)",
         "wallet_balance_before": "NUMERIC(18,8)",
         "wallet_balance_after": "NUMERIC(18,8)",

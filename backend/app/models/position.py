@@ -44,5 +44,14 @@ class Position(UUIDPrimaryKeyMixin, Base):
     entry_atr: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(24, 12), nullable=True, default=None,
     )
+    entry_confidence_raw: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(8, 4), nullable=True, default=None,
+    )
+    entry_confidence_final: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(8, 4), nullable=True, default=None,
+    )
+    entry_confidence_bucket: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True, default=None,
+    )
 
     strategy = relationship("Strategy", back_populates="positions")

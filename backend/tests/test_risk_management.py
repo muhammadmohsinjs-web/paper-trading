@@ -4,11 +4,11 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 
-from app.engine.trading_loop import (
-    _accumulate_wallet_losses,
-    _compute_equity,
-    should_skip_flat_market,
+from app.engine.post_trade import (
+    accumulate_wallet_losses as _accumulate_wallet_losses,
+    compute_equity as _compute_equity,
 )
+from app.engine.trading_loop import should_skip_flat_market
 from app.engine.ai_runtime import analyze_flat_market
 
 

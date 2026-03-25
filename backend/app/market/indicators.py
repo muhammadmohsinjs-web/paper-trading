@@ -152,6 +152,102 @@ def bollinger_bands(
     return upper, middle, lower
 
 
+def adx(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    period: int = 14,
+) -> list[float]:
+    """Average Directional Index — measures trend strength (0-100).
+
+    ADX > 25 indicates a strong trend; ADX < 20 indicates ranging/consolidation.
+    Returns ``len(closes) - 2*period`` values (needs extra period for smoothing).
+    """
+    n = len(closes)
+    if n < 2 * period + 1 or len(highs) < n or len(lows) < n:
+        return []
+
+    h = np.array(highs, dtype=np.float64)
+    l = np.array(lows, dtype=np.float64)
+    c = np.array(closes, dtype=np.float64)
+
+    # True Range
+    tr = np.maximum(
+        h[1:] - l[1:],
+        np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])),
+    )
+
+    # +DM and -DM
+    up_move = h[1:] - h[:-1]
+    down_move = l[:-1] - l[1:]
+
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
+    # Wilder's smoothing for TR, +DM, -DM
+    def wilder_smooth(values: np.ndarray, p: int) -> list[float]:
+        avg = float(np.sum(values[:p]))
+        result = [avg]
+        for i in range(p, len(values)):
+            avg = avg - avg / p + float(values[i])
+            result.append(avg)
+        return result
+
+    smoothed_tr = wilder_smooth(tr, period)
+    smoothed_plus_dm = wilder_smooth(plus_dm, period)
+    smoothed_minus_dm = wilder_smooth(minus_dm, period)
+
+    # +DI and -DI
+    plus_di: list[float] = []
+    minus_di: list[float] = []
+    dx_values: list[float] = []
+
+    for i in range(len(smoothed_tr)):
+        str_val = smoothed_tr[i]
+        if str_val == 0:
+            plus_di.append(0.0)
+            minus_di.append(0.0)
+            dx_values.append(0.0)
+            continue
+        pdi = 100.0 * smoothed_plus_dm[i] / str_val
+        mdi = 100.0 * smoothed_minus_dm[i] / str_val
+        plus_di.append(pdi)
+        minus_di.append(mdi)
+        di_sum = pdi + mdi
+        if di_sum == 0:
+            dx_values.append(0.0)
+        else:
+            dx_values.append(100.0 * abs(pdi - mdi) / di_sum)
+
+    # Smooth DX to get ADX
+    if len(dx_values) < period:
+        return []
+
+    adx_val = float(np.mean(dx_values[:period]))
+    adx_result = [adx_val]
+    for i in range(period, len(dx_values)):
+        adx_val = (adx_val * (period - 1) + dx_values[i]) / period
+        adx_result.append(adx_val)
+
+    return adx_result
+
+
+def obv(closes: list[float], volumes: list[float]) -> list[float]:
+    """On-Balance Volume — cumulative volume flow indicator."""
+    if len(closes) < 2 or len(volumes) < len(closes):
+        return []
+
+    result = [0.0]
+    for i in range(1, len(closes)):
+        if closes[i] > closes[i - 1]:
+            result.append(result[-1] + volumes[i])
+        elif closes[i] < closes[i - 1]:
+            result.append(result[-1] - volumes[i])
+        else:
+            result.append(result[-1])
+    return result
+
+
 def compute_indicators(
     closes: list[float],
     config: dict | None = None,
@@ -181,6 +277,7 @@ def compute_indicators(
 
     if highs is not None and lows is not None:
         result["atr"] = atr(highs, lows, closes)
+        result["adx"] = adx(highs, lows, closes)
 
     if volumes is not None:
         volume_sma = sma(volumes, volume_ma_period)

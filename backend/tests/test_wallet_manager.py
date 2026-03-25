@@ -84,7 +84,7 @@ async def test_open_and_close_position(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_equity_equals_cash_plus_position(db_session: AsyncSession):
     """Equity = available USDT + position_qty * market_price."""
-    from app.engine.trading_loop import _compute_equity
+    from app.engine.post_trade import compute_equity as _compute_equity
     from types import SimpleNamespace
 
     wallet = await get_or_create_wallet(db_session, "test-1", Decimal("5000"))

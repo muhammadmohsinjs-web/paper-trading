@@ -40,6 +40,9 @@ class Trade(UUIDPrimaryKeyMixin, Base):
     indicator_snapshot: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)  # RSI, MACD, SMA, etc. at trade time
     composite_score: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 4), nullable=True)
     composite_confidence: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 4), nullable=True)
+    entry_confidence_raw: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 4), nullable=True)
+    entry_confidence_final: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 4), nullable=True)
+    entry_confidence_bucket: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     cost_usdt: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 8), nullable=True)  # total USDT spent (BUY) or received (SELL)
     wallet_balance_before: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 8), nullable=True)
     wallet_balance_after: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 8), nullable=True)
