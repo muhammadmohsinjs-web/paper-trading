@@ -1231,8 +1231,7 @@ async def _run_single_cycle_locked(
                 wallet.peak_equity_usdt = new_equity
                 await session.commit()
 
-            await manager.broadcast(
-                {
+            _rule_event = {
                     "type": "trade_executed",
                     "strategy_id": strategy_id,
                     "action": signal.action.value,
@@ -1243,8 +1242,12 @@ async def _run_single_cycle_locked(
                     "pnl": float(result.trade.pnl) if result.trade.pnl is not None else None,
                     "reason": signal.reason,
                     "decision_source": "ai" if ai_config["ai_enabled"] else "rule",
-                }
-            )
+                    "cost_usdt": float(result.trade.cost_usdt) if result.trade.cost_usdt else None,
+                    "wallet_balance_before": float(result.trade.wallet_balance_before) if result.trade.wallet_balance_before else None,
+                    "strategy_name": strategy.name,
+            }
+            await manager.broadcast(_rule_event)
+            asyncio.create_task(send_trade_notification(_rule_event))
             await manager.broadcast(
                 {
                     "type": "position_changed",
