@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from app.config import get_settings
+from app.config import DEFAULT_SCAN_UNIVERSE, get_settings
 from app.market.data_store import DataStore
 from app.market.indicators import compute_indicators
 from app.regime.classifier import RegimeClassifier
@@ -14,21 +14,14 @@ from app.regime.types import MarketRegime
 from app.risk.portfolio import get_correlation
 from app.scanner.relative_strength import get_relative_strength
 from app.scanner.types import RankedSetup, RankedSymbol, ScanResult
+from app.scanner.universe_selector import UniverseSelector
 from app.selector.selector import REGIME_AFFINITY
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# Default symbols to scan (top by volume on Binance)
-DEFAULT_SYMBOLS = [
-    "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
-    "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "DOTUSDT", "MATICUSDT",
-    "LINKUSDT", "LTCUSDT", "UNIUSDT", "ATOMUSDT", "NEARUSDT",
-    "APTUSDT", "OPUSDT", "ARBUSDT", "SUIUSDT", "SEIUSDT",
-    "INJUSDT", "TIAUSDT", "FETUSDT", "RNDRUSDT", "WIFUSDT",
-    "JUPUSDT", "STXUSDT", "IMXUSDT", "RUNEUSDT", "ARUSDT",
-    "PENDLEUSDT", "ONDOUSDT", "FILUSDT", "ENAUSDT", "WLDUSDT",
-]
+# Kept as fallback when dynamic selection is disabled
+DEFAULT_SYMBOLS = list(DEFAULT_SCAN_UNIVERSE)
 
 MIN_SETUP_SCORE = 0.20  # Lowered from 0.3 to catch moderate opportunities
 MIN_CANDLES_FOR_SCAN = 50
@@ -39,7 +32,39 @@ class OpportunityScanner:
 
     def __init__(self, symbols: list[str] | None = None):
         self.symbols = symbols or DEFAULT_SYMBOLS
+        self._symbols_from_dynamic: bool = symbols is None
         self.regime_classifier = RegimeClassifier()
+
+    async def resolve_symbols(
+        self,
+        *,
+        retained_symbols: set[str] | None = None,
+    ) -> list[str]:
+        """Resolve the active symbol list, using dynamic universe if enabled.
+
+        Call this before scan()/rank_symbols() to update self.symbols
+        with the dynamically selected universe.
+        """
+        if not self._symbols_from_dynamic:
+            # Symbols were explicitly provided — don't override
+            return self.symbols
+
+        if not settings.dynamic_universe_enabled:
+            return self.symbols
+
+        selector = UniverseSelector.get_instance()
+        dynamic_symbols = await selector.get_active_universe(
+            retained_symbols=retained_symbols,
+        )
+        if dynamic_symbols:
+            self.symbols = dynamic_symbols
+            logger.info(
+                "scanner: using dynamic universe (%d symbols)",
+                len(dynamic_symbols),
+            )
+        else:
+            logger.warning("scanner: dynamic universe returned empty, using defaults")
+        return self.symbols
 
     def scan(
         self,
@@ -604,7 +629,32 @@ class OpportunityScanner:
                         indicators={"breakdown_pct": round(breakdown_pct, 3)},
                     ))
 
+        for setup in setups:
+            setup.indicators = self._to_native(setup.indicators)
+
         return setups
+
+    @staticmethod
+    def _to_native(value: Any) -> Any:
+        """Convert numpy scalar values into JSON-safe Python primitives."""
+        if isinstance(value, dict):
+            return {
+                key: OpportunityScanner._to_native(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [OpportunityScanner._to_native(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(OpportunityScanner._to_native(item) for item in value)
+
+        scalar_to_python = getattr(value, "item", None)
+        if callable(scalar_to_python):
+            try:
+                return scalar_to_python()
+            except (TypeError, ValueError):
+                return value
+
+        return value
 
     def _setup_score(
         self,

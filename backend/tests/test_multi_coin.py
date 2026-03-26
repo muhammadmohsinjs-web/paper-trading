@@ -51,6 +51,48 @@ async def test_ensure_daily_picks_persists_top_five_and_reuses_same_day(db_sessi
     assert all(pick.selection_date == datetime.now(timezone.utc).date() for pick in second)
 
 
+@pytest.mark.asyncio
+async def test_ensure_daily_picks_uses_dynamic_universe_when_strategy_has_no_explicit_universe(db_session, monkeypatch):
+    strategy = Strategy(
+        id="multi-dynamic-1",
+        name="Dynamic Multi Coin",
+        execution_mode="multi_coin_shared_wallet",
+        primary_symbol="BTCUSDT",
+        scan_universe_json=[],
+        top_pick_count=2,
+        config_json={},
+    )
+    db_session.add(strategy)
+    await db_session.commit()
+
+    calls = {"resolve_symbols": 0}
+
+    async def fake_resolve_symbols(self, *, retained_symbols=None):
+        calls["resolve_symbols"] += 1
+        self.symbols = ["ETHUSDT", "SOLUSDT"]
+        return self.symbols
+
+    def fake_rank_symbols(self, interval="1h", max_results=5, liquidity_floor_usdt=None):
+        assert self.symbols == ["ETHUSDT", "SOLUSDT"]
+        return [
+            RankedSymbol("ETHUSDT", 0.88, "trending_up", "volume_breakout", "macd_momentum", "eth", 2_000_000.0),
+            RankedSymbol("SOLUSDT", 0.83, "trending_up", "bb_squeeze", "bollinger_bounce", "sol", 2_000_000.0),
+        ][:max_results]
+
+    monkeypatch.setattr("app.engine.multi_coin.OpportunityScanner.resolve_symbols", fake_resolve_symbols)
+    monkeypatch.setattr("app.engine.multi_coin.OpportunityScanner.rank_symbols", fake_rank_symbols)
+
+    picks = await ensure_daily_picks(
+        db_session,
+        strategy,
+        interval="1h",
+        open_position_symbols={"BTCUSDT"},
+    )
+
+    assert calls["resolve_symbols"] == 1
+    assert [pick.symbol for pick in picks] == ["ETHUSDT", "SOLUSDT"]
+
+
 def test_compute_total_equity_and_unrealized_pnl_sum_across_symbols(data_store):
     store = DataStore.get_instance()
     store.set_candles(

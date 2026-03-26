@@ -1116,7 +1116,14 @@ async def _run_multi_coin_cycle(
     interval: str,
     force: bool,
 ) -> dict[str, Any]:
-    picks = await ensure_daily_picks(session, strategy, interval=interval, force_refresh=False)
+    # Gather open position symbols for position-aware retention
+    open_positions = await get_positions(session, strategy_id)
+    open_position_symbols = {p.symbol for p in open_positions}
+
+    picks = await ensure_daily_picks(
+        session, strategy, interval=interval, force_refresh=False,
+        open_position_symbols=open_position_symbols,
+    )
     selection_date = picks[0].selection_date.isoformat() if picks else datetime.now(timezone.utc).date().isoformat()
     selected_symbols = [pick.symbol for pick in picks]
     if not selected_symbols:

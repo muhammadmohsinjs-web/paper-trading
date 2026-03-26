@@ -14,6 +14,7 @@ from app.models.position import Position
 from app.models.strategy import Strategy
 from app.risk.portfolio import PortfolioPosition, PortfolioRiskManager
 from app.scanner.scanner import OpportunityScanner
+from app.scanner.universe_selector import UniverseSelector
 
 settings = get_settings()
 SINGLE_SYMBOL_MODE = "single_symbol"
@@ -44,6 +45,11 @@ def resolve_scan_universe(strategy: Strategy) -> list[str]:
     raw_universe = strategy.scan_universe_json or config.get("scan_universe") or settings.default_scan_universe
     normalized = [str(symbol).upper() for symbol in raw_universe if str(symbol).strip()]
     return normalized or settings.default_scan_universe
+
+
+def has_explicit_scan_universe(strategy: Strategy) -> bool:
+    config = strategy.config_json or {}
+    return bool(strategy.scan_universe_json or config.get("scan_universe"))
 
 
 def resolve_top_pick_count(strategy: Strategy) -> int:
@@ -92,7 +98,7 @@ async def get_daily_picks(
     return list(result.scalars().all())
 
 
-PICK_REFRESH_HOURS = 4  # Re-scan every 4 hours instead of once per day
+PICK_REFRESH_HOURS = settings.dynamic_universe_refresh_hours if settings.dynamic_universe_enabled else 4
 
 
 async def ensure_daily_picks(
@@ -102,6 +108,7 @@ async def ensure_daily_picks(
     interval: str | None = None,
     selection_date: date | None = None,
     force_refresh: bool = False,
+    open_position_symbols: set[str] | None = None,
 ) -> list[DailyPick]:
     chosen_date = selection_date or resolve_selection_date(strategy)
     now = datetime.now(timezone.utc)
@@ -117,11 +124,23 @@ async def ensure_daily_picks(
             import logging
             logger = logging.getLogger(__name__)
             logger.info(
-                "daily picks are %.1fh old (threshold=%dh), refreshing for strategy=%s",
+                "daily picks are %.1fh old (threshold=%.1fh), refreshing for strategy=%s",
                 age_hours, PICK_REFRESH_HOURS, strategy.id,
             )
 
-    scanner = OpportunityScanner(symbols=resolve_scan_universe(strategy))
+    explicit_universe = has_explicit_scan_universe(strategy)
+    scanner = (
+        OpportunityScanner(symbols=resolve_scan_universe(strategy))
+        if explicit_universe
+        else OpportunityScanner()
+    )
+
+    # If dynamic universe is enabled and no explicit universe was set on the strategy,
+    # resolve symbols dynamically with position-aware retention.
+    if settings.dynamic_universe_enabled and not explicit_universe:
+        retained = open_position_symbols or set()
+        await scanner.resolve_symbols(retained_symbols=retained)
+
     ranked_symbols = scanner.rank_symbols(
         interval=interval or strategy.candle_interval or settings.default_candle_interval,
         max_results=resolve_top_pick_count(strategy),

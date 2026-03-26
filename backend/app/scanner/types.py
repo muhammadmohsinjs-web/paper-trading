@@ -7,6 +7,44 @@ from typing import Any
 
 
 @dataclass
+class ActivityScore:
+    """Market quality score for a symbol — used by dynamic universe selection."""
+
+    symbol: str
+    activity_score: float  # Composite score [0.0, 1.0]
+    volume_surge: float  # Volume vs 7-day average
+    volatility_quality: float  # ATR/price in ideal range
+    trend_clarity: float  # ADX-based trend quality
+    liquidity_depth: float  # 24h USDT volume tier
+    relative_strength: float  # Performance vs BTC
+    volume_24h_usdt: float  # Raw 24h quote volume
+    is_new_entrant: bool = False  # Newly entered Active Universe
+
+
+@dataclass
+class CandidateInfo:
+    """Minimal ticker data for a coin in the candidate pool."""
+
+    symbol: str
+    price: float
+    volume_24h_usdt: float  # 24h quote volume
+    price_change_pct_24h: float  # 24h price change %
+
+
+@dataclass
+class UniverseSnapshot:
+    """Point-in-time snapshot of the dynamic universe state."""
+
+    timestamp: str  # ISO format
+    candidate_pool_size: int
+    active_universe_size: int
+    active_symbols: list[str] = field(default_factory=list)
+    promoted: list[str] = field(default_factory=list)  # Newly entered
+    demoted: list[str] = field(default_factory=list)  # Removed
+    scores: list[ActivityScore] = field(default_factory=list)
+
+
+@dataclass
 class RankedSetup:
     """A scored trading opportunity detected by the scanner."""
 

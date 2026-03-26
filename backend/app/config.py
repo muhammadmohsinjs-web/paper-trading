@@ -86,6 +86,22 @@ class Settings:
     multi_coin_max_concurrent_positions: int = 4
     multi_coin_selection_hour_utc: int = 0
     multi_coin_liquidity_floor_usdt: float = 1_000_000.0
+
+    # Dynamic universe selection
+    dynamic_universe_enabled: bool = True
+    dynamic_universe_size: int = 40
+    dynamic_universe_min_size: int = 15
+    dynamic_universe_refresh_hours: float = 1.0
+    candidate_pool_refresh_hours: float = 6.0
+    universe_min_24h_volume_usdt: float = 500_000.0
+    universe_min_price: float = 0.00001
+    universe_min_listing_age_days: int = 14
+    universe_volume_surge_weight: float = 0.30
+    universe_volatility_quality_weight: float = 0.25
+    universe_trend_clarity_weight: float = 0.20
+    universe_liquidity_depth_weight: float = 0.15
+    universe_relative_strength_weight: float = 0.10
+
     spot_fee_rate: float = 0.001
     bnb_discount_fee_rate: float = 0.00075
 
@@ -170,6 +186,14 @@ class Settings:
             multi_coin_max_concurrent_positions=int(_get_value("MULTI_COIN_MAX_CONCURRENT_POSITIONS", default=str(cls.multi_coin_max_concurrent_positions))),
             multi_coin_selection_hour_utc=int(_get_value("MULTI_COIN_SELECTION_HOUR_UTC", default=str(cls.multi_coin_selection_hour_utc))),
             multi_coin_liquidity_floor_usdt=float(_get_value("MULTI_COIN_LIQUIDITY_FLOOR_USDT", default=str(cls.multi_coin_liquidity_floor_usdt))),
+            dynamic_universe_enabled=_get_bool("DYNAMIC_UNIVERSE_ENABLED", cls.dynamic_universe_enabled),
+            dynamic_universe_size=int(_get_value("DYNAMIC_UNIVERSE_SIZE", default=str(cls.dynamic_universe_size))),
+            dynamic_universe_min_size=int(_get_value("DYNAMIC_UNIVERSE_MIN_SIZE", default=str(cls.dynamic_universe_min_size))),
+            dynamic_universe_refresh_hours=float(_get_value("DYNAMIC_UNIVERSE_REFRESH_HOURS", default=str(cls.dynamic_universe_refresh_hours))),
+            candidate_pool_refresh_hours=float(_get_value("CANDIDATE_POOL_REFRESH_HOURS", default=str(cls.candidate_pool_refresh_hours))),
+            universe_min_24h_volume_usdt=float(_get_value("UNIVERSE_MIN_24H_VOLUME_USDT", default=str(cls.universe_min_24h_volume_usdt))),
+            universe_min_price=float(_get_value("UNIVERSE_MIN_PRICE", default=str(cls.universe_min_price))),
+            universe_min_listing_age_days=int(_get_value("UNIVERSE_MIN_LISTING_AGE_DAYS", default=str(cls.universe_min_listing_age_days))),
             spot_fee_rate=float(_get_value("SPOT_FEE_RATE", default=str(cls.spot_fee_rate))),
             bnb_discount_fee_rate=float(_get_value("BNB_DISCOUNT_FEE_RATE", default=str(cls.bnb_discount_fee_rate))),
             default_stop_loss_pct=float(_get_value("STOP_LOSS_PCT", default=str(cls.default_stop_loss_pct))),

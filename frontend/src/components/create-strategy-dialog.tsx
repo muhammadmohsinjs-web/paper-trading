@@ -240,7 +240,7 @@ export function CreateStrategyDialog({ open, onClose, existingStrategies = [] }:
           )}
           {executionMode === "multi_coin_shared_wallet" && (
             <p className="mt-1 text-xs text-rise/70">
-              Multi-coin mode will scan the fixed liquid universe and trade from the daily top 5.
+              Multi-coin mode will scan the dynamic liquid universe and trade from the daily top picks.
             </p>
           )}
         </div>

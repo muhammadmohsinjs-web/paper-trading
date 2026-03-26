@@ -91,11 +91,28 @@ class StrategyManager:
         return count
 
     async def stop_all(self) -> int:
-        count = 0
-        for sid in list(self._tasks.keys()):
-            await self.stop_strategy(sid)
-            count += 1
-        return count
+        active_tasks = [(sid, task) for sid, task in list(self._tasks.items()) if task is not None]
+        if not active_tasks:
+            return 0
+
+        self._tasks.clear()
+        for _, task in active_tasks:
+            task.cancel()
+
+        results = await asyncio.gather(
+            *(task for _, task in active_tasks),
+            return_exceptions=True,
+        )
+        for (sid, _), result in zip(active_tasks, results):
+            if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+                logger.error(
+                    "strategy stop failed strategy_id=%s",
+                    sid,
+                    exc_info=(type(result), result, result.__traceback__),
+                )
+            logger.info("strategy stopped strategy_id=%s", sid)
+
+        return len(active_tasks)
 
     def running_strategies(self) -> list[str]:
         return [sid for sid, t in self._tasks.items() if not t.done()]

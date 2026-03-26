@@ -47,6 +47,16 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 
+def _normalize_explicit_scan_universe(raw_universe: object) -> list[str]:
+    if not isinstance(raw_universe, list):
+        return []
+    return [
+        str(symbol).upper()
+        for symbol in raw_universe
+        if str(symbol).strip()
+    ]
+
+
 def _strategy_ai_defaults(strategy: Strategy) -> dict[str, object]:
     config = strategy.config_json or {}
     provider = settings.ai_provider
@@ -188,10 +198,12 @@ async def create_strategy(
     session: AsyncSession = Depends(get_db_session),
 ):
     config_json = body.config_json or {}
-    scan_universe = [
-        str(symbol).upper()
-        for symbol in (body.scan_universe_json or config_json.get("scan_universe") or settings.default_scan_universe)
-    ]
+    explicit_scan_universe = (
+        body.scan_universe_json
+        if body.scan_universe_json is not None
+        else config_json.get("scan_universe")
+    )
+    scan_universe = _normalize_explicit_scan_universe(explicit_scan_universe)
     strategy = Strategy(
         id=str(uuid4()),
         name=body.name,
@@ -377,8 +389,8 @@ async def update_strategy(
         strategy.ai_temperature = Decimal(str(body.ai_temperature))
     if "primary_symbol" in updates and strategy.primary_symbol:
         strategy.primary_symbol = strategy.primary_symbol.upper()
-    if "scan_universe_json" in updates and strategy.scan_universe_json:
-        strategy.scan_universe_json = [str(symbol).upper() for symbol in strategy.scan_universe_json]
+    if "scan_universe_json" in updates:
+        strategy.scan_universe_json = _normalize_explicit_scan_universe(strategy.scan_universe_json)
 
     # Handle start/stop
     manager = StrategyManager.get_instance()

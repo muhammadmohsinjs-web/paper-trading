@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query
 
 from app.config import get_settings
 from app.scanner.scanner import OpportunityScanner
+from app.scanner.universe_selector import UniverseSelector
 
 router = APIRouter(prefix="/scanner", tags=["scanner"])
 settings = get_settings()
@@ -20,16 +21,17 @@ async def get_opportunities(
 ):
     """Scan all configured symbols for trading opportunities.
 
-    Returns ranked setups sorted by score. Only symbols with sufficient
-    candle data in the DataStore will be included.
+    Returns ranked setups sorted by score. Uses dynamic universe if enabled.
     """
     scanner = OpportunityScanner()
+    await scanner.resolve_symbols()
     result = scanner.scan(interval=interval, max_results=max_results)
 
     return {
         "scanned_at": result.scanned_at,
         "symbols_scanned": result.symbols_scanned,
         "regime": result.regime,
+        "dynamic_universe_enabled": settings.dynamic_universe_enabled,
         "opportunities": [asdict(s) for s in result.opportunities],
     }
 
@@ -41,18 +43,17 @@ async def run_manual_scan(
 ):
     """Run a full market scan now and return ranked symbols.
 
-    This performs a fresh scan using rank_symbols (the same logic used
-    for daily pick selection) and returns results immediately without
-    persisting them. Use this for on-demand market exploration.
+    Uses dynamic universe selection if enabled, otherwise falls back
+    to the static list.
     """
     scanner = OpportunityScanner()
+    await scanner.resolve_symbols()
     ranked = scanner.rank_symbols(
         interval=interval,
         max_results=max_results,
         liquidity_floor_usdt=settings.multi_coin_liquidity_floor_usdt,
     )
 
-    # Also get the raw scan for opportunity details
     scan_result = scanner.scan(interval=interval, max_results=max_results)
 
     return {
@@ -60,6 +61,53 @@ async def run_manual_scan(
         "symbols_scanned": scan_result.symbols_scanned,
         "regime": scan_result.regime,
         "universe_size": len(scanner.symbols),
+        "dynamic_universe_enabled": settings.dynamic_universe_enabled,
         "ranked_symbols": [asdict(s) for s in ranked],
         "opportunities": [asdict(s) for s in scan_result.opportunities],
+    }
+
+
+@router.get("/universe")
+async def get_universe_status():
+    """Return the current dynamic universe state.
+
+    Shows candidate pool size, active universe, promoted/demoted coins,
+    and activity scores for each selected coin.
+    """
+    selector = UniverseSelector.get_instance()
+    snapshot = selector.get_last_snapshot()
+
+    if snapshot is None:
+        return {
+            "status": "not_initialized",
+            "dynamic_universe_enabled": settings.dynamic_universe_enabled,
+            "fallback_universe_size": len(settings.default_scan_universe),
+        }
+
+    return {
+        "status": "active",
+        "dynamic_universe_enabled": settings.dynamic_universe_enabled,
+        "timestamp": snapshot.timestamp,
+        "candidate_pool_size": snapshot.candidate_pool_size,
+        "active_universe_size": snapshot.active_universe_size,
+        "active_symbols": snapshot.active_symbols,
+        "promoted": snapshot.promoted,
+        "demoted": snapshot.demoted,
+        "scores": [asdict(s) for s in snapshot.scores],
+    }
+
+
+@router.post("/universe/refresh")
+async def refresh_universe():
+    """Force-refresh the dynamic universe immediately."""
+    selector = UniverseSelector.get_instance()
+    symbols = await selector.get_active_universe(force_refresh=True)
+    snapshot = selector.get_last_snapshot()
+
+    return {
+        "status": "refreshed",
+        "active_universe_size": len(symbols),
+        "active_symbols": symbols,
+        "promoted": snapshot.promoted if snapshot else [],
+        "demoted": snapshot.demoted if snapshot else [],
     }

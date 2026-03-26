@@ -383,6 +383,28 @@ async def test_create_multicoin_strategy_initializes_wallet_snapshot_and_daily_p
 
 
 @pytest.mark.asyncio
+async def test_create_multicoin_strategy_without_explicit_universe_keeps_scan_universe_empty(test_app):
+    transport = ASGITransport(app=test_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/strategies",
+            json={
+                "name": "Dynamic Shared Wallet Desk",
+                "config_json": {
+                    "strategy_type": "sma_crossover",
+                    "initial_balance": 1000,
+                },
+                "execution_mode": "multi_coin_shared_wallet",
+                "top_pick_count": 2,
+                "candle_interval": "1h",
+            },
+        )
+
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["scan_universe_json"] == []
+
+
+@pytest.mark.asyncio
 async def test_delete_strategy_removes_dependent_rows(test_app):
     """Deleting a strategy should remove wallet and portfolio artifacts."""
     transport = ASGITransport(app=test_app)
