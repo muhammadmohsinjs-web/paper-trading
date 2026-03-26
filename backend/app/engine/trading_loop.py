@@ -35,6 +35,7 @@ from app.engine.multi_coin import (
     MULTI_COIN_MODE,
     build_portfolio_positions,
     compute_total_equity,
+    ensure_coordinated_picks_fresh,
     ensure_daily_picks,
     resolve_execution_mode,
     resolve_max_concurrent_positions,
@@ -1110,6 +1111,16 @@ async def _run_single_cycle_locked(
         resolved_interval = interval or strategy.candle_interval or (strategy.config_json or {}).get("candle_interval", settings.default_candle_interval)
         execution_mode = resolve_execution_mode(strategy)
         if execution_mode == MULTI_COIN_MODE:
+            open_positions = await get_positions(session, strategy_id)
+            open_position_symbols = {position.symbol for position in open_positions}
+            await ensure_coordinated_picks_fresh(
+                session,
+                strategy,
+                interval=resolved_interval,
+                force_refresh=force,
+                open_position_symbols=open_position_symbols,
+                cycle_id=cycle_id,
+            )
             result_payload = await _run_multi_coin_cycle(
                 session,
                 manager,

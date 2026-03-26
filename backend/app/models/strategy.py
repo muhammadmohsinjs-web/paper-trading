@@ -83,3 +83,8 @@ class Strategy(UUIDPrimaryKeyMixin, CreatedAtMixin, UpdatedAtMixin, Base):
         cascade="all, delete-orphan",
         order_by="DailyPick.rank",
     )
+    symbol_ownerships = relationship(
+        "SymbolOwnership",
+        back_populates="strategy",
+        cascade="all, delete-orphan",
+    )

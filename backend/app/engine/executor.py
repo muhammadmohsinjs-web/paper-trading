@@ -6,11 +6,14 @@ Flow: market_price → slippage → fee → wallet update → trade record → P
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.engine.fee_model import SPOT_FEE_RATE, calculate_fee
 from app.engine.slippage import apply_slippage
 from app.engine.wallet_manager import (
@@ -21,8 +24,11 @@ from app.engine.wallet_manager import (
     open_position,
 )
 from app.models.enums import TradeSide
+from app.models.symbol_ownership import SymbolOwnership
 from app.models.trade import Trade
 from app.models.wallet import Wallet
+
+settings = get_settings()
 
 
 @dataclass
@@ -200,6 +206,20 @@ async def execute_sell(
     remaining = position.quantity - sell_qty
     if remaining <= Decimal("0.00000001"):
         await close_position(session, position)
+        ownership = (
+            await session.execute(
+                select(SymbolOwnership).where(
+                    SymbolOwnership.strategy_id == strategy_id,
+                    SymbolOwnership.symbol == symbol,
+                    SymbolOwnership.released_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if ownership is not None:
+            now = datetime.now(timezone.utc)
+            ownership.released_at = now
+            ownership.release_reason = "position_closed"
+            ownership.cooldown_until = now + timedelta(hours=settings.symbol_ownership_cooldown_hours)
     else:
         position.quantity = remaining
         position.entry_fee = position.entry_fee - entry_fee_portion

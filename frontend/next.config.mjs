@@ -1,7 +1,29 @@
-const defaultBackendBaseUrl = "http://35.228.198.216:8000";
-const configuredApiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "");
-const configuredBackendBaseUrl = process.env.NEXT_PUBLIC_BACKEND_BASE_URL?.replace(/\/$/, "");
-const backendBaseUrl = configuredBackendBaseUrl ?? defaultBackendBaseUrl;
+const DEFAULT_LOCAL_BACKEND_BASE_URL = "http://127.0.0.1:8000";
+const DEFAULT_PROD_BACKEND_BASE_URL = "http://35.228.198.216:8000";
+
+function normalizeUrl(value) {
+  return value?.trim().replace(/\/$/, "");
+}
+
+function resolveApiTarget(value) {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "local") {
+    return "local";
+  }
+  if (normalized === "prod") {
+    return "prod";
+  }
+  return process.env.NODE_ENV === "development" ? "local" : "prod";
+}
+
+const configuredApiBaseUrl = normalizeUrl(process.env.NEXT_PUBLIC_API_BASE_URL);
+const configuredBackendBaseUrl = normalizeUrl(process.env.NEXT_PUBLIC_BACKEND_BASE_URL);
+const apiTarget = resolveApiTarget(process.env.NEXT_PUBLIC_API_TARGET);
+const targetBackendBaseUrl =
+  apiTarget === "local"
+    ? normalizeUrl(process.env.NEXT_PUBLIC_LOCAL_BACKEND_BASE_URL) ?? DEFAULT_LOCAL_BACKEND_BASE_URL
+    : normalizeUrl(process.env.NEXT_PUBLIC_PROD_BACKEND_BASE_URL) ?? DEFAULT_PROD_BACKEND_BASE_URL;
+const backendBaseUrl = configuredBackendBaseUrl ?? targetBackendBaseUrl;
 const apiProxyBaseUrl =
   configuredApiBaseUrl && /^https?:\/\//.test(configuredApiBaseUrl)
     ? configuredApiBaseUrl

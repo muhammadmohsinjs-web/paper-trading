@@ -50,6 +50,7 @@ class OpportunityScanner:
         self._symbols_from_dynamic: bool = symbols is None
         self.regime_classifier = RegimeClassifier()
         self._last_rank_audit: list[dict[str, Any]] = []
+        self._last_regime_cache: dict[str, MarketRegime] = {}
 
     async def resolve_symbols(
         self,
@@ -327,8 +328,91 @@ class OpportunityScanner:
         self._last_rank_audit = audit_rows
         return selected
 
+    def scan_all_setups_for_universe(
+        self,
+        interval: str = "1h",
+    ) -> dict[str, list[RankedSetup]]:
+        store = DataStore.get_instance()
+        audit_rows: list[dict[str, Any]] = []
+        all_results: dict[str, list[RankedSetup]] = {}
+        self._last_regime_cache = {}
+
+        for symbol in self.symbols:
+            candles = store.get_candles(symbol, interval, 200)
+            if len(candles) < MIN_CANDLES_FOR_SCAN:
+                audit_rows.append({
+                    "symbol": symbol,
+                    "status": "skipped",
+                    "reason_code": MARKET_DATA_INSUFFICIENT,
+                    "reason_text": "Insufficient candle history for scan",
+                    "setup_type": None,
+                    "movement_quality": {},
+                    "score": 0.0,
+                })
+                all_results[symbol] = []
+                continue
+
+            closes = [c.close for c in candles]
+            highs = [c.high for c in candles]
+            lows = [c.low for c in candles]
+            volumes = [c.volume for c in candles]
+            indicators = compute_indicators(closes, highs=highs, lows=lows, volumes=volumes)
+            tradability = evaluate_symbol_tradability(
+                symbol=symbol,
+                closes=closes,
+                highs=highs,
+                lows=lows,
+                volumes=volumes,
+                volume_24h_usdt=self._estimate_liquidity_usdt(candles, window=24),
+                indicators=indicators,
+            )
+            if not tradability.passed:
+                audit_rows.append({
+                    "symbol": symbol,
+                    "status": "rejected",
+                    "reason_code": tradability.reason_codes[0] if tradability.reason_codes else None,
+                    "reason_text": tradability.reason_text,
+                    "setup_type": None,
+                    "movement_quality": tradability.metrics.to_dict(),
+                    "score": 0.0,
+                })
+                all_results[symbol] = []
+                continue
+
+            regime_result = self.regime_classifier.classify(indicators)
+            self._last_regime_cache[symbol] = regime_result.regime
+            setups, audits = self._detect_setups(
+                symbol,
+                indicators,
+                regime_result.regime,
+                closes=closes,
+                highs=highs,
+                lows=lows,
+                volumes=volumes,
+            )
+            setups.sort(key=lambda item: item.score, reverse=True)
+            all_results[symbol] = setups
+            primary = next((audit for audit in audits if audit.status == "qualified"), None)
+            if primary is None:
+                primary = next((audit for audit in audits if audit.status == "rejected"), None)
+            audit_rows.append({
+                "symbol": symbol,
+                "status": primary.status if primary is not None else "rejected",
+                "reason_code": primary.reason_code if primary is not None else NO_QUALIFYING_SETUP,
+                "reason_text": primary.reason_text if primary is not None else "No qualifying setup detected",
+                "setup_type": primary.setup_type if primary is not None else None,
+                "movement_quality": primary.metrics if primary is not None else {},
+                "score": setups[0].score if setups else 0.0,
+            })
+
+        self._last_rank_audit = audit_rows
+        return all_results
+
     def get_last_rank_audit(self) -> list[dict[str, Any]]:
         return list(self._last_rank_audit)
+
+    def get_last_regime_cache(self) -> dict[str, MarketRegime]:
+        return dict(self._last_regime_cache)
 
     def _detect_setups(
         self,
@@ -382,6 +466,12 @@ class OpportunityScanner:
 
         ema_12 = indicators.get("ema_12", [])
         ema_26 = indicators.get("ema_26", [])
+        price_for_volatility = float(latest_close or closes[-1]) if (latest_close or closes) else 0.0
+        volatility_quality_score = (
+            UniverseSelector._score_volatility_quality(symbol, price_for_volatility, DataStore.get_instance())
+            if price_for_volatility > 0
+            else 0.3
+        )
 
         def reject(setup_type: str, reason_code: str, reason_text: str, metrics: dict[str, Any] | None = None) -> None:
             audits.append(
@@ -433,6 +523,10 @@ class OpportunityScanner:
                     reason_codes=[QUALIFIED_SETUP],
                     reason_text=reason,
                     movement_quality=movement.to_dict(),
+                    liquidity_usdt=round(volume_24h_usdt, 2),
+                    market_quality_score=round(tradability_metrics.market_quality_score, 4),
+                    reward_to_cost_ratio=round(tradability_metrics.reward_to_cost_ratio, 4),
+                    volatility_quality_score=round(volatility_quality_score, 4),
                 )
             )
             audits.append(

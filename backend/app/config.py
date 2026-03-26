@@ -86,6 +86,9 @@ class Settings:
     multi_coin_max_concurrent_positions: int = 4
     multi_coin_selection_hour_utc: int = 0
     multi_coin_liquidity_floor_usdt: float = 1_000_000.0
+    symbol_ownership_cooldown_hours: float = 4.0
+    global_max_active_symbols: int = 20
+    coordinated_pick_enabled: bool = True
 
     # Dynamic universe selection
     dynamic_universe_enabled: bool = True
@@ -209,6 +212,9 @@ class Settings:
             multi_coin_max_concurrent_positions=int(_get_value("MULTI_COIN_MAX_CONCURRENT_POSITIONS", default=str(cls.multi_coin_max_concurrent_positions))),
             multi_coin_selection_hour_utc=int(_get_value("MULTI_COIN_SELECTION_HOUR_UTC", default=str(cls.multi_coin_selection_hour_utc))),
             multi_coin_liquidity_floor_usdt=float(_get_value("MULTI_COIN_LIQUIDITY_FLOOR_USDT", default=str(cls.multi_coin_liquidity_floor_usdt))),
+            symbol_ownership_cooldown_hours=float(_get_value("SYMBOL_OWNERSHIP_COOLDOWN_HOURS", default=str(cls.symbol_ownership_cooldown_hours))),
+            global_max_active_symbols=int(_get_value("GLOBAL_MAX_ACTIVE_SYMBOLS", default=str(cls.global_max_active_symbols))),
+            coordinated_pick_enabled=_get_bool("COORDINATED_PICK_ENABLED", cls.coordinated_pick_enabled),
             dynamic_universe_enabled=_get_bool("DYNAMIC_UNIVERSE_ENABLED", cls.dynamic_universe_enabled),
             dynamic_universe_size=int(_get_value("DYNAMIC_UNIVERSE_SIZE", default=str(cls.dynamic_universe_size))),
             dynamic_universe_min_size=int(_get_value("DYNAMIC_UNIVERSE_MIN_SIZE", default=str(cls.dynamic_universe_min_size))),

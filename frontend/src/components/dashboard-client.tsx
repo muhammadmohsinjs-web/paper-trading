@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { LivePrice } from "@/components/live-price";
 import { useLiveFeed } from "@/hooks/use-live-feed";
+import { backendBaseUrl } from "@/lib/env";
 import { formatCurrency, formatNumber } from "@/lib/format";
 import type { DashboardResponse, EngineStatus, MarketPrice, SignalData } from "@/lib/types";
 import { MarketScanner } from "@/components/market-scanner";
@@ -143,7 +144,7 @@ export function DashboardClient({
           <p className="text-xs uppercase tracking-[0.24em] text-fall">Backend Unavailable</p>
           <p className="mt-3 text-sm leading-6 text-mist/75">
             The dashboard is showing fallback data because the frontend could not reach the backend API.
-            Check that the FastAPI server is running on `127.0.0.1:8000`. Latest error: {backendError}
+            Check that the FastAPI server is running at `{backendBaseUrl}`. Latest error: {backendError}
           </p>
         </section>
       ) : null}

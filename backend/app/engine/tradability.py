@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from decimal import Decimal
 from math import sqrt
+import re
 from typing import Any
 
 from app.config import get_settings
@@ -98,6 +99,14 @@ def infer_base_asset(symbol: str, quote_asset: str = "USDT") -> str:
     if normalized.endswith(suffix):
         return normalized[: -len(suffix)]
     return normalized
+
+
+def is_stablecoin_like_base(base_asset: str, denylist: list[str] | None = None) -> bool:
+    normalized = (base_asset or "").upper()
+    blocked = {item.upper() for item in (denylist or SETTINGS.stablecoin_base_denylist)}
+    if normalized in blocked:
+        return True
+    return re.search(r"USD", normalized) is not None
 
 
 def _pct_change(newer: float, older: float) -> float:
@@ -285,7 +294,7 @@ def evaluate_symbol_tradability(
     )
     reason_codes: list[str] = []
 
-    if infer_base_asset(symbol) in thresholds.stablecoin_base_denylist:
+    if is_stablecoin_like_base(infer_base_asset(symbol), thresholds.stablecoin_base_denylist):
         reason_codes.append(DENYLIST_STABLE_BASE)
 
     low_vol_flags = 0

@@ -36,5 +36,9 @@ class DailyPick(UUIDPrimaryKeyMixin, Base):
     setup_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     recommended_strategy: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    assignment_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    conflict_resolution: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    setup_fit_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    regime_fit_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     strategy = relationship("Strategy", back_populates="daily_picks")

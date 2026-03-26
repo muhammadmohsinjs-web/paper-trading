@@ -81,6 +81,10 @@ class RankedSetup:
     reason_codes: list[str] = field(default_factory=list)
     reason_text: str = ""
     movement_quality: dict[str, Any] = field(default_factory=dict)
+    liquidity_usdt: float = 0.0
+    market_quality_score: float = 0.0
+    reward_to_cost_ratio: float = 0.0
+    volatility_quality_score: float = 0.5
 
 
 @dataclass

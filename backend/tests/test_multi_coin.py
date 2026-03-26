@@ -11,7 +11,8 @@ from app.engine.multi_coin import compute_total_equity, compute_unrealized_pnl, 
 from app.market.data_store import Candle, DataStore
 from app.models.symbol_evaluation_log import SymbolEvaluationLog
 from app.models.strategy import Strategy
-from app.scanner.types import RankedSymbol
+from app.regime.types import MarketRegime
+from app.scanner.types import RankedSetup
 
 
 @pytest.mark.asyncio
@@ -23,24 +24,36 @@ async def test_ensure_daily_picks_persists_top_five_and_reuses_same_day(db_sessi
         primary_symbol="BTCUSDT",
         scan_universe_json=["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT"],
         top_pick_count=5,
-        config_json={},
+        config_json={"strategy_type": "rsi_mean_reversion"},
     )
     db_session.add(strategy)
     await db_session.commit()
 
     calls = {"count": 0}
 
-    def fake_rank_symbols(self, interval="1h", max_results=5, liquidity_floor_usdt=None):
+    def fake_scan_all_setups(self, interval="1h"):
         calls["count"] += 1
-        return [
-            RankedSymbol("BTCUSDT", 0.91, "trending_up", "volume_breakout", "macd_momentum", "btc", 2_000_000.0),
-            RankedSymbol("ETHUSDT", 0.88, "trending_up", "volume_breakout", "macd_momentum", "eth", 2_000_000.0),
-            RankedSymbol("SOLUSDT", 0.83, "trending_up", "bb_squeeze", "bollinger_bounce", "sol", 2_000_000.0),
-            RankedSymbol("XRPUSDT", 0.79, "ranging", "rsi_oversold", "rsi_mean_reversion", "xrp", 2_000_000.0),
-            RankedSymbol("BNBUSDT", 0.74, "trending_up", "sma_crossover_proximity", "sma_crossover", "bnb", 2_000_000.0),
-        ][:max_results]
+        self._last_rank_audit = [
+            {"symbol": symbol, "status": "qualified", "reason_code": "QUALIFIED_SETUP", "reason_text": symbol, "setup_type": "rsi_oversold", "movement_quality": {}, "score": score}
+            for symbol, score in [("BTCUSDT", 0.91), ("ETHUSDT", 0.88), ("SOLUSDT", 0.83), ("XRPUSDT", 0.79), ("BNBUSDT", 0.74)]
+        ]
+        self._last_regime_cache = {
+            "BTCUSDT": MarketRegime.RANGING,
+            "ETHUSDT": MarketRegime.RANGING,
+            "SOLUSDT": MarketRegime.RANGING,
+            "XRPUSDT": MarketRegime.RANGING,
+            "BNBUSDT": MarketRegime.RANGING,
+        }
+        return {
+            "BTCUSDT": [RankedSetup("BTCUSDT", 0.91, "rsi_oversold", "BUY", "ranging", "rsi_mean_reversion", "btc", liquidity_usdt=2_000_000.0, market_quality_score=0.8, reward_to_cost_ratio=2.0, volatility_quality_score=0.8)],
+            "ETHUSDT": [RankedSetup("ETHUSDT", 0.88, "rsi_overbought", "SELL", "ranging", "rsi_mean_reversion", "eth", liquidity_usdt=2_000_000.0, market_quality_score=0.8, reward_to_cost_ratio=2.0, volatility_quality_score=0.8)],
+            "SOLUSDT": [RankedSetup("SOLUSDT", 0.83, "rsi_divergence_bullish", "BUY", "ranging", "rsi_mean_reversion", "sol", liquidity_usdt=2_000_000.0, market_quality_score=0.8, reward_to_cost_ratio=2.0, volatility_quality_score=0.8)],
+            "XRPUSDT": [RankedSetup("XRPUSDT", 0.79, "rsi_divergence_bearish", "SELL", "ranging", "rsi_mean_reversion", "xrp", liquidity_usdt=2_000_000.0, market_quality_score=0.8, reward_to_cost_ratio=2.0, volatility_quality_score=0.8)],
+            "BNBUSDT": [RankedSetup("BNBUSDT", 0.74, "momentum_breakout_low", "SELL", "ranging", "rsi_mean_reversion", "bnb", liquidity_usdt=2_000_000.0, market_quality_score=0.8, reward_to_cost_ratio=2.0, volatility_quality_score=0.8)],
+        }
 
-    monkeypatch.setattr("app.engine.multi_coin.OpportunityScanner.rank_symbols", fake_rank_symbols)
+    monkeypatch.setattr("app.engine.multi_coin.OpportunityScanner.scan_all_setups_for_universe", fake_scan_all_setups)
+    monkeypatch.setattr("app.engine.multi_coin.OpportunityScanner.get_last_regime_cache", lambda self: self._last_regime_cache)
 
     first = await ensure_daily_picks(db_session, strategy, interval="1h")
     await db_session.commit()
@@ -49,7 +62,8 @@ async def test_ensure_daily_picks_persists_top_five_and_reuses_same_day(db_sessi
     assert calls["count"] == 1
     assert len(first) == 5
     assert [pick.rank for pick in first] == [1, 2, 3, 4, 5]
-    assert [pick.symbol for pick in second] == ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT"]
+    assert [pick.symbol for pick in second] == [pick.symbol for pick in first]
+    assert set(pick.symbol for pick in second) == {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT"}
     assert all(pick.selection_date == datetime.now(timezone.utc).date() for pick in second)
 
 
@@ -62,7 +76,7 @@ async def test_ensure_daily_picks_uses_dynamic_universe_when_strategy_has_no_exp
         primary_symbol="BTCUSDT",
         scan_universe_json=[],
         top_pick_count=2,
-        config_json={},
+        config_json={"strategy_type": "rsi_mean_reversion"},
     )
     db_session.add(strategy)
     await db_session.commit()
@@ -74,15 +88,21 @@ async def test_ensure_daily_picks_uses_dynamic_universe_when_strategy_has_no_exp
         self.symbols = ["ETHUSDT", "SOLUSDT"]
         return self.symbols
 
-    def fake_rank_symbols(self, interval="1h", max_results=5, liquidity_floor_usdt=None):
+    def fake_scan_all_setups(self, interval="1h"):
         assert self.symbols == ["ETHUSDT", "SOLUSDT"]
-        return [
-            RankedSymbol("ETHUSDT", 0.88, "trending_up", "volume_breakout", "macd_momentum", "eth", 2_000_000.0),
-            RankedSymbol("SOLUSDT", 0.83, "trending_up", "bb_squeeze", "bollinger_bounce", "sol", 2_000_000.0),
-        ][:max_results]
+        self._last_rank_audit = []
+        self._last_regime_cache = {
+            "ETHUSDT": MarketRegime.RANGING,
+            "SOLUSDT": MarketRegime.RANGING,
+        }
+        return {
+            "ETHUSDT": [RankedSetup("ETHUSDT", 0.88, "rsi_oversold", "BUY", "ranging", "rsi_mean_reversion", "eth", liquidity_usdt=2_000_000.0, market_quality_score=0.8, reward_to_cost_ratio=2.0, volatility_quality_score=0.8)],
+            "SOLUSDT": [RankedSetup("SOLUSDT", 0.83, "rsi_overbought", "SELL", "ranging", "rsi_mean_reversion", "sol", liquidity_usdt=2_000_000.0, market_quality_score=0.8, reward_to_cost_ratio=2.0, volatility_quality_score=0.8)],
+        }
 
     monkeypatch.setattr("app.engine.multi_coin.OpportunityScanner.resolve_symbols", fake_resolve_symbols)
-    monkeypatch.setattr("app.engine.multi_coin.OpportunityScanner.rank_symbols", fake_rank_symbols)
+    monkeypatch.setattr("app.engine.multi_coin.OpportunityScanner.scan_all_setups_for_universe", fake_scan_all_setups)
+    monkeypatch.setattr("app.engine.multi_coin.OpportunityScanner.get_last_regime_cache", lambda self: self._last_regime_cache)
 
     picks = await ensure_daily_picks(
         db_session,

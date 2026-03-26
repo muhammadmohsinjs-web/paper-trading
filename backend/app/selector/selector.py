@@ -19,6 +19,7 @@ REGIME_AFFINITY: dict[MarketRegime, dict[str, float]] = {
         "rsi_mean_reversion": 0.30,
         "bollinger_bounce": 0.40,
         "hybrid_composite": 0.75,
+        "hybrid_ai_composite": 0.75,
     },
     MarketRegime.TRENDING_DOWN: {
         "sma_crossover": 0.70,
@@ -26,6 +27,7 @@ REGIME_AFFINITY: dict[MarketRegime, dict[str, float]] = {
         "rsi_mean_reversion": 0.50,
         "bollinger_bounce": 0.45,
         "hybrid_composite": 0.70,
+        "hybrid_ai_composite": 0.70,
     },
     MarketRegime.RANGING: {
         "sma_crossover": 0.20,
@@ -33,6 +35,7 @@ REGIME_AFFINITY: dict[MarketRegime, dict[str, float]] = {
         "rsi_mean_reversion": 0.90,
         "bollinger_bounce": 0.85,
         "hybrid_composite": 0.65,
+        "hybrid_ai_composite": 0.65,
     },
     MarketRegime.HIGH_VOLATILITY: {
         "sma_crossover": 0.15,
@@ -40,6 +43,7 @@ REGIME_AFFINITY: dict[MarketRegime, dict[str, float]] = {
         "rsi_mean_reversion": 0.40,
         "bollinger_bounce": 0.60,
         "hybrid_composite": 0.50,
+        "hybrid_ai_composite": 0.50,
     },
     MarketRegime.CRASH: {
         "sma_crossover": 0.0,
@@ -47,6 +51,7 @@ REGIME_AFFINITY: dict[MarketRegime, dict[str, float]] = {
         "rsi_mean_reversion": 0.10,
         "bollinger_bounce": 0.10,
         "hybrid_composite": 0.05,
+        "hybrid_ai_composite": 0.05,
     },
 }
 

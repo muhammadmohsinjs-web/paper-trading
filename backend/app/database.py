@@ -173,7 +173,7 @@ async def _run_migrations(connection) -> None:
     # ── Cleanup orphan rows ───────────────────────────────────────────
     orphan_tables = (
         "wallets", "positions", "trades", "snapshots",
-        "daily_picks", "ai_call_logs", "symbol_evaluation_logs", "strategy_cycle_locks",
+        "daily_picks", "ai_call_logs", "symbol_evaluation_logs", "strategy_cycle_locks", "symbol_ownership",
     )
     for table_name in orphan_tables:
         result = await connection.execute(text(f"PRAGMA table_info({table_name})"))
@@ -220,6 +220,52 @@ async def _run_migrations(connection) -> None:
         "CREATE INDEX IF NOT EXISTS ix_symbol_evaluation_logs_stage "
         "ON symbol_evaluation_logs(stage)"
     ))
+
+    await connection.execute(text(
+        """
+        CREATE TABLE IF NOT EXISTS symbol_ownership (
+            id VARCHAR(36) PRIMARY KEY,
+            symbol VARCHAR(24) NOT NULL,
+            strategy_id VARCHAR(36) NOT NULL,
+            strategy_name VARCHAR(120) NOT NULL,
+            assigned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            released_at DATETIME,
+            release_reason VARCHAR(64),
+            cooldown_until DATETIME,
+            assignment_score FLOAT,
+            assignment_reason TEXT,
+            FOREIGN KEY(strategy_id) REFERENCES strategies(id) ON DELETE CASCADE
+        )
+        """
+    ))
+    await connection.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_symbol_ownership_symbol "
+        "ON symbol_ownership(symbol)"
+    ))
+    await connection.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_symbol_ownership_strategy_id "
+        "ON symbol_ownership(strategy_id)"
+    ))
+    await connection.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_symbol_ownership_released_at "
+        "ON symbol_ownership(released_at)"
+    ))
+    await connection.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_symbol_ownership_cooldown_until "
+        "ON symbol_ownership(cooldown_until)"
+    ))
+
+    result = await connection.execute(text("PRAGMA table_info(daily_picks)"))
+    existing_daily_pick_cols = {row[1] for row in result}
+    daily_pick_columns = {
+        "assignment_reason": "TEXT",
+        "conflict_resolution": "VARCHAR(32)",
+        "setup_fit_score": "FLOAT",
+        "regime_fit_score": "FLOAT",
+    }
+    for name, definition in daily_pick_columns.items():
+        if name not in existing_daily_pick_cols:
+            await connection.execute(text(f"ALTER TABLE daily_picks ADD COLUMN {name} {definition}"))
 
 
 async def init_database() -> None:
