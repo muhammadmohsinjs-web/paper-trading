@@ -39,7 +39,7 @@ class BollingerBounceStrategy(BaseStrategy):
         curr_lower = lower[-1]
         curr_middle = middle[-1]
 
-        symbol = "BTCUSDT"
+        symbol = str(indicators.get("symbol") or "BTCUSDT")
 
         # BUY: Price touches or crosses below lower band (oversold bounce)
         if latest_close <= curr_lower and not has_position:

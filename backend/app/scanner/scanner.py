@@ -6,14 +6,18 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from app.config import get_settings
 from app.market.data_store import DataStore
 from app.market.indicators import compute_indicators
 from app.regime.classifier import RegimeClassifier
 from app.regime.types import MarketRegime
-from app.scanner.types import RankedSetup, ScanResult
+from app.risk.portfolio import get_correlation
+from app.scanner.relative_strength import get_relative_strength
+from app.scanner.types import RankedSetup, RankedSymbol, ScanResult
 from app.selector.selector import REGIME_AFFINITY
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 # Default symbols to scan (top by volume on Binance)
 DEFAULT_SYMBOLS = [
@@ -83,6 +87,97 @@ class OpportunityScanner:
             opportunities=opportunities[:max_results],
         )
 
+    def rank_symbols(
+        self,
+        interval: str = "1h",
+        max_results: int = 5,
+        *,
+        liquidity_floor_usdt: float | None = None,
+    ) -> list[RankedSymbol]:
+        """Return one ranked candidate per symbol with diversification-aware ordering."""
+        store = DataStore.get_instance()
+        candidates: list[RankedSymbol] = []
+        min_liquidity = float(
+            liquidity_floor_usdt
+            if liquidity_floor_usdt is not None
+            else settings.multi_coin_liquidity_floor_usdt
+        )
+
+        for symbol in self.symbols:
+            candles = store.get_candles(symbol, interval, 200)
+            if len(candles) < MIN_CANDLES_FOR_SCAN:
+                continue
+
+            closes = [c.close for c in candles]
+            highs = [c.high for c in candles]
+            lows = [c.low for c in candles]
+            volumes = [c.volume for c in candles]
+            indicators = compute_indicators(closes, highs=highs, lows=lows, volumes=volumes)
+            regime_result = self.regime_classifier.classify(indicators)
+            setups = self._detect_setups(symbol, indicators, regime_result.regime)
+            if not setups:
+                continue
+
+            liquidity_usdt = self._estimate_liquidity_usdt(candles)
+            if liquidity_usdt < min_liquidity:
+                continue
+
+            best_setup = max(setups, key=lambda setup: setup.score)
+            regime_affinity = REGIME_AFFINITY.get(regime_result.regime, {}).get(
+                best_setup.recommended_strategy,
+                0.5,
+            )
+            liquidity_score = min(liquidity_usdt / max(min_liquidity * 4.0, 1.0), 1.0)
+            final_score = (
+                best_setup.score * 0.75
+                + regime_affinity * 0.15
+                + liquidity_score * 0.10
+            )
+            candidates.append(
+                RankedSymbol(
+                    symbol=symbol,
+                    score=final_score,
+                    regime=regime_result.regime.value,
+                    setup_type=best_setup.setup_type,
+                    recommended_strategy=best_setup.recommended_strategy,
+                    reason=best_setup.reason,
+                    liquidity_usdt=liquidity_usdt,
+                    indicators=best_setup.indicators,
+                )
+            )
+
+        candidates.sort(key=lambda item: item.score, reverse=True)
+
+        selected: list[RankedSymbol] = []
+        remaining = candidates[:]
+        while remaining and len(selected) < max_results:
+            best_idx = 0
+            best_score = -1.0
+            for idx, candidate in enumerate(remaining):
+                adjusted_score = candidate.score
+                if selected:
+                    max_corr = max(get_correlation(candidate.symbol, chosen.symbol) for chosen in selected)
+                    adjusted_score *= max(0.25, 1.0 - (0.35 * max_corr))
+                if adjusted_score > best_score:
+                    best_score = adjusted_score
+                    best_idx = idx
+
+            selected_candidate = remaining.pop(best_idx)
+            selected.append(
+                RankedSymbol(
+                    symbol=selected_candidate.symbol,
+                    score=round(best_score, 4),
+                    regime=selected_candidate.regime,
+                    setup_type=selected_candidate.setup_type,
+                    recommended_strategy=selected_candidate.recommended_strategy,
+                    reason=selected_candidate.reason,
+                    liquidity_usdt=selected_candidate.liquidity_usdt,
+                    indicators=selected_candidate.indicators,
+                )
+            )
+
+        return selected
+
     def _detect_setups(
         self,
         symbol: str,
@@ -112,7 +207,7 @@ class OpportunityScanner:
             strength = max(0, (30 - latest_rsi) / 30)
             regime_align = 1.0 if regime == MarketRegime.RANGING else 0.5
             vol_confirm = min(latest_volume_ratio / 1.0, 1.0) if latest_volume_ratio else 0.5
-            score = self._setup_score(strength, regime_align, vol_confirm, 0.5)
+            score = self._setup_score(strength, regime_align, vol_confirm, 0.5, symbol)
             if score >= MIN_SETUP_SCORE:
                 setups.append(RankedSetup(
                     symbol=symbol,
@@ -130,7 +225,7 @@ class OpportunityScanner:
             strength = max(0, (latest_rsi - 70) / 30)
             regime_align = 1.0 if regime == MarketRegime.RANGING else 0.5
             vol_confirm = min(latest_volume_ratio / 1.0, 1.0) if latest_volume_ratio else 0.5
-            score = self._setup_score(strength, regime_align, vol_confirm, 0.5)
+            score = self._setup_score(strength, regime_align, vol_confirm, 0.5, symbol)
             if score >= MIN_SETUP_SCORE:
                 setups.append(RankedSetup(
                     symbol=symbol,
@@ -156,7 +251,7 @@ class OpportunityScanner:
                 if pct_rank > 0.8:  # Current width is in lowest 20%
                     strength = pct_rank
                     vol_confirm = min(latest_volume_ratio / 1.5, 1.0) if latest_volume_ratio and latest_volume_ratio > 1.5 else 0.3
-                    score = self._setup_score(strength, 0.7, vol_confirm, 0.6)
+                    score = self._setup_score(strength, 0.7, vol_confirm, 0.6, symbol)
                     if score >= MIN_SETUP_SCORE:
                         setups.append(RankedSetup(
                             symbol=symbol,
@@ -177,7 +272,7 @@ class OpportunityScanner:
                 if approaching_golden:
                     vol_confirm = min(latest_volume_ratio / 1.0, 1.0) if latest_volume_ratio else 0.5
                     trend_align = 1.0 if regime in (MarketRegime.TRENDING_UP, MarketRegime.RANGING) else 0.3
-                    score = self._setup_score(0.7, trend_align, vol_confirm, 0.6)
+                    score = self._setup_score(0.7, trend_align, vol_confirm, 0.6, symbol)
                     if score >= MIN_SETUP_SCORE:
                         setups.append(RankedSetup(
                             symbol=symbol,
@@ -196,7 +291,7 @@ class OpportunityScanner:
                 price_up = latest_close > indicators["previous_close"]
                 strength = min((latest_volume_ratio - 2.0) / 2.0, 1.0)
                 trend_align = 1.0 if regime in (MarketRegime.TRENDING_UP,) and price_up else 0.5
-                score = self._setup_score(strength, trend_align, 1.0, 0.7)
+                score = self._setup_score(strength, trend_align, 1.0, 0.7, symbol)
                 if score >= MIN_SETUP_SCORE:
                     setups.append(RankedSetup(
                         symbol=symbol,
@@ -211,18 +306,34 @@ class OpportunityScanner:
 
         return setups
 
-    @staticmethod
     def _setup_score(
+        self,
         signal_strength: float,
         regime_alignment: float,
         volume_confirmation: float,
         trend_alignment: float,
+        symbol: str | None = None,
     ) -> float:
-        """Compute setup ranking score."""
+        """Compute setup ranking score with relative strength."""
+        rs_score = 0.5  # default neutral
+        if symbol is not None:
+            rs = get_relative_strength(symbol)
+            if rs is not None:
+                # Map relative strength to 0-1 score
+                # +5% vs BTC → 1.0, 0% → 0.5, -5% → 0.0
+                rs_score = max(0.0, min(1.0, 0.5 + rs / 10.0))
         return (
-            signal_strength * 0.30
-            + regime_alignment * 0.25
+            signal_strength * 0.25
+            + regime_alignment * 0.20
             + volume_confirmation * 0.20
             + trend_alignment * 0.15
-            + 0.5 * 0.10  # liquidity placeholder
+            + rs_score * 0.20
         )
+
+    @staticmethod
+    def _estimate_liquidity_usdt(candles: list[Any], window: int = 20) -> float:
+        recent = candles[-window:]
+        if not recent:
+            return 0.0
+        quote_volumes = [float(candle.close) * float(candle.volume) for candle in recent]
+        return sum(quote_volumes) / len(quote_volumes)

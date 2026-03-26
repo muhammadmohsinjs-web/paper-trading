@@ -1,20 +1,39 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 
-from sqlalchemy import text
+from sqlalchemy import event, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import get_settings
 from app.models import Base  # noqa: F401
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 engine = create_async_engine(
     settings.database_url,
     echo=settings.database_echo,
     future=True,
 )
+
+
+@event.listens_for(engine.sync_engine, "connect")
+def _set_sqlite_pragmas(dbapi_connection, _connection_record) -> None:
+    if engine.url.get_backend_name() != "sqlite":
+        return
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA busy_timeout=5000")
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+    except Exception:
+        pass  # WAL switch may fail if another process holds the DB; non-fatal
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
+
+
 SessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
@@ -27,11 +46,14 @@ async def get_db_session() -> AsyncIterator[AsyncSession]:
         yield session
 
 
-async def _ensure_phase3_strategy_columns() -> None:
-    if engine.url.get_backend_name() != "sqlite":
-        return
+async def _run_migrations(connection) -> None:
+    """Run all backward-compatible migrations in a single connection/transaction."""
 
-    column_defs = {
+    # ── strategies table ──────────────────────────────────────────────
+    result = await connection.execute(text("PRAGMA table_info(strategies)"))
+    existing_strategy_cols = {row[1] for row in result}
+
+    ai_columns = {
         "ai_enabled": "BOOLEAN NOT NULL DEFAULT 0",
         "ai_provider": "VARCHAR(32) NOT NULL DEFAULT 'anthropic'",
         "ai_strategy_key": "VARCHAR(64)",
@@ -54,82 +76,72 @@ async def _ensure_phase3_strategy_columns() -> None:
         "ai_total_tokens": "INTEGER NOT NULL DEFAULT 0",
         "ai_total_cost_usdt": "NUMERIC(18, 8) NOT NULL DEFAULT 0",
     }
-
-    async with engine.begin() as connection:
-        result = await connection.execute(text("PRAGMA table_info(strategies)"))
-        existing = {row[1] for row in result}
-        for name, definition in column_defs.items():
-            if name not in existing:
+    risk_strategy_columns = {
+        "stop_loss_pct": "NUMERIC(6,3) NOT NULL DEFAULT 3.0",
+        "max_drawdown_pct": "NUMERIC(6,3) NOT NULL DEFAULT 15.0",
+        "risk_per_trade_pct": "NUMERIC(6,3) NOT NULL DEFAULT 2.0",
+        "max_position_size_pct": "NUMERIC(6,3) NOT NULL DEFAULT 30.0",
+        "candle_interval": "VARCHAR(8) NOT NULL DEFAULT '1h'",
+        "consecutive_losses": "INTEGER NOT NULL DEFAULT 0",
+        "max_consecutive_losses": "INTEGER NOT NULL DEFAULT 0",
+        "streak_size_multiplier": "NUMERIC(6,3) NOT NULL DEFAULT 1.0",
+    }
+    multicoin_columns = {
+        "execution_mode": "VARCHAR(32) NOT NULL DEFAULT 'single_symbol'",
+        "primary_symbol": "VARCHAR(24) NOT NULL DEFAULT 'BTCUSDT'",
+        "scan_universe_json": "JSON NOT NULL DEFAULT '[]'",
+        "top_pick_count": "INTEGER NOT NULL DEFAULT 5",
+        "selection_hour_utc": "INTEGER NOT NULL DEFAULT 0",
+        "max_concurrent_positions": "INTEGER NOT NULL DEFAULT 2",
+    }
+    for col_map in (ai_columns, risk_strategy_columns, multicoin_columns):
+        for name, definition in col_map.items():
+            if name not in existing_strategy_cols:
                 await connection.execute(text(f"ALTER TABLE strategies ADD COLUMN {name} {definition}"))
 
+    # ── positions table ───────────────────────────────────────────────
+    result = await connection.execute(text("PRAGMA table_info(positions)"))
+    existing_pos_cols = {row[1] for row in result}
+    position_columns = {
+        "stop_loss_price": "NUMERIC(24,12)",
+        "take_profit_price": "NUMERIC(24,12)",
+        "trailing_stop_price": "NUMERIC(24,12)",
+        "entry_atr": "NUMERIC(24,12)",
+        "entry_confidence_raw": "NUMERIC(8,4)",
+        "entry_confidence_final": "NUMERIC(8,4)",
+        "entry_confidence_bucket": "VARCHAR(16)",
+        "take_profit_1_price": "NUMERIC(24,12)",
+        "take_profit_2_price": "NUMERIC(24,12)",
+        "take_profit_3_price": "NUMERIC(24,12)",
+        "tp1_hit": "BOOLEAN DEFAULT 0",
+        "tp2_hit": "BOOLEAN DEFAULT 0",
+    }
+    for name, definition in position_columns.items():
+        if name not in existing_pos_cols:
+            await connection.execute(text(f"ALTER TABLE positions ADD COLUMN {name} {definition}"))
 
-async def _ensure_risk_management_columns() -> None:
-    """Add risk-management columns for Phase 4 (backward-compatible)."""
-    if engine.url.get_backend_name() != "sqlite":
-        return
+    # ── wallets table ─────────────────────────────────────────────────
+    result = await connection.execute(text("PRAGMA table_info(wallets)"))
+    existing_wallet_cols = {row[1] for row in result}
+    wallet_columns = {
+        "peak_equity_usdt": "NUMERIC(18,8) NOT NULL DEFAULT 1000",
+        "daily_loss_usdt": "NUMERIC(18,8) NOT NULL DEFAULT 0",
+        "daily_loss_reset_date": "DATE",
+        "weekly_loss_usdt": "NUMERIC(18,8) NOT NULL DEFAULT 0",
+        "weekly_loss_reset_date": "DATE",
+    }
+    for name, definition in wallet_columns.items():
+        if name not in existing_wallet_cols:
+            await connection.execute(text(f"ALTER TABLE wallets ADD COLUMN {name} {definition}"))
 
-    async with engine.begin() as connection:
-        # -- positions table --
-        result = await connection.execute(text("PRAGMA table_info(positions)"))
-        existing = {row[1] for row in result}
-        if "stop_loss_price" not in existing:
-            await connection.execute(text("ALTER TABLE positions ADD COLUMN stop_loss_price NUMERIC(24,12)"))
-        if "take_profit_price" not in existing:
-            await connection.execute(text("ALTER TABLE positions ADD COLUMN take_profit_price NUMERIC(24,12)"))
-        if "trailing_stop_price" not in existing:
-            await connection.execute(text("ALTER TABLE positions ADD COLUMN trailing_stop_price NUMERIC(24,12)"))
-        if "entry_atr" not in existing:
-            await connection.execute(text("ALTER TABLE positions ADD COLUMN entry_atr NUMERIC(24,12)"))
-        if "entry_confidence_raw" not in existing:
-            await connection.execute(text("ALTER TABLE positions ADD COLUMN entry_confidence_raw NUMERIC(8,4)"))
-        if "entry_confidence_final" not in existing:
-            await connection.execute(text("ALTER TABLE positions ADD COLUMN entry_confidence_final NUMERIC(8,4)"))
-        if "entry_confidence_bucket" not in existing:
-            await connection.execute(text("ALTER TABLE positions ADD COLUMN entry_confidence_bucket VARCHAR(16)"))
-
-        # -- wallets table --
-        result = await connection.execute(text("PRAGMA table_info(wallets)"))
-        existing = {row[1] for row in result}
-        if "peak_equity_usdt" not in existing:
-            await connection.execute(text("ALTER TABLE wallets ADD COLUMN peak_equity_usdt NUMERIC(18,8) NOT NULL DEFAULT 1000"))
-        wallet_cols = {
-            "daily_loss_usdt": "NUMERIC(18,8) NOT NULL DEFAULT 0",
-            "daily_loss_reset_date": "DATE",
-            "weekly_loss_usdt": "NUMERIC(18,8) NOT NULL DEFAULT 0",
-            "weekly_loss_reset_date": "DATE",
-        }
-        for name, definition in wallet_cols.items():
-            if name not in existing:
-                await connection.execute(text(f"ALTER TABLE wallets ADD COLUMN {name} {definition}"))
-
-        # -- strategies table --
-        strategy_cols = {
-            "stop_loss_pct": "NUMERIC(6,3) NOT NULL DEFAULT 3.0",
-            "max_drawdown_pct": "NUMERIC(6,3) NOT NULL DEFAULT 15.0",
-            "risk_per_trade_pct": "NUMERIC(6,3) NOT NULL DEFAULT 2.0",
-            "max_position_size_pct": "NUMERIC(6,3) NOT NULL DEFAULT 30.0",
-            "candle_interval": "VARCHAR(8) NOT NULL DEFAULT '1h'",
-            "consecutive_losses": "INTEGER NOT NULL DEFAULT 0",
-            "max_consecutive_losses": "INTEGER NOT NULL DEFAULT 0",
-            "streak_size_multiplier": "NUMERIC(6,3) NOT NULL DEFAULT 1.0",
-        }
-        result = await connection.execute(text("PRAGMA table_info(strategies)"))
-        existing = {row[1] for row in result}
-        for name, definition in strategy_cols.items():
-            if name not in existing:
-                await connection.execute(text(f"ALTER TABLE strategies ADD COLUMN {name} {definition}"))
-
-
-async def _ensure_trade_log_columns() -> None:
-    """Add trade log context columns (backward-compatible)."""
-    if engine.url.get_backend_name() != "sqlite":
-        return
-
-    column_defs = {
+    # ── trades table ──────────────────────────────────────────────────
+    result = await connection.execute(text("PRAGMA table_info(trades)"))
+    existing_trade_cols = {row[1] for row in result}
+    trade_columns = {
         "strategy_name": "VARCHAR(128)",
         "strategy_type": "VARCHAR(64)",
         "decision_source": "VARCHAR(32)",
-        "indicator_snapshot": "TEXT",  # JSON stored as TEXT in SQLite
+        "indicator_snapshot": "TEXT",
         "composite_score": "NUMERIC(8,4)",
         "composite_confidence": "NUMERIC(8,4)",
         "entry_confidence_raw": "NUMERIC(8,4)",
@@ -139,45 +151,56 @@ async def _ensure_trade_log_columns() -> None:
         "wallet_balance_before": "NUMERIC(18,8)",
         "wallet_balance_after": "NUMERIC(18,8)",
     }
+    for name, definition in trade_columns.items():
+        if name not in existing_trade_cols:
+            await connection.execute(text(f"ALTER TABLE trades ADD COLUMN {name} {definition}"))
 
-    async with engine.begin() as connection:
-        result = await connection.execute(text("PRAGMA table_info(trades)"))
-        existing = {row[1] for row in result}
-        for name, definition in column_defs.items():
-            if name not in existing:
-                await connection.execute(text(f"ALTER TABLE trades ADD COLUMN {name} {definition}"))
+    # ── Backfill trades ───────────────────────────────────────────────
+    await connection.execute(text(
+        "UPDATE trades SET cost_usdt = quantity * price WHERE cost_usdt IS NULL"
+    ))
+    await connection.execute(text(
+        "UPDATE trades SET strategy_name = ("
+        "  SELECT s.name FROM strategies s WHERE s.id = trades.strategy_id"
+        ") WHERE strategy_name IS NULL"
+    ))
+    await connection.execute(text(
+        "UPDATE trades SET strategy_type = ("
+        "  SELECT json_extract(s.config_json, '$.strategy_type') FROM strategies s WHERE s.id = trades.strategy_id"
+        ") WHERE strategy_type IS NULL"
+    ))
 
-
-async def _backfill_trade_log_columns() -> None:
-    """Backfill cost_usdt, strategy_name, strategy_type for existing trades."""
-    if engine.url.get_backend_name() != "sqlite":
-        return
-
-    async with engine.begin() as connection:
-        # Backfill cost_usdt = quantity * price for trades missing it
+    # ── Cleanup orphan rows ───────────────────────────────────────────
+    orphan_tables = (
+        "wallets", "positions", "trades", "snapshots",
+        "daily_picks", "ai_call_logs", "strategy_cycle_locks",
+    )
+    for table_name in orphan_tables:
+        result = await connection.execute(text(f"PRAGMA table_info({table_name})"))
+        columns = {row[1] for row in result}
+        if "strategy_id" not in columns:
+            continue
         await connection.execute(text(
-            "UPDATE trades SET cost_usdt = quantity * price WHERE cost_usdt IS NULL"
-        ))
-        # Backfill strategy_name and strategy_type from strategies table
-        await connection.execute(text(
-            "UPDATE trades SET strategy_name = ("
-            "  SELECT s.name FROM strategies s WHERE s.id = trades.strategy_id"
-            ") WHERE strategy_name IS NULL"
-        ))
-        await connection.execute(text(
-            "UPDATE trades SET strategy_type = ("
-            "  SELECT json_extract(s.config_json, '$.strategy_type') FROM strategies s WHERE s.id = trades.strategy_id"
-            ") WHERE strategy_type IS NULL"
+            f"DELETE FROM {table_name} "
+            "WHERE strategy_id IS NOT NULL "
+            "AND strategy_id NOT IN (SELECT id FROM strategies)"
         ))
 
 
 async def init_database() -> None:
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-    await _ensure_phase3_strategy_columns()
-    await _ensure_risk_management_columns()
-    await _ensure_trade_log_columns()
-    await _backfill_trade_log_columns()
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+            if engine.url.get_backend_name() == "sqlite":
+                await _run_migrations(connection)
+    except OperationalError:
+        if engine.url.get_backend_name() == "sqlite":
+            logger.exception(
+                "database initialization failed because the sqlite file is locked db=%s; "
+                "close other writers such as DB Browser, pytest, or another server process",
+                engine.url.database,
+            )
+        raise
 
 
 async def dispose_database() -> None:

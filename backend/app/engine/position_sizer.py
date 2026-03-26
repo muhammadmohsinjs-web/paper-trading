@@ -26,6 +26,14 @@ class PositionSizingResult:
     entry_atr: Decimal
 
 
+@dataclass(frozen=True)
+class ScaledExitLevels:
+    stop_loss_price: Decimal
+    take_profit_1_price: Decimal  # 1:1 R:R
+    take_profit_2_price: Decimal  # 2:1 R:R
+    take_profit_3_price: Decimal  # 3:1 R:R
+
+
 def calculate_exit_levels(
     *,
     entry_price: Decimal,
@@ -33,12 +41,30 @@ def calculate_exit_levels(
     atr_multiplier: Decimal = Decimal("2.0"),
     take_profit_ratio: Decimal = Decimal("2.0"),
 ) -> tuple[Decimal, Decimal]:
+    """Legacy 2-tuple return for backward compatibility."""
     stop_distance = atr * atr_multiplier
     stop_loss_price = (entry_price - stop_distance).quantize(Decimal("0.00000001"))
     take_profit_price = (
         entry_price + (stop_distance * take_profit_ratio)
     ).quantize(Decimal("0.00000001"))
     return stop_loss_price, take_profit_price
+
+
+def calculate_scaled_exit_levels(
+    *,
+    entry_price: Decimal,
+    atr: Decimal,
+    atr_multiplier: Decimal = Decimal("2.0"),
+) -> ScaledExitLevels:
+    """Compute stop-loss and three take-profit levels at 1:1, 2:1, 3:1 R:R."""
+    stop_distance = atr * atr_multiplier
+    q = Decimal("0.00000001")
+    return ScaledExitLevels(
+        stop_loss_price=(entry_price - stop_distance).quantize(q),
+        take_profit_1_price=(entry_price + stop_distance * Decimal("1")).quantize(q),
+        take_profit_2_price=(entry_price + stop_distance * Decimal("2")).quantize(q),
+        take_profit_3_price=(entry_price + stop_distance * Decimal("3")).quantize(q),
+    )
 
 
 def streak_multiplier_for_losses(losing_streak_count: int) -> Decimal:

@@ -53,5 +53,21 @@ class Position(UUIDPrimaryKeyMixin, Base):
     entry_confidence_bucket: Mapped[Optional[str]] = mapped_column(
         String(16), nullable=True, default=None,
     )
+    # Scaled take-profit levels (1:1, 2:1, 3:1 risk-reward)
+    take_profit_1_price: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(24, 12), nullable=True, default=None,
+    )
+    take_profit_2_price: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(24, 12), nullable=True, default=None,
+    )
+    take_profit_3_price: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(24, 12), nullable=True, default=None,
+    )
+    tp1_hit: Mapped[Optional[bool]] = mapped_column(
+        nullable=True, default=False,
+    )
+    tp2_hit: Mapped[Optional[bool]] = mapped_column(
+        nullable=True, default=False,
+    )
 
     strategy = relationship("Strategy", back_populates="positions")

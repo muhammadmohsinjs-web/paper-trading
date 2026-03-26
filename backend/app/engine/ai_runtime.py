@@ -218,19 +218,63 @@ def _extract_anthropic_text(response_json: dict[str, Any]) -> str:
 
 
 def _extract_openai_text(response_json: dict[str, Any]) -> str:
+    output_text = response_json.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+
+    def _extract_parts(content: Any) -> list[str]:
+        parts: list[str] = []
+        if not isinstance(content, list):
+            return parts
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type", "")).lower()
+            if item_type in {"text", "output_text"}:
+                text_value = item.get("text", "")
+                if isinstance(text_value, dict):
+                    text_value = text_value.get("value") or text_value.get("content") or ""
+                text = str(text_value).strip()
+                if text:
+                    parts.append(text)
+            elif item_type == "refusal":
+                refusal_value = item.get("refusal") or item.get("text") or ""
+                refusal = str(refusal_value).strip()
+                if refusal:
+                    parts.append(refusal)
+        return parts
+
+    output = response_json.get("output", [])
+    if isinstance(output, list):
+        parts: list[str] = []
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            parts.extend(_extract_parts(item.get("content", [])))
+        if parts:
+            return "\n".join(parts).strip()
+
     choices = response_json.get("choices", [])
     if not isinstance(choices, list) or not choices:
         return ""
 
     message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+    refusal = message.get("refusal")
+    if isinstance(refusal, str) and refusal.strip():
+        return refusal.strip()
     content = message.get("content", "")
     if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, dict) and item.get("type") in {"text", "output_text"}:
-                parts.append(str(item.get("text", "")))
+        parts = _extract_parts(content)
         return "\n".join(part for part in parts if part).strip()
     return str(content).strip()
+
+
+def _payload_excerpt(payload: dict[str, Any], limit: int = 4000) -> str:
+    try:
+        text = json.dumps(payload, default=str, ensure_ascii=True)
+    except TypeError:
+        text = repr(payload)
+    return text if len(text) <= limit else f"{text[:limit]}..."
 
 
 def _extract_json_payload(text: str) -> dict[str, Any]:
@@ -672,6 +716,11 @@ async def evaluate_ai_decision(
                     print(f"{_BOLD}{_GREEN}✅ Response received in {elapsed:.2f}s{_RESET}", flush=True)
                     _log_ai_response(provider, raw_text or "(empty)", _symbol)
                     if not raw_text:
+                        if provider == AI_PROVIDER_OPENAI:
+                            logger.error(
+                                "openai response contained no extractable text payload_excerpt=%s",
+                                _payload_excerpt(response_json),
+                            )
                         raise ValueError(f"{provider_label} response did not contain text content")
                     last_usage = _usage_from_response(response_json, provider)
                     payload = _extract_json_payload(raw_text)
@@ -777,6 +826,11 @@ async def evaluate_ai_validation(
                     print(f"{_BOLD}{_GREEN}✅ Validation received in {elapsed:.2f}s{_RESET}", flush=True)
                     _log_ai_response(provider, raw_text or "(empty)", symbol)
                     if not raw_text:
+                        if provider == AI_PROVIDER_OPENAI:
+                            logger.error(
+                                "openai validation response contained no extractable text payload_excerpt=%s",
+                                _payload_excerpt(response_json),
+                            )
                         raise ValueError(f"{provider_label} validation response did not contain text content")
                     last_usage = _usage_from_response(response_json, provider)
                     payload = _extract_json_payload(raw_text)

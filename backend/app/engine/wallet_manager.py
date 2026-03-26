@@ -103,6 +103,16 @@ async def get_position(
     return result.scalar_one_or_none()
 
 
+async def get_positions(
+    session: AsyncSession,
+    strategy_id: str,
+) -> list[Position]:
+    result = await session.execute(
+        select(Position).where(Position.strategy_id == strategy_id)
+    )
+    return list(result.scalars().all())
+
+
 async def close_position(
     session: AsyncSession,
     position: Position,

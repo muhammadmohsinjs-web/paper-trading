@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import get_db_session
+from app.engine.multi_coin import get_daily_picks, resolve_primary_symbol
 from app.engine.ai_runtime import (
     build_ai_context,
     evaluate_ai_decision,
@@ -89,7 +90,8 @@ async def ai_preview(
         raise HTTPException(404, "Strategy not found")
 
     config = strategy.config_json or {}
-    symbol = "BTCUSDT"
+    daily_picks = await get_daily_picks(session, strategy)
+    symbol = daily_picks[0].symbol if daily_picks else resolve_primary_symbol(strategy)
     interval = strategy.candle_interval or settings.default_candle_interval
 
     # Get market data from the store
@@ -115,7 +117,10 @@ async def ai_preview(
     available_usdt = wallet.available_usdt if wallet else Decimal("1000")
 
     position_result = await session.execute(
-        select(Position).where(Position.strategy_id == strategy_id)
+        select(Position).where(
+            Position.strategy_id == strategy_id,
+            Position.symbol == symbol,
+        )
     )
     position = position_result.scalar_one_or_none()
 
@@ -202,6 +207,7 @@ async def ai_preview(
     return {
         "status": ai_result.status,
         "action": ai_result.action,
+        "symbol": symbol,
         "confidence": ai_result.confidence,
         "reason": ai_result.reason,
         "raw_response": ai_result.raw_response,

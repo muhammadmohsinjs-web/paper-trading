@@ -2,13 +2,19 @@
 
 import pytest
 import pytest_asyncio
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import default_ai_model_for_provider, get_settings
 from app.models import Base
+from app.models.daily_pick import DailyPick
+from app.models.snapshot import Snapshot
+from app.models.strategy import Strategy
+from app.models.wallet import Wallet
 from app.market.data_store import Candle, DataStore
 
 
@@ -301,3 +307,135 @@ async def test_activate_strategy_clamps_loop_interval_to_candle_interval(test_ap
     assert len(captured) == 1
     assert captured[0][0] == strategy_id
     assert captured[0][1] == 3600
+
+
+@pytest.mark.asyncio
+async def test_create_multicoin_strategy_initializes_wallet_snapshot_and_daily_picks(test_app):
+    """Shared-wallet strategies should surface an initial funded state immediately."""
+    store = DataStore.get_instance()
+
+    def seed_symbol(symbol: str, price_offset: float) -> None:
+        candles = []
+        for i in range(200):
+            close = 50000.0 + price_offset + i * 8
+            volume = 120.0 if i < 199 else 500.0
+            candles.append(
+                Candle(
+                    open_time=1700000000000 + i * 3600000,
+                    open=close - 10,
+                    high=close + 20,
+                    low=close - 20,
+                    close=close,
+                    volume=volume,
+                )
+            )
+        store.set_candles(symbol, "1h", candles)
+
+    seed_symbol("BTCUSDT", 0.0)
+    seed_symbol("ETHUSDT", 1500.0)
+
+    transport = ASGITransport(app=test_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/strategies",
+            json={
+                "name": "Shared Wallet Desk",
+                "config_json": {
+                    "strategy_type": "sma_crossover",
+                    "initial_balance": 1000,
+                },
+                "execution_mode": "multi_coin_shared_wallet",
+                "scan_universe_json": ["BTCUSDT", "ETHUSDT"],
+                "top_pick_count": 2,
+                "candle_interval": "1h",
+            },
+        )
+
+        assert resp.status_code == 201, resp.text
+        strategy_id = resp.json()["id"]
+
+        detail_resp = await client.get(f"/api/strategies/{strategy_id}")
+        assert detail_resp.status_code == 200, detail_resp.text
+        detail = detail_resp.json()
+        assert detail["execution_mode"] == "multi_coin_shared_wallet"
+        assert detail["available_usdt"] == 1000.0
+        assert detail["initial_balance_usdt"] == 1000.0
+        assert detail["total_equity"] == 1000.0
+        assert len(detail["daily_picks"]) >= 1
+        assert detail["selection_date"] is not None
+
+    from app.database import SessionLocal
+
+    async with SessionLocal() as session:
+        wallet_count = (
+            await session.execute(select(func.count(Wallet.id)).where(Wallet.strategy_id == strategy_id))
+        ).scalar_one()
+        snapshot_count = (
+            await session.execute(select(func.count(Snapshot.id)).where(Snapshot.strategy_id == strategy_id))
+        ).scalar_one()
+        pick_count = (
+            await session.execute(select(func.count(DailyPick.id)).where(DailyPick.strategy_id == strategy_id))
+        ).scalar_one()
+
+    assert wallet_count == 1
+    assert snapshot_count >= 1
+    assert pick_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_delete_strategy_removes_dependent_rows(test_app):
+    """Deleting a strategy should remove wallet and portfolio artifacts."""
+    transport = ASGITransport(app=test_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        create_resp = await client.post(
+            "/api/strategies",
+            json={
+                "name": "Delete Cleanup",
+                "config_json": {
+                    "strategy_type": "sma_crossover",
+                    "initial_balance": 1000,
+                },
+                "execution_mode": "multi_coin_shared_wallet",
+                "scan_universe_json": ["BTCUSDT"],
+            },
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        strategy_id = create_resp.json()["id"]
+
+    from app.database import SessionLocal
+
+    async with SessionLocal() as session:
+        session.add(
+            DailyPick(
+                strategy_id=strategy_id,
+                selection_date=datetime.now(timezone.utc).date(),
+                rank=1,
+                symbol="BTCUSDT",
+                score=0.9,
+            )
+        )
+        session.add(Snapshot(strategy_id=strategy_id, total_equity_usdt=Decimal("1000")))
+        await session.commit()
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        delete_resp = await client.delete(f"/api/strategies/{strategy_id}")
+        assert delete_resp.status_code == 204, delete_resp.text
+
+    async with SessionLocal() as session:
+        strategy_count = (
+            await session.execute(select(func.count(Strategy.id)).where(Strategy.id == strategy_id))
+        ).scalar_one()
+        wallet_count = (
+            await session.execute(select(func.count(Wallet.id)).where(Wallet.strategy_id == strategy_id))
+        ).scalar_one()
+        snapshot_count = (
+            await session.execute(select(func.count(Snapshot.id)).where(Snapshot.strategy_id == strategy_id))
+        ).scalar_one()
+        pick_count = (
+            await session.execute(select(func.count(DailyPick.id)).where(DailyPick.strategy_id == strategy_id))
+        ).scalar_one()
+
+    assert strategy_count == 0
+    assert wallet_count == 0
+    assert snapshot_count == 0
+    assert pick_count == 0

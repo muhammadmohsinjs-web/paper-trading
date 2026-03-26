@@ -9,6 +9,12 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 AI_PROVIDER_ANTHROPIC = "anthropic"
 AI_PROVIDER_OPENAI = "openai"
 SUPPORTED_AI_PROVIDERS = {AI_PROVIDER_ANTHROPIC, AI_PROVIDER_OPENAI}
+DEFAULT_SCAN_UNIVERSE = [
+    "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
+    "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "DOTUSDT", "MATICUSDT",
+    "LINKUSDT", "LTCUSDT", "UNIUSDT", "ATOMUSDT", "NEARUSDT",
+    "APTUSDT", "OPUSDT", "ARBUSDT", "SUIUSDT", "SEIUSDT",
+]
 
 
 def _read_dotenv() -> dict[str, str]:
@@ -62,6 +68,7 @@ class Settings:
     database_echo: bool = False
     default_quote_asset: str = "USDT"
     default_symbol: str = "BTCUSDT"
+    default_scan_universe: list[str] = field(default_factory=lambda: DEFAULT_SCAN_UNIVERSE.copy())
     allowed_origins: list[str] = field(default_factory=list)
 
     # Binance
@@ -72,6 +79,10 @@ class Settings:
     default_balance_usdt: float = 1000.0
     trading_interval_seconds: int = 3600
     default_candle_interval: str = "1h"
+    multi_coin_top_pick_count: int = 5
+    multi_coin_max_concurrent_positions: int = 2
+    multi_coin_selection_hour_utc: int = 0
+    multi_coin_liquidity_floor_usdt: float = 1_000_000.0
     spot_fee_rate: float = 0.001
     bnb_discount_fee_rate: float = 0.00075
 
@@ -145,12 +156,17 @@ class Settings:
                 "TRADING_SYMBOL",
                 default=cls.default_symbol,
             ),
+            default_scan_universe=_get_list(f"{prefix}SCAN_UNIVERSE", "SCAN_UNIVERSE") or DEFAULT_SCAN_UNIVERSE.copy(),
             allowed_origins=allowed_origins,
             binance_ws_url=_get_value("BINANCE_WS_URL", default=cls.binance_ws_url),
             binance_rest_url=_get_value("BINANCE_REST_URL", default=cls.binance_rest_url),
             default_balance_usdt=float(_get_value("DEFAULT_BALANCE_USDT", default=str(cls.default_balance_usdt))),
             trading_interval_seconds=int(_get_value("TRADING_INTERVAL_SECONDS", default=str(cls.trading_interval_seconds))),
             default_candle_interval=_get_value("DEFAULT_CANDLE_INTERVAL", default=cls.default_candle_interval),
+            multi_coin_top_pick_count=int(_get_value("MULTI_COIN_TOP_PICK_COUNT", default=str(cls.multi_coin_top_pick_count))),
+            multi_coin_max_concurrent_positions=int(_get_value("MULTI_COIN_MAX_CONCURRENT_POSITIONS", default=str(cls.multi_coin_max_concurrent_positions))),
+            multi_coin_selection_hour_utc=int(_get_value("MULTI_COIN_SELECTION_HOUR_UTC", default=str(cls.multi_coin_selection_hour_utc))),
+            multi_coin_liquidity_floor_usdt=float(_get_value("MULTI_COIN_LIQUIDITY_FLOOR_USDT", default=str(cls.multi_coin_liquidity_floor_usdt))),
             spot_fee_rate=float(_get_value("SPOT_FEE_RATE", default=str(cls.spot_fee_rate))),
             bnb_discount_fee_rate=float(_get_value("BNB_DISCOUNT_FEE_RATE", default=str(cls.bnb_discount_fee_rate))),
             default_stop_loss_pct=float(_get_value("STOP_LOSS_PCT", default=str(cls.default_stop_loss_pct))),

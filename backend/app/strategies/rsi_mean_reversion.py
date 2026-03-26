@@ -1,4 +1,15 @@
-"""RSI Mean-Reversion strategy — buy oversold, sell overbought."""
+"""RSI Mean-Reversion strategy — divergence-first, deep oversold fallback.
+
+Primary signal: bullish RSI divergence (price makes lower low, RSI makes
+higher low). This indicates momentum exhaustion and is the highest-probability
+mean-reversion signal in crypto.
+
+Fallback: RSI drops below 20 (deep oversold) without divergence — still
+a valid entry but lower conviction.
+
+RSI 20-30 without divergence is intentionally skipped — it catches too many
+falling knives in trending markets.
+"""
 
 from __future__ import annotations
 
@@ -10,11 +21,7 @@ from app.strategies.base import BaseStrategy
 
 
 class RSIMeanReversionStrategy(BaseStrategy):
-    """Buy when RSI drops below oversold threshold, sell when it rises above overbought.
-
-    Default thresholds: oversold=30, overbought=70.
-    Uses the last two RSI values to detect threshold crossings (not just levels).
-    """
+    """Buy on RSI divergence or deep oversold, sell on overbought."""
 
     def decide(
         self,
@@ -26,36 +33,46 @@ class RSIMeanReversionStrategy(BaseStrategy):
         if len(rsi_values) < 2:
             return None
 
-        prev_rsi, curr_rsi = rsi_values[-2], rsi_values[-1]
-        symbol = "BTCUSDT"
-
-        # Config thresholds (passed via config_json → indicators dict won't have them,
-        # but the trading loop passes config separately; use sensible defaults here)
-        oversold = 30.0
+        curr_rsi = rsi_values[-1]
+        prev_rsi = rsi_values[-2]
+        symbol = str(indicators.get("symbol") or "BTCUSDT")
         overbought = 70.0
-
-        # BUY: RSI crosses below oversold threshold (entering oversold territory)
-        if curr_rsi < oversold and not has_position:
-            # Stronger signal the deeper the RSI
-            if curr_rsi < 20:
-                qty_pct = Decimal("0.5")  # Strong conviction
-            else:
-                qty_pct = Decimal("0.3")  # Moderate conviction
-
-            return TradeSignal(
-                action=TradeSide.BUY,
-                symbol=symbol,
-                quantity_pct=qty_pct,
-                reason=f"RSI mean-reversion BUY: RSI={curr_rsi:.1f} < {oversold} (prev={prev_rsi:.1f})",
-            )
 
         # SELL: RSI crosses above overbought threshold
         if curr_rsi > overbought and has_position:
             return TradeSignal(
                 action=TradeSide.SELL,
                 symbol=symbol,
-                quantity_pct=Decimal("1.0"),  # Sell entire position
+                quantity_pct=Decimal("1.0"),
                 reason=f"RSI mean-reversion SELL: RSI={curr_rsi:.1f} > {overbought} (prev={prev_rsi:.1f})",
             )
 
-        return None  # HOLD
+        if has_position:
+            return None
+
+        # BUY: Check for RSI divergence first (highest quality signal)
+        divergence = indicators.get("rsi_divergence")
+        if divergence is not None and divergence.detected and divergence.divergence_type == "bullish":
+            return TradeSignal(
+                action=TradeSide.BUY,
+                symbol=symbol,
+                quantity_pct=Decimal("0.5"),  # High conviction — divergence confirmed
+                reason=(
+                    f"RSI bullish divergence: price lower low "
+                    f"({divergence.price_pivot_2:.2f} < {divergence.price_pivot_1:.2f}) "
+                    f"but RSI higher low ({divergence.rsi_pivot_2:.1f} > {divergence.rsi_pivot_1:.1f}), "
+                    f"current RSI={curr_rsi:.1f}, strength={divergence.strength:.2f}"
+                ),
+            )
+
+        # Fallback: deep oversold only (RSI < 20)
+        if curr_rsi < 20:
+            return TradeSignal(
+                action=TradeSide.BUY,
+                symbol=symbol,
+                quantity_pct=Decimal("0.3"),  # Lower conviction — no divergence
+                reason=f"RSI deep oversold BUY: RSI={curr_rsi:.1f} < 20 (no divergence, prev={prev_rsi:.1f})",
+            )
+
+        # RSI 20-30 without divergence: intentionally skip (falling knife territory)
+        return None

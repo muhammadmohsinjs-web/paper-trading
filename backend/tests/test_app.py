@@ -17,6 +17,7 @@ def test_root_and_health_routes() -> None:
 
 def test_expected_tables_are_registered() -> None:
     expected_tables = {
+        "daily_picks",
         "strategies",
         "wallets",
         "positions",

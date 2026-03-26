@@ -511,6 +511,26 @@ def test_ai_runtime_prefers_strategy_selected_openai_model(monkeypatch):
     assert result.usage.estimated_cost_usdt == Decimal("0.00550000")
 
 
+def test_extract_openai_text_supports_responses_output_shape():
+    payload = {
+        "output": [
+            {
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": '{"action":"HOLD","quantity_pct":0,"reason":"No edge","confidence":0.2}',
+                    }
+                ]
+            }
+        ]
+    }
+
+    assert (
+        ai_runtime._extract_openai_text(payload)
+        == '{"action":"HOLD","quantity_pct":0,"reason":"No edge","confidence":0.2}'
+    )
+
+
 @pytest.mark.asyncio
 async def test_call_openai_omits_temperature_for_gpt5_models(monkeypatch):
     captured: dict[str, Any] = {}
@@ -547,6 +567,81 @@ async def test_call_openai_omits_temperature_for_gpt5_models(monkeypatch):
     assert captured["json"]["model"] == "gpt-5-mini"
     assert captured["json"]["max_completion_tokens"] == 700
     assert "temperature" not in captured["json"]
+
+
+@pytest.mark.asyncio
+async def test_apply_ai_validation_blocks_buy_on_error(monkeypatch):
+    import app.engine.trading_loop as trading_loop
+
+    class DummySession:
+        def __init__(self) -> None:
+            self.added = []
+            self.commits = 0
+
+        def add(self, value: Any) -> None:
+            self.added.append(value)
+
+        async def commit(self) -> None:
+            self.commits += 1
+
+    async def fake_evaluate_ai_validation(**_: Any) -> ai_runtime.AIValidationResult:
+        return ai_runtime.AIValidationResult(
+            status="error",
+            reason="AI validation failed; blocking BUY",
+            error="OpenAI validation response did not contain text content",
+        )
+
+    monkeypatch.setattr(trading_loop, "evaluate_ai_validation", fake_evaluate_ai_validation)
+    monkeypatch.setattr(trading_loop, "_build_validation_context", lambda **_: {})
+
+    session = DummySession()
+    strategy = SimpleNamespace(
+        id=STRATEGY_ID,
+        ai_last_decision_at=None,
+        ai_last_decision_status=None,
+        ai_last_reasoning=None,
+    )
+    decision = trading_loop.LiveTradeDecision(
+        action="BUY",
+        reason="Rule-based BUY",
+        raw_confidence=0.62,
+        final_confidence=0.62,
+        regime="trend",
+        quantity_pct=Decimal("0.5"),
+    )
+
+    result = await trading_loop._apply_ai_validation(
+        session=session,
+        strategy=strategy,
+        symbol="BTCUSDT",
+        interval="1h",
+        indicators={},
+        ai_config={
+            "ai_enabled": True,
+            "ai_cooldown_seconds": 60,
+            "ai_strategy_key": "hybrid_composite",
+            "ai_provider": "openai",
+            "ai_model": "gpt-5-mini",
+            "ai_max_tokens": 700,
+            "ai_temperature": Decimal("0.2"),
+            "flat_market_threshold_pct": 0.2,
+        },
+        highs=[],
+        lows=[],
+        volumes=[],
+        closes=[],
+        wallet=SimpleNamespace(available_usdt=Decimal("1000")),
+        position=None,
+        market_price=Decimal("50000"),
+        decision=decision,
+        force=False,
+    )
+
+    assert result.final_confidence == 0.0
+    assert result.quantity_pct == Decimal("0")
+    assert result.validator_reason == "OpenAI validation response did not contain text content"
+    assert strategy.ai_last_decision_status == "error"
+    assert session.commits == 1
 
 
 def test_ai_cooldown_helper_blocks_recent_calls():

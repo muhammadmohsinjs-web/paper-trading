@@ -55,7 +55,7 @@ class HybridCompositeStrategy(BaseStrategy):
         if not has_position and result.signal == "BUY":
             return TradeSignal(
                 action=TradeSide.BUY,
-                symbol="BTCUSDT",
+                symbol=str(indicators.get("symbol") or "BTCUSDT"),
                 quantity_pct=Decimal("0.3"),
                 reason=(
                     f"Hybrid composite BUY score={result.composite_score:.3f} "
@@ -65,7 +65,7 @@ class HybridCompositeStrategy(BaseStrategy):
         if has_position and result.signal == "SELL":
             return TradeSignal(
                 action=TradeSide.SELL,
-                symbol="BTCUSDT",
+                symbol=str(indicators.get("symbol") or "BTCUSDT"),
                 quantity_pct=Decimal("1.0"),
                 reason=(
                     f"Hybrid composite SELL score={result.composite_score:.3f} "
@@ -118,7 +118,8 @@ class HybridCompositeStrategy(BaseStrategy):
         # Step 4: Exit evaluation (if has position)
         if position is not None:
             exit_result = self._evaluate_exit(
-                position, market_price, composite_result, config
+                position, market_price, composite_result, config,
+                regime=context.regime,
             )
             exit_result.composite_result = composite_result
             return exit_result
@@ -149,6 +150,7 @@ class HybridCompositeStrategy(BaseStrategy):
         market_price: Decimal,
         composite_result: CompositeScoreResult,
         config: dict[str, Any],
+        regime: str | None = None,
     ) -> HybridDecision | None:
         """Evaluate exit conditions for an open position.
 
@@ -162,6 +164,7 @@ class HybridCompositeStrategy(BaseStrategy):
             composite_score=composite_result.composite_score,
             config=config,
             now=datetime.now(timezone.utc),
+            regime=regime,
         )
 
         if exit_decision.action == "SELL":

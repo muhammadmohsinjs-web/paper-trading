@@ -31,7 +31,7 @@ class SMACrossoverStrategy(BaseStrategy):
         prev_short, curr_short = sma_short[-2], sma_short[-1]
         prev_long, curr_long = sma_long[-2], sma_long[-1]
 
-        symbol = "BTCUSDT"
+        symbol = str(indicators.get("symbol") or "BTCUSDT")
 
         # Golden cross: short crosses above long → BUY (with volume confirmation)
         if prev_short <= prev_long and curr_short > curr_long and not has_position:

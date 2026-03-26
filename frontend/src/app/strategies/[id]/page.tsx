@@ -15,13 +15,14 @@ type StrategyDetailPageProps = {
 
 export default async function StrategyDetailPage({ params }: StrategyDetailPageProps) {
   try {
-    const [strategy, positions, trades, summary, equity, candleResponse] = await Promise.all([
-      getStrategy(params.id),
+    const strategy = await getStrategy(params.id);
+    const chartSymbol = strategy.focus_symbol || strategy.primary_symbol || "BTCUSDT";
+    const [positions, trades, summary, equity, candleResponse] = await Promise.all([
       getPositions(params.id),
       getTrades(params.id, 80),
       getTradeSummary(params.id),
       getEquityCurve(params.id, 160),
-      getCandles("BTCUSDT", "5m", 160)
+      getCandles(chartSymbol, "5m", 160)
     ]);
 
     return (
@@ -32,6 +33,7 @@ export default async function StrategyDetailPage({ params }: StrategyDetailPageP
         summary={summary}
         equity={equity}
         candles={candleResponse.candles}
+        chartSymbol={chartSymbol}
       />
     );
   } catch {

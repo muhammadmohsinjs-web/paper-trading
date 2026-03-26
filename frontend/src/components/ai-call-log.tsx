@@ -19,8 +19,17 @@ function toneForStatus(status: string | null | undefined) {
   if (normalized.includes("error") || normalized.includes("failed")) {
     return "text-fall";
   }
-  if (normalized.includes("success") || normalized.includes("executed") || normalized.includes("completed")) {
+  if (
+    normalized.includes("success") ||
+    normalized.includes("executed") ||
+    normalized.includes("completed") ||
+    normalized.includes("signal") ||
+    normalized.includes("validated")
+  ) {
     return "text-rise";
+  }
+  if (normalized.includes("skipped") || normalized.includes("hold") || normalized.includes("rejected")) {
+    return "text-gold";
   }
   return "text-gold";
 }
@@ -93,7 +102,7 @@ function extractFindings(raw: string | null | undefined) {
 
 function MetaItem({ label, value, accent }: { label: string; value: string; accent?: string }) {
   return (
-    <div className="rounded-[20px] border border-white/8 bg-black/10 p-4">
+    <div className="rounded-[20px] border border-white/8 bg-black/12 p-4">
       <p className="text-[10px] uppercase tracking-[0.18em] text-mist/45">{label}</p>
       <p className={cn("mt-2 text-sm font-medium text-sand", accent)}>{value}</p>
     </div>
@@ -110,7 +119,7 @@ export function AICallLog({ strategy, executionMessage }: AICallLogProps) {
     <section className="panel grid gap-4 p-5">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-xs uppercase tracking-[0.24em] text-mist/50">AI Call Log</p>
+          <p className="text-xs uppercase tracking-[0.24em] text-gold/80">AI Call Log</p>
           <h3 className="mt-2 text-xl font-semibold text-sand">Latest Inference</h3>
         </div>
         <p className="text-xs text-mist/45">Last updated {formatDateTime(strategy.ai_last_decision_at)}</p>
@@ -136,7 +145,7 @@ export function AICallLog({ strategy, executionMessage }: AICallLogProps) {
       {executionMessage ? (
         <div className="rounded-[20px] border border-gold/20 bg-gold/5 p-4">
           <p className="text-[10px] uppercase tracking-[0.18em] text-gold/70">Latest API Response</p>
-          <p className="mt-2 text-sm leading-6 text-sand">{executionMessage}</p>
+          <p className="mt-2 break-words text-sm leading-6 text-sand">{executionMessage}</p>
         </div>
       ) : null}
 
@@ -150,7 +159,7 @@ export function AICallLog({ strategy, executionMessage }: AICallLogProps) {
         </div>
 
         {findings.summary ? (
-          <p className="mt-4 text-sm leading-7 text-sand">{findings.summary}</p>
+          <p className="mt-4 break-words text-sm leading-7 text-sand">{findings.summary}</p>
         ) : (
           <p className="mt-4 text-sm text-mist/55">No findings recorded yet.</p>
         )}

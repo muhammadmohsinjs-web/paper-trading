@@ -16,6 +16,12 @@ class StrategyCreate(BaseModel):
     description: str | None = None
     config_json: dict[str, Any] = Field(default_factory=dict)
     is_active: bool = False
+    execution_mode: str | None = None
+    primary_symbol: str | None = None
+    scan_universe_json: list[str] | None = None
+    top_pick_count: int | None = None
+    selection_hour_utc: int | None = None
+    max_concurrent_positions: int | None = None
     ai_enabled: bool = False
     ai_provider: AIProvider | None = None
     ai_strategy_key: str | None = None
@@ -35,6 +41,12 @@ class StrategyUpdate(BaseModel):
     description: str | None = None
     config_json: dict[str, Any] | None = None
     is_active: bool | None = None
+    execution_mode: str | None = None
+    primary_symbol: str | None = None
+    scan_universe_json: list[str] | None = None
+    top_pick_count: int | None = None
+    selection_hour_utc: int | None = None
+    max_concurrent_positions: int | None = None
     ai_enabled: bool | None = None
     ai_provider: AIProvider | None = None
     ai_strategy_key: str | None = None
@@ -49,12 +61,29 @@ class StrategyUpdate(BaseModel):
     candle_interval: str | None = None
 
 
+class DailyPickResponse(BaseModel):
+    rank: int
+    symbol: str
+    score: float
+    regime: str | None = None
+    setup_type: str | None = None
+    recommended_strategy: str | None = None
+    reason: str | None = None
+    selected_at: datetime | None = None
+
+
 class StrategyResponse(BaseModel):
     id: str
     name: str
     description: str | None
     config_json: dict[str, Any]
     is_active: bool
+    execution_mode: str = "single_symbol"
+    primary_symbol: str = "BTCUSDT"
+    scan_universe_json: list[str] = Field(default_factory=list)
+    top_pick_count: int = 5
+    selection_hour_utc: int = 0
+    max_concurrent_positions: int = 2
     ai_enabled: bool = False
     ai_provider: AIProvider = "anthropic"
     ai_strategy_key: str | None = None
@@ -100,3 +129,9 @@ class StrategyWithStats(StrategyResponse):
     unrealized_pnl: float = 0.0
     has_open_position: bool = False
     win_rate: float = 0.0
+    focus_symbol: str | None = None
+    open_positions_count: int = 0
+    open_exposure_by_symbol: dict[str, float] = Field(default_factory=dict)
+    portfolio_risk_status: dict[str, Any] = Field(default_factory=dict)
+    daily_picks: list[DailyPickResponse] = Field(default_factory=list)
+    selection_date: str | None = None

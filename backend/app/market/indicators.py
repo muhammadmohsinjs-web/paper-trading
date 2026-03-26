@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import numpy as np
 
+from app.market.divergence import detect_rsi_divergence
+from app.market.structure import find_sr_levels
+
 
 def sma(closes: list[float], period: int) -> list[float]:
     """Simple Moving Average."""
@@ -275,9 +278,16 @@ def compute_indicators(
         "previous_close": closes[-2] if len(closes) > 1 else None,
     }
 
+    # RSI divergence detection
+    if result["rsi"]:
+        result["rsi_divergence"] = detect_rsi_divergence(closes, result["rsi"])
+    else:
+        result["rsi_divergence"] = None
+
     if highs is not None and lows is not None:
         result["atr"] = atr(highs, lows, closes)
         result["adx"] = adx(highs, lows, closes)
+        result["sr_levels"] = find_sr_levels(highs, lows, closes)
 
     if volumes is not None:
         volume_sma = sma(volumes, volume_ma_period)

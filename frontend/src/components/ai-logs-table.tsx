@@ -13,15 +13,30 @@ type Props = {
   currentStrategyId?: string;
 };
 
+function normalizeStatusLabel(status: string) {
+  const normalized = status.toLowerCase();
+  if (normalized === "signal") return "signal";
+  if (normalized === "hold") return "hold";
+  if (normalized === "skipped") return "skipped";
+  if (normalized === "error") return "error";
+  if (normalized === "validated") return "validated";
+  if (normalized === "rejected") return "rejected";
+  return normalized;
+}
+
 function StatusBadge({ status, skipReason }: { status: string; skipReason: string | null }) {
   const colors: Record<string, string> = {
-    success: "bg-green-400/15 text-green-400 border-green-400/30",
+    signal: "bg-green-400/15 text-green-400 border-green-400/30",
+    hold: "bg-blue-400/15 text-blue-400 border-blue-400/30",
     skipped: "bg-amber-400/15 text-amber-400 border-amber-400/30",
     error: "bg-red-400/15 text-red-400 border-red-400/30",
+    validated: "bg-emerald-400/15 text-emerald-400 border-emerald-400/30",
+    rejected: "bg-orange-400/15 text-orange-400 border-orange-400/30",
   };
-  const label = skipReason ? `${status} (${skipReason})` : status;
+  const normalized = normalizeStatusLabel(status);
+  const label = skipReason ? `${normalized} (${skipReason})` : normalized;
   return (
-    <span className={`inline-block rounded-full border px-2 py-0.5 text-xs ${colors[status] ?? "bg-white/10 text-mist/60 border-white/10"}`}>
+    <span className={`inline-block rounded-full border px-2 py-0.5 text-xs ${colors[normalized] ?? "bg-white/10 text-mist/60 border-white/10"}`}>
       {label}
     </span>
   );
@@ -64,7 +79,8 @@ export function AILogsTable({ logs, total, page, limit, currentStatus, currentSt
 
   const statusFilters = [
     { label: "All", value: undefined },
-    { label: "Success", value: "success" },
+    { label: "Signal", value: "signal" },
+    { label: "Hold", value: "hold" },
     { label: "Skipped", value: "skipped" },
     { label: "Error", value: "error" },
   ];

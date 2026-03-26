@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy as np
 
-from app.regime.types import MarketRegime, RegimeResult
+from app.regime.types import MarketRegime, RegimeResult, RegimeTransition
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,22 @@ SMA_SLOPE_PERIODS = 10
 
 
 class RegimeClassifier:
-    """Stateless rule-based market regime detector."""
+    """Rule-based market regime detector with transition tracking."""
+
+    def __init__(self) -> None:
+        self._previous_regimes: dict[str, MarketRegime] = {}
+
+    def classify_with_transition(
+        self,
+        indicators: dict[str, Any],
+        symbol: str = "BTCUSDT",
+    ) -> tuple[RegimeResult, RegimeTransition | None]:
+        """Classify regime and detect transitions from previous state."""
+        result = self.classify(indicators)
+        previous = self._previous_regimes.get(symbol)
+        transition = RegimeTransition.detect(previous, result.regime)
+        self._previous_regimes[symbol] = result.regime
+        return result, transition
 
     def classify(self, indicators: dict[str, Any]) -> RegimeResult:
         """Classify market regime from computed indicators.

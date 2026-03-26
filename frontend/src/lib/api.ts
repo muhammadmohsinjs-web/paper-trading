@@ -146,6 +146,7 @@ export function deleteStrategy(strategyId: string) {
 export type AIPreviewResponse = {
   status: string;
   action: string | null;
+  symbol?: string | null;
   confidence: number | null;
   reason: string | null;
   raw_response: string | null;

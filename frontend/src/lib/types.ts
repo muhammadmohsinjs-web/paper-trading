@@ -49,6 +49,12 @@ export type StrategyWithStats = {
   description: string | null;
   config_json: Record<string, unknown>;
   is_active: boolean;
+  execution_mode: string;
+  primary_symbol: string;
+  scan_universe_json: string[];
+  top_pick_count: number;
+  selection_hour_utc: number;
+  max_concurrent_positions: number;
   ai_enabled: boolean;
   ai_provider: AIProvider;
   ai_strategy_key: string | null;
@@ -81,6 +87,23 @@ export type StrategyWithStats = {
   unrealized_pnl: number;
   has_open_position: boolean;
   win_rate: number;
+  focus_symbol: string | null;
+  open_positions_count: number;
+  open_exposure_by_symbol: Record<string, number>;
+  portfolio_risk_status: Record<string, unknown>;
+  daily_picks: DailyPick[];
+  selection_date: string | null;
+};
+
+export type DailyPick = {
+  rank: number;
+  symbol: string;
+  score: number;
+  regime: string | null;
+  setup_type: string | null;
+  recommended_strategy: string | null;
+  reason: string | null;
+  selected_at: string | null;
 };
 
 export type DashboardResponse = {
@@ -217,6 +240,10 @@ export type ManualExecutionResponse =
       pnl?: string | null;
       strategy_id?: string;
       decision_source?: string;
+      execution_mode?: string;
+      selected_symbols?: string[];
+      summary?: Record<string, number>;
+      results?: Array<Record<string, unknown>>;
       [key: string]: unknown;
     };
 

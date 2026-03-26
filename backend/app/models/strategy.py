@@ -18,6 +18,12 @@ class Strategy(UUIDPrimaryKeyMixin, CreatedAtMixin, UpdatedAtMixin, Base):
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     config_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    execution_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="single_symbol")
+    primary_symbol: Mapped[str] = mapped_column(String(24), nullable=False, default="BTCUSDT")
+    scan_universe_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    top_pick_count: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    selection_hour_utc: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_concurrent_positions: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
     ai_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     ai_provider: Mapped[str] = mapped_column(String(32), nullable=False, default="anthropic")
     ai_strategy_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
@@ -70,4 +76,10 @@ class Strategy(UUIDPrimaryKeyMixin, CreatedAtMixin, UpdatedAtMixin, Base):
         "Snapshot",
         back_populates="strategy",
         cascade="all, delete-orphan",
+    )
+    daily_picks = relationship(
+        "DailyPick",
+        back_populates="strategy",
+        cascade="all, delete-orphan",
+        order_by="DailyPick.rank",
     )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -17,41 +18,79 @@ from app.strategies.manager import StrategyManager
 logger = logging.getLogger(__name__)
 
 _ws_clients: list[BinanceWSClient] = []
+_bootstrap_task: asyncio.Task | None = None
+
+
+async def _bootstrap_runtime(settings, manager: StrategyManager) -> None:
+    global _ws_clients
+
+    universe = list(dict.fromkeys([settings.default_symbol, *settings.default_scan_universe]))
+    startup_phase = "historical candle backfill"
+    ws_clients: list[BinanceWSClient] = []
+
+    try:
+        for symbol in universe:
+            await backfill(symbol, "1h", 200)
+            await backfill(symbol, "5m", 200)
+            await backfill(symbol, "4h", 200)
+
+        startup_phase = "websocket bootstrap"
+        for symbol in universe:
+            ws_1h = BinanceWSClient(symbol, "1h")
+            ws_5m = BinanceWSClient(symbol, "5m")
+            ws_4h = BinanceWSClient(symbol, "4h")
+            await ws_1h.start()
+            await ws_5m.start()
+            await ws_4h.start()
+            ws_clients.extend([ws_1h, ws_5m, ws_4h])
+        _ws_clients = ws_clients
+
+        startup_phase = "strategy bootstrap"
+        count = await manager.start_all_active()
+        logger.info("strategy bootstrap complete active_count=%d", count)
+    except asyncio.CancelledError:
+        logger.info("runtime bootstrap cancelled during %s", startup_phase)
+        raise
+    except Exception:
+        logger.exception("runtime bootstrap failed during %s", startup_phase)
+        await manager.stop_all()
+        for client in ws_clients:
+            await client.stop()
+        if _ws_clients is ws_clients:
+            _ws_clients = []
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global _ws_clients
+    global _bootstrap_task, _ws_clients
 
-    # Init DB
-    await init_database()
-    logger.info("database ready")
-
-    # Backfill historical candles for both intervals
     settings = get_settings()
-    await backfill(settings.default_symbol, "1h", 200)
-    await backfill(settings.default_symbol, "5m", 200)
-
-    # Start Binance WebSocket for both intervals
-    ws_1h = BinanceWSClient(settings.default_symbol, "1h")
-    ws_5m = BinanceWSClient(settings.default_symbol, "5m")
-    await ws_1h.start()
-    await ws_5m.start()
-    _ws_clients = [ws_1h, ws_5m]
-
-    # Start active strategies
     manager = StrategyManager.get_instance()
-    count = await manager.start_all_active()
-    logger.info("strategy bootstrap complete active_count=%d", count)
 
     try:
+        await init_database()
+        logger.info("database ready")
+        _bootstrap_task = asyncio.create_task(
+            _bootstrap_runtime(settings, manager),
+            name="paper-trading-runtime-bootstrap",
+        )
+
         yield
+    except Exception:
+        logger.exception("application startup failed during database initialization")
+        raise
     finally:
-        # Shutdown
+        if _bootstrap_task is not None:
+            _bootstrap_task.cancel()
+            try:
+                await _bootstrap_task
+            except asyncio.CancelledError:
+                pass
+            _bootstrap_task = None
         for client in _ws_clients:
             await client.stop()
         _ws_clients.clear()
-        await StrategyManager.get_instance().stop_all()
+        await manager.stop_all()
         await dispose_database()
         logger.info("shutdown complete")
 

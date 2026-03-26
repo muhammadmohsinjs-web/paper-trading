@@ -80,6 +80,7 @@ def test_compute_composite_score_respects_configured_weights():
         "weight_sma": 0.20,
         "weight_ema": 0.13,
         "weight_volume": 0.13,
+        "weight_structure": 0.00,
         "confidence_gate": 0.5,
     }
 

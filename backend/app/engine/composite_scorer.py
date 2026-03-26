@@ -7,10 +7,11 @@ from typing import Any
 
 DEFAULT_WEIGHTS = {
     "rsi": 0.20,
-    "macd": 0.25,
-    "sma": 0.15,
+    "macd": 0.20,
+    "sma": 0.10,
     "ema": 0.10,
-    "volume": 0.30,
+    "volume": 0.25,
+    "structure": 0.15,
 }
 
 DEFAULT_CONFIDENCE_GATE = 0.35
@@ -29,22 +30,30 @@ class CompositeScoreResult:
     ai_vote_present: bool
 
 
-def rsi_vote(value: float | None) -> float:
-    if value is None:
-        return 0.0
-    if value < 20:
-        return 1.0
-    if value < 30:
-        return 0.8
-    if value < 40:
-        return 0.3
-    if value > 80:
-        return -1.0
-    if value > 70:
-        return -0.8
-    if value > 60:
-        return -0.3
-    return 0.0
+def rsi_vote(value: float | None, divergence: Any | None = None) -> float:
+    base = 0.0
+    if value is not None:
+        if value < 20:
+            base = 1.0
+        elif value < 30:
+            base = 0.8
+        elif value < 40:
+            base = 0.3
+        elif value > 80:
+            base = -1.0
+        elif value > 70:
+            base = -0.8
+        elif value > 60:
+            base = -0.3
+
+    # Divergence overrides: strongest directional signal
+    if divergence is not None and getattr(divergence, "detected", False):
+        if divergence.divergence_type == "bullish":
+            base = max(base, 0.9)
+        elif divergence.divergence_type == "bearish":
+            base = min(base, -0.9)
+
+    return base
 
 
 def macd_vote(macd_line: list[float], signal_line: list[float], histogram: list[float]) -> float:
@@ -130,6 +139,39 @@ def volume_vote(
     return 0.0, 1.0
 
 
+def structure_vote(
+    sr_levels: list | None,
+    latest_close: float | None,
+) -> float:
+    """Vote based on proximity to support/resistance levels.
+
+    Bullish if price is near strong support, bearish if near strong resistance.
+    """
+    if not sr_levels or latest_close is None:
+        return 0.0
+
+    from app.market.structure import nearest_resistance, nearest_support
+
+    nearest_sup = nearest_support(sr_levels, latest_close)
+    nearest_res = nearest_resistance(sr_levels, latest_close)
+
+    vote = 0.0
+
+    if nearest_sup is not None:
+        distance_pct = (latest_close - nearest_sup.price) / latest_close * 100
+        if distance_pct < 1.0:  # Within 1% of support
+            strength_bonus = min(nearest_sup.strength / 5.0, 1.0)
+            vote += 0.5 * strength_bonus
+
+    if nearest_res is not None:
+        distance_pct = (nearest_res.price - latest_close) / latest_close * 100
+        if distance_pct < 1.0:  # Within 1% of resistance
+            strength_bonus = min(nearest_res.strength / 5.0, 1.0)
+            vote -= 0.5 * strength_bonus
+
+    return max(-1.0, min(1.0, vote))
+
+
 def compute_ai_vote(
     bias: float | None,
     confidence: float | None,
@@ -156,7 +198,16 @@ def _resolve_weights(config: dict[str, Any] | None) -> dict[str, float]:
     total = sum(weights.values())
     if total <= 0:
         return DEFAULT_WEIGHTS.copy()
-    return {key: value / total for key, value in weights.items()}
+    normalized = {key: value / total for key, value in weights.items()}
+
+    # Adaptive optimization from trade history (if available)
+    trade_history = (config or {}).get("recent_trade_history")
+    if trade_history and isinstance(trade_history, list):
+        from app.engine.weight_optimizer import compute_adaptive_weights
+        learning_rate = float((config or {}).get("weight_learning_rate", 0.3))
+        normalized = compute_adaptive_weights(trade_history, normalized, learning_rate)
+
+    return normalized
 
 
 def _volume_quality(volume_ratio: float | None) -> float:
@@ -223,8 +274,9 @@ def compute_composite_score(
     macd_line, signal_line, histogram = indicators.get("macd", ([], [], []))
     latest_volume_ratio = indicators.get("volume_ratio", [None])[-1] if indicators.get("volume_ratio") else None
 
+    rsi_divergence = indicators.get("rsi_divergence")
     votes = {
-        "rsi": rsi_vote(latest_rsi),
+        "rsi": rsi_vote(latest_rsi, divergence=rsi_divergence),
         "macd": macd_vote(macd_line, signal_line, histogram),
         "sma": sma_vote(indicators.get("sma_short", []), indicators.get("sma_long", [])),
         "ema": ema_vote(indicators.get("ema_12", []), indicators.get("ema_26", [])),
@@ -235,6 +287,10 @@ def compute_composite_score(
         indicators.get("previous_close"),
     )
     votes["volume"] = volume_vote_value
+    votes["structure"] = structure_vote(
+        indicators.get("sr_levels"),
+        indicators.get("latest_close"),
+    )
 
     weights = _resolve_weights(config)
     weighted_sum = sum(votes[key] * weights.get(key, 0.0) for key in votes)

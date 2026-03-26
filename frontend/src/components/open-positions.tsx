@@ -4,10 +4,11 @@ import type { Position } from "@/lib/types";
 export function OpenPositions({ positions }: { positions: Position[] }) {
   return (
     <div className="panel overflow-hidden">
-      <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
+      <div className="flex items-center justify-between border-b border-white/6 px-5 py-4">
         <div>
-          <h3 className="text-lg font-semibold text-sand">Open Positions</h3>
-          <p className="text-sm text-mist/55">Current live holdings and unrealized P&L.</p>
+          <p className="text-xs uppercase tracking-[0.22em] text-mist/45">Live Holdings</p>
+          <h3 className="mt-2 text-xl font-semibold text-sand">Open Positions</h3>
+          <p className="text-sm text-mist/55">Current portfolio inventory and unrealized P&amp;L.</p>
         </div>
       </div>
 
@@ -16,7 +17,7 @@ export function OpenPositions({ positions }: { positions: Position[] }) {
       ) : (
         <div className="overflow-x-auto">
           <table className="min-w-full text-left text-sm">
-            <thead className="bg-white/5 text-mist/55">
+            <thead className="bg-white/[0.03] text-mist/55">
               <tr>
                 <th className="px-5 py-3 font-medium">Symbol</th>
                 <th className="px-5 py-3 font-medium">Qty</th>
@@ -28,11 +29,11 @@ export function OpenPositions({ positions }: { positions: Position[] }) {
             </thead>
             <tbody>
               {positions.map((position) => (
-                <tr key={position.id} className="border-t border-white/8">
+                <tr key={position.id} className="border-t border-white/6 transition hover:bg-white/[0.025]">
                   <td className="px-5 py-4 font-medium text-sand">{position.symbol}</td>
-                  <td className="px-5 py-4">{formatNumber(position.quantity, 6)}</td>
-                  <td className="px-5 py-4">{formatCurrency(position.entry_price)}</td>
-                  <td className="px-5 py-4">{formatCurrency(position.current_price)}</td>
+                  <td className="px-5 py-4 text-mist/72">{formatNumber(position.quantity, 6)}</td>
+                  <td className="px-5 py-4 text-mist/72">{formatCurrency(position.entry_price)}</td>
+                  <td className="px-5 py-4 text-mist/72">{formatCurrency(position.current_price)}</td>
                   <td
                     className={`px-5 py-4 ${
                       (position.unrealized_pnl ?? 0) >= 0 ? "text-rise" : "text-fall"

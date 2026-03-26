@@ -14,11 +14,20 @@ export function MetricCard({
   accent = "mist"
 }: MetricCardProps) {
   return (
-    <div className="panel-soft p-5">
-      <p className="text-xs uppercase tracking-[0.24em] text-mist/55">{label}</p>
+    <div className="panel-soft relative overflow-hidden p-5">
+      <div
+        className={cn(
+          "absolute inset-x-5 top-0 h-px",
+          accent === "gold" && "bg-gold/60",
+          accent === "rise" && "bg-rise/70",
+          accent === "fall" && "bg-fall/70",
+          accent === "mist" && "bg-white/20"
+        )}
+      />
+      <p className="text-[11px] uppercase tracking-[0.26em] text-mist/48">{label}</p>
       <p
         className={cn(
-          "mt-3 text-2xl font-semibold tracking-tight",
+          "mt-4 min-w-0 text-[clamp(2rem,3vw,2.65rem)] font-semibold leading-none tracking-[-0.04em]",
           accent === "gold" && "text-gold",
           accent === "rise" && "text-rise",
           accent === "fall" && "text-fall",
@@ -27,7 +36,7 @@ export function MetricCard({
       >
         {value}
       </p>
-      {detail ? <p className="mt-2 text-sm text-mist/60">{detail}</p> : null}
+      {detail ? <p className="mt-2 min-h-[2.75rem] text-sm leading-6 text-mist/62">{detail}</p> : null}
     </div>
   );
 }

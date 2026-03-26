@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { formatCurrency, formatDateTime, formatNumber } from "@/lib/format";
 import type { Trade } from "@/lib/types";
 
@@ -35,7 +35,7 @@ function TradeDetail({ trade }: { trade: Trade }) {
 
   return (
     <tr className="border-t border-white/5 bg-white/[0.02]">
-      <td colSpan={9} className="px-5 py-4">
+      <td colSpan={10} className="px-5 py-4">
         <div className="grid gap-4 md:grid-cols-3">
           {/* Reason / AI Reasoning */}
           {trade.ai_reasoning && (
@@ -113,8 +113,9 @@ export function TradeLog({ trades }: { trades: Trade[] }) {
 
   return (
     <div className="panel overflow-hidden">
-      <div className="border-b border-white/10 px-5 py-4">
-        <h3 className="text-lg font-semibold text-sand">Trade Log</h3>
+      <div className="border-b border-white/6 px-5 py-4">
+        <p className="text-xs uppercase tracking-[0.22em] text-mist/45">Execution History</p>
+        <h3 className="mt-2 text-xl font-semibold text-sand">Trade Log</h3>
       </div>
 
       {trades.length === 0 ? (
@@ -122,10 +123,11 @@ export function TradeLog({ trades }: { trades: Trade[] }) {
       ) : (
         <div className="max-h-[520px] overflow-auto">
           <table className="min-w-full text-left text-sm">
-            <thead className="sticky top-0 bg-panel text-mist/55">
+            <thead className="sticky top-0 bg-[#0f1722] text-mist/55">
               <tr>
                 <th className="px-5 py-3 font-medium">Time</th>
                 <th className="px-5 py-3 font-medium">Side</th>
+                <th className="px-5 py-3 font-medium">Symbol</th>
                 <th className="px-5 py-3 font-medium">Source</th>
                 <th className="px-5 py-3 font-medium">Strategy</th>
                 <th className="px-5 py-3 font-medium">Price</th>
@@ -145,16 +147,16 @@ export function TradeLog({ trades }: { trades: Trade[] }) {
                   trade.wallet_balance_before !== null;
 
                 return (
-                  <>
+                  <Fragment key={trade.id}>
                     <tr
-                      key={trade.id}
-                      className={`border-t border-white/8 ${hasDetails ? "cursor-pointer hover:bg-white/[0.03]" : ""}`}
+                      className={`border-t border-white/6 ${hasDetails ? "cursor-pointer hover:bg-white/[0.03]" : ""}`}
                       onClick={() => hasDetails && setExpandedId(isExpanded ? null : trade.id)}
                     >
                       <td className="px-5 py-4 text-mist/60">{formatDateTime(trade.executed_at)}</td>
                       <td className={`px-5 py-4 font-medium ${trade.side === "BUY" ? "text-rise" : "text-fall"}`}>
                         {trade.side}
                       </td>
+                      <td className="px-5 py-4 font-medium text-sand">{trade.symbol}</td>
                       <td className="px-5 py-4">
                         {trade.decision_source ? (
                           <span className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${SOURCE_COLORS[trade.decision_source] ?? "bg-white/10 text-mist/60"}`}>
@@ -175,8 +177,8 @@ export function TradeLog({ trades }: { trades: Trade[] }) {
                         {formatCurrency(trade.pnl)}
                       </td>
                     </tr>
-                    {isExpanded && <TradeDetail key={`${trade.id}-detail`} trade={trade} />}
-                  </>
+                    {isExpanded && <TradeDetail trade={trade} />}
+                  </Fragment>
                 );
               })}
             </tbody>

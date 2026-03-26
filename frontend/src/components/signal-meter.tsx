@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getSignal } from "@/lib/api";
 import { cn } from "@/lib/format";
 import type { SignalData } from "@/lib/types";
@@ -142,30 +142,86 @@ function ConfidenceGauge({ score, confidence, signal }: { score: number; confide
   );
 }
 
-export function SignalMeter({ symbol = "BTCUSDT", interval = "1h" }: { symbol?: string; interval?: string }) {
-  const [signal, setSignal] = useState<SignalData | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+function getSignalErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : "Failed to load signal";
 
-  const fetchSignal = useCallback(async () => {
-    try {
-      const data = await getSignal(symbol, interval);
-      setSignal(data);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load signal");
-    } finally {
-      setLoading(false);
-    }
-  }, [symbol, interval]);
+  if (/failed to fetch|networkerror/i.test(message)) {
+    return "Live snapshot unavailable. Retrying...";
+  }
+
+  return message;
+}
+
+export function SignalMeter({
+  symbol = "BTCUSDT",
+  interval = "1h",
+  initialSignal = null
+}: {
+  symbol?: string;
+  interval?: string;
+  initialSignal?: SignalData | null;
+}) {
+  const [signal, setSignal] = useState<SignalData | null>(initialSignal);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(!initialSignal);
+  const latestSignalRef = useRef<SignalData | null>(initialSignal);
 
   useEffect(() => {
-    fetchSignal();
-    const timer = setInterval(fetchSignal, 30_000); // Refresh every 30s
-    return () => clearInterval(timer);
-  }, [fetchSignal]);
+    latestSignalRef.current = initialSignal;
+    setSignal(initialSignal);
+    setError(null);
+    setLoading(!initialSignal);
+  }, [initialSignal, interval, symbol]);
 
-  if (loading) {
+  useEffect(() => {
+    let isCancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleNext = (delayMs: number) => {
+      if (isCancelled) {
+        return;
+      }
+
+      timer = setTimeout(() => {
+        void fetchSignal();
+      }, delayMs);
+    };
+
+    const fetchSignal = async () => {
+      try {
+        const data = await getSignal(symbol, interval);
+        if (isCancelled) {
+          return;
+        }
+
+        latestSignalRef.current = data;
+        setSignal(data);
+        setError(null);
+        setLoading(false);
+        scheduleNext(30_000);
+      } catch (err) {
+        if (isCancelled) {
+          return;
+        }
+
+        const message = getSignalErrorMessage(err);
+        setError(message);
+        setLoading(false);
+        scheduleNext(latestSignalRef.current ? 5_000 : 3_000);
+      }
+    };
+
+    void fetchSignal();
+
+    return () => {
+      isCancelled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
+  }, [interval, symbol]);
+
+  if (loading && !signal) {
     return (
       <div className="panel p-6 space-y-3">
         <p className="text-xs uppercase tracking-[0.3em] text-gold">Signal Meter</p>
@@ -174,7 +230,7 @@ export function SignalMeter({ symbol = "BTCUSDT", interval = "1h" }: { symbol?: 
     );
   }
 
-  if (error || !signal) {
+  if (!signal) {
     return (
       <div className="panel p-6 space-y-3">
         <p className="text-xs uppercase tracking-[0.3em] text-gold">Signal Meter</p>
@@ -193,6 +249,7 @@ export function SignalMeter({ symbol = "BTCUSDT", interval = "1h" }: { symbol?: 
           <p className="mt-1 text-sm text-mist/50">
             {signal.symbol} {signal.interval} composite
           </p>
+          {error ? <p className="mt-2 text-xs text-gold/75">{error}</p> : null}
         </div>
         <div className="text-right">
           <p

@@ -61,6 +61,7 @@ type Props = {
 export function CreateStrategyDialog({ open, onClose, existingStrategies = [] }: Props) {
   const router = useRouter();
   const [selectedType, setSelectedType] = useState<StrategyType>("sma_crossover");
+  const [executionMode, setExecutionMode] = useState<"single_symbol" | "multi_coin_shared_wallet">("multi_coin_shared_wallet");
   const [name, setName] = useState("");
   const [balance, setBalance] = useState(1000);
   const [autoStart, setAutoStart] = useState(false);
@@ -85,11 +86,22 @@ export function CreateStrategyDialog({ open, onClose, existingStrategies = [] }:
     setError(null);
 
     try {
-      const config = { ...DEFAULT_CONFIGS[selectedType], initial_balance: balance };
+      const config = {
+        ...DEFAULT_CONFIGS[selectedType],
+        initial_balance: balance,
+        execution_mode: executionMode,
+        primary_symbol: "BTCUSDT",
+        top_pick_count: 5,
+        max_concurrent_positions: 2,
+      };
       await createStrategy({
         name: name.trim(),
         description: meta.description,
         config_json: config,
+        execution_mode: executionMode,
+        primary_symbol: "BTCUSDT",
+        top_pick_count: 5,
+        max_concurrent_positions: 2,
         is_active: autoStart,
         ai_enabled: selectedType === "hybrid_composite",
       });
@@ -97,6 +109,7 @@ export function CreateStrategyDialog({ open, onClose, existingStrategies = [] }:
       setBalance(1000);
       setAutoStart(false);
       setSelectedType("sma_crossover");
+      setExecutionMode("multi_coin_shared_wallet");
       onClose();
       router.refresh();
     } catch (err) {
@@ -108,10 +121,13 @@ export function CreateStrategyDialog({ open, onClose, existingStrategies = [] }:
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-full max-w-lg rounded-xl border border-white/10 bg-[#0d1117] p-6 shadow-2xl">
+      <div className="w-full max-w-xl rounded-[2rem] border border-white/10 bg-[#0c121d]/95 p-6 shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between">
-          <h2 className="text-xl font-semibold text-sand">New Strategy</h2>
+          <div>
+            <p className="text-xs uppercase tracking-[0.22em] text-gold/80">Create Strategy</p>
+            <h2 className="mt-2 text-2xl font-semibold text-sand">New Desk</h2>
+          </div>
           <button
             onClick={onClose}
             className="rounded-lg p-1.5 text-mist/60 transition hover:bg-white/10 hover:text-sand"
@@ -184,12 +200,47 @@ export function CreateStrategyDialog({ open, onClose, existingStrategies = [] }:
           />
         </div>
 
+        <div className="mt-4 space-y-2">
+          <label className="text-xs uppercase tracking-[0.2em] text-mist/50">Execution Mode</label>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setExecutionMode("multi_coin_shared_wallet")}
+              className={`rounded-lg border px-3 py-2 text-left text-xs transition ${
+                executionMode === "multi_coin_shared_wallet"
+                  ? "border-gold/50 bg-gold/10 text-gold"
+                  : "border-white/10 text-mist/60 hover:border-white/20 hover:text-mist"
+              }`}
+            >
+              <span className="font-medium">Multi-Coin</span>
+              <p className="mt-0.5 text-[10px] opacity-70">Shared wallet, daily top 5 picks, max 2 positions</p>
+            </button>
+            <button
+              type="button"
+              onClick={() => setExecutionMode("single_symbol")}
+              className={`rounded-lg border px-3 py-2 text-left text-xs transition ${
+                executionMode === "single_symbol"
+                  ? "border-gold/50 bg-gold/10 text-gold"
+                  : "border-white/10 text-mist/60 hover:border-white/20 hover:text-mist"
+              }`}
+            >
+              <span className="font-medium">Single Symbol</span>
+              <p className="mt-0.5 text-[10px] opacity-70">Legacy mode centered on BTCUSDT</p>
+            </button>
+          </div>
+        </div>
+
         {/* Description preview */}
-        <div className="mt-4 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2">
+        <div className="mt-4 rounded-[1.2rem] border border-white/8 bg-white/[0.03] px-4 py-3">
           <p className="text-xs text-mist/50">{meta.description}</p>
           {selectedType === "hybrid_composite" && (
             <p className="mt-1 text-xs text-gold/70">
               AI-enabled — will make API calls (costs apply)
+            </p>
+          )}
+          {executionMode === "multi_coin_shared_wallet" && (
+            <p className="mt-1 text-xs text-rise/70">
+              Multi-coin mode will scan the fixed liquid universe and trade from the daily top 5.
             </p>
           )}
         </div>

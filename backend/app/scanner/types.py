@@ -21,6 +21,20 @@ class RankedSetup:
 
 
 @dataclass
+class RankedSymbol:
+    """A ranked symbol candidate selected from the scanner universe."""
+
+    symbol: str
+    score: float
+    regime: str
+    setup_type: str
+    recommended_strategy: str
+    reason: str
+    liquidity_usdt: float
+    indicators: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class ScanResult:
     """Complete result of an opportunity scan."""
 

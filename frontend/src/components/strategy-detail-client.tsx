@@ -27,50 +27,57 @@ type StrategyDetailClientProps = {
   summary: TradeSummary;
   equity: EquityPoint[];
   candles: Candle[];
+  chartSymbol: string;
 };
 
 export function StrategyDetailClient(props: StrategyDetailClientProps) {
-  const { strategy, positions, trades, summary, equity, candles } = props;
+  const { strategy, positions, trades, summary, equity, candles, chartSymbol } = props;
   const router = useRouter();
   const live = useLiveFeed();
   const [isPending, startTransition] = useTransition();
   const [executionMessage, setExecutionMessage] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiResult, setAiResult] = useState<AIPreviewResponse | null>(null);
+  const executionMode = strategy.execution_mode ?? "single_symbol";
+  const dailyPicks = strategy.daily_picks ?? [];
+  const openExposureBySymbol = strategy.open_exposure_by_symbol ?? {};
+  const maxConcurrentPositions = strategy.max_concurrent_positions ?? 2;
+  const portfolioRiskStatus = (strategy.portfolio_risk_status ?? {}) as {
+    exposure_pct?: number;
+    drawdown_pct?: number;
+    limits?: {
+      max_exposure_pct?: number;
+      portfolio_drawdown_halt_pct?: number;
+    };
+  };
   const lastCandle = candles[candles.length - 1];
-  const livePrice = live.latestPriceBySymbol.BTCUSDT ?? lastCandle?.close ?? null;
+  const livePrice = live.latestPriceBySymbol[chartSymbol] ?? lastCandle?.close ?? null;
   const derivedPositions = useMemo(() => {
-    if (live.lastPositionEvent?.strategy_id !== strategy.id) {
-      return positions;
-    }
-    if (!live.lastPositionEvent.has_position) {
-      return [];
-    }
-    return [
-      {
-        id: "live-position",
-        strategy_id: strategy.id,
-        symbol: String(live.lastPositionEvent.symbol ?? "BTCUSDT"),
-        side: "LONG",
-        quantity: Number(live.lastPositionEvent.quantity ?? 0),
-        entry_price: Number(live.lastPositionEvent.entry_price ?? 0),
-        entry_fee: 0,
-        opened_at: new Date().toISOString(),
-        current_price: livePrice,
+    return positions.map((position) => {
+      const currentPrice = live.latestPriceBySymbol[position.symbol] ?? position.current_price ?? null;
+      return {
+        ...position,
+        current_price: currentPrice,
         unrealized_pnl:
-          livePrice && live.lastPositionEvent.entry_price
-            ? (livePrice - Number(live.lastPositionEvent.entry_price)) *
-              Number(live.lastPositionEvent.quantity ?? 0)
-            : null
-      }
-    ];
-  }, [live.lastPositionEvent, livePrice, positions, strategy.id]);
+          currentPrice != null
+            ? (currentPrice - position.entry_price) * position.quantity - position.entry_fee
+            : position.unrealized_pnl,
+      };
+    });
+  }, [live.latestPriceBySymbol, positions]);
 
   const runManualExecution = (force: boolean) => {
     startTransition(async () => {
       try {
         const result = await executeStrategy(strategy.id, force);
-        setExecutionMessage(result?.reason ?? result?.status ?? "Execution complete");
+        const summary = result?.summary;
+        if (summary && typeof summary.executed === "number") {
+          setExecutionMessage(
+            `Cycle complete: ${summary.executed} trades, ${summary.hold ?? 0} holds, ${summary.skipped ?? 0} skipped`
+          );
+        } else {
+          setExecutionMessage(result?.reason ?? result?.status ?? "Execution complete");
+        }
         router.refresh();
       } catch (error) {
         setExecutionMessage(error instanceof Error ? error.message : "Execution failed");
@@ -111,61 +118,117 @@ export function StrategyDetailClient(props: StrategyDetailClientProps) {
 
   return (
     <div className="space-y-6">
-      <section className="panel flex flex-col gap-5 p-6 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <p className="text-xs uppercase tracking-[0.28em] text-gold">{strategy.ai_enabled ? "AI Strategy" : "Rule Strategy"}</p>
-          <h2 className="mt-2 text-3xl font-semibold text-sand">{strategy.name}</h2>
-          <p className="mt-2 max-w-2xl text-sm text-mist/65">
-            {strategy.description || "No strategy description available."}
-          </p>
-          <div className="mt-4 flex flex-wrap gap-3 text-xs text-mist/55">
-            <span>Last AI status: {strategy.ai_last_decision_status ?? "--"}</span>
-            <span>Last decision: {formatDateTime(strategy.ai_last_decision_at)}</span>
-            <span>Provider: {strategy.ai_last_provider || strategy.ai_provider}</span>
-            <span className="flex items-center gap-2">
-              <span>BTCUSDT:</span>
-              <LivePrice price={livePrice} variant="inline" className="text-sand" />
-            </span>
-          </div>
-        </div>
+      <section className="panel overflow-hidden p-0">
+        <div className="grid gap-0 xl:grid-cols-[1.12fr,0.88fr]">
+          <div className="min-w-0 border-b border-white/6 px-6 py-6 xl:border-b-0 xl:border-r">
+            <div className="flex flex-wrap gap-2">
+              <span className="rounded-full border border-gold/20 bg-gold/10 px-3 py-1 text-[10px] uppercase tracking-[0.18em] text-gold">
+                {strategy.ai_enabled ? "AI-Guided Strategy" : "Rule Strategy"}
+              </span>
+              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[10px] uppercase tracking-[0.18em] text-mist/65">
+                {executionMode === "multi_coin_shared_wallet" ? "Shared Wallet" : chartSymbol}
+              </span>
+              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[10px] uppercase tracking-[0.18em] text-mist/65">
+                Focus {strategy.focus_symbol ?? chartSymbol}
+              </span>
+            </div>
 
-        <div className="flex flex-col items-start gap-3 lg:items-end">
-          <div className="flex flex-wrap gap-3">
-            <button
-              type="button"
-              onClick={runAiPreview}
-              disabled={aiLoading || isPending}
-              className="rounded-full border border-purple-400/40 bg-purple-400/10 px-4 py-2 text-sm text-purple-400 transition hover:bg-purple-400/15 disabled:opacity-50"
-            >
-              {aiLoading ? (
-                <span className="flex items-center gap-2">
-                  <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-purple-400/30 border-t-purple-400" />
-                  AI Thinking...
-                </span>
-              ) : (
-                "Ask AI"
-              )}
-            </button>
-            <button
-              type="button"
-              onClick={() => runManualExecution(false)}
-              disabled={isPending}
-              className="rounded-full border border-gold/40 bg-gold/10 px-4 py-2 text-sm text-gold transition hover:bg-gold/15 disabled:opacity-50"
-            >
-              Manual Execute
-            </button>
-            <button
-              type="button"
-              onClick={() => runManualExecution(true)}
-              disabled={isPending}
-              className="rounded-full border border-white/10 px-4 py-2 text-sm text-mist transition hover:border-rise/40 hover:text-rise disabled:opacity-50"
-            >
-              Force Execute
-            </button>
+            <h2 className="mt-4 text-4xl font-semibold text-sand">{strategy.name}</h2>
+            <p className="mt-3 max-w-2xl break-words text-sm leading-7 text-mist/65">
+              {strategy.description || "No strategy description available."}
+            </p>
+
+            <div className="mt-5 grid gap-3 sm:grid-cols-3">
+              <div className="rounded-[1.4rem] border border-white/8 bg-black/15 p-4">
+                <p className="text-[10px] uppercase tracking-[0.2em] text-mist/45">Chart Symbol</p>
+                <p className="mt-3 text-xl font-semibold text-sand">{chartSymbol}</p>
+              </div>
+              <div className="rounded-[1.4rem] border border-white/8 bg-black/15 p-4">
+                <p className="text-[10px] uppercase tracking-[0.2em] text-mist/45">Live Price</p>
+                <p className="mt-3 text-xl font-semibold text-sand">
+                  <LivePrice price={livePrice} variant="inline" className="text-sand" />
+                </p>
+              </div>
+              <div className="rounded-[1.4rem] border border-white/8 bg-black/15 p-4">
+                <p className="text-[10px] uppercase tracking-[0.2em] text-mist/45">Last AI Status</p>
+                <p className="mt-3 text-xl font-semibold text-sand">{strategy.ai_last_decision_status ?? "--"}</p>
+              </div>
+            </div>
+
+            <div className="mt-5 flex flex-wrap gap-3 text-xs uppercase tracking-[0.16em] text-mist/55">
+              <span>Last decision {formatDateTime(strategy.ai_last_decision_at)}</span>
+              <span>Provider {strategy.ai_last_provider || strategy.ai_provider || "--"}</span>
+              <span>Selection {strategy.selection_date ?? "--"}</span>
+            </div>
           </div>
-          <p className="text-sm text-mist/60">
-            {executionMessage ?? "Trigger a manual cycle or ask AI for its market analysis."}
-          </p>
+
+          <div className="min-w-0 px-6 py-6">
+            <p className="text-xs uppercase tracking-[0.24em] text-gold">Decision Controls</p>
+            <h3 className="mt-3 text-2xl font-semibold text-sand">Run The Desk</h3>
+            <p className="mt-2 break-words text-sm leading-6 text-mist/62">
+              Trigger a manual cycle, force an evaluation pass, or ask AI to produce a read on the current setup.
+            </p>
+
+            <div className="mt-5 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={runAiPreview}
+                disabled={aiLoading || isPending}
+                className="rounded-full border border-purple-400/40 bg-purple-400/10 px-4 py-2 text-sm text-purple-400 transition hover:bg-purple-400/15 disabled:opacity-50"
+              >
+                {aiLoading ? (
+                  <span className="flex items-center gap-2">
+                    <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-purple-400/30 border-t-purple-400" />
+                    AI Thinking...
+                  </span>
+                ) : (
+                  "Ask AI"
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => runManualExecution(false)}
+                disabled={isPending}
+                className="rounded-full border border-gold/40 bg-gold/10 px-4 py-2 text-sm text-gold transition hover:bg-gold/15 disabled:opacity-50"
+              >
+                Manual Execute
+              </button>
+              <button
+                type="button"
+                onClick={() => runManualExecution(true)}
+                disabled={isPending}
+                className="rounded-full border border-white/10 px-4 py-2 text-sm text-mist transition hover:border-rise/40 hover:text-rise disabled:opacity-50"
+              >
+                Force Execute
+              </button>
+            </div>
+
+            <div className="mt-5 rounded-[1.5rem] border border-white/8 bg-black/15 p-4">
+              <p className="text-[10px] uppercase tracking-[0.2em] text-mist/45">Execution Response</p>
+              <p className="mt-3 break-words text-sm leading-6 text-sand">
+                {executionMessage ?? "Trigger a manual cycle or ask AI for its market analysis."}
+              </p>
+            </div>
+
+            {executionMode === "multi_coin_shared_wallet" ? (
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <div className="rounded-[1.4rem] border border-white/8 bg-white/[0.03] p-4">
+                  <p className="text-[10px] uppercase tracking-[0.2em] text-mist/45">Watchlist</p>
+                  <p className="mt-3 break-words text-sm leading-6 text-sand">
+                    {dailyPicks.map((pick) => pick.symbol).join(" · ") || "No picks persisted yet"}
+                  </p>
+                </div>
+                <div className="rounded-[1.4rem] border border-white/8 bg-white/[0.03] p-4">
+                  <p className="text-[10px] uppercase tracking-[0.2em] text-mist/45">Exposure</p>
+                  <p className="mt-3 break-words text-sm leading-6 text-sand">
+                    {Object.entries(openExposureBySymbol)
+                      .map(([symbol, value]) => `${symbol} $${value.toFixed(2)}`)
+                      .join(" · ") || "No live exposure"}
+                  </p>
+                </div>
+              </div>
+            ) : null}
+          </div>
         </div>
       </section>
 
@@ -241,8 +304,88 @@ export function StrategyDetailClient(props: StrategyDetailClientProps) {
 
       <WalletSummary strategy={strategy} summary={summary} />
 
+      {executionMode === "multi_coin_shared_wallet" ? (
+        <section className="panel p-6">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <p className="text-xs uppercase tracking-[0.24em] text-gold">Portfolio Context</p>
+              <h3 className="mt-2 text-xl font-semibold text-sand">Daily Picks And Exposure</h3>
+              <p className="mt-2 text-sm text-mist/60">
+                Entry universe for {strategy.selection_date ?? "today"} with a shared wallet and max {maxConcurrentPositions} positions.
+              </p>
+            </div>
+            <div className="text-sm text-mist/60">
+              Focus chart: <span className="text-sand">{chartSymbol}</span>
+            </div>
+          </div>
+          <div className="mt-5 grid gap-4 lg:grid-cols-3">
+            <div>
+              <p className="text-xs uppercase tracking-[0.18em] text-mist/45">Top 5 Picks</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {dailyPicks.map((pick) => (
+                  <div key={pick.symbol} className="rounded-xl border border-gold/20 bg-gold/10 px-3 py-2 text-sm text-gold/90">
+                    #{pick.rank} {pick.symbol}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-[0.18em] text-mist/45">Open Exposure</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {Object.entries(openExposureBySymbol).length > 0 ? (
+                  Object.entries(openExposureBySymbol).map(([symbol, value]) => (
+                    <div key={symbol} className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-sand">
+                      {symbol} ${value.toFixed(2)}
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-sm text-mist/55">No live exposure.</div>
+                )}
+              </div>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-[0.18em] text-mist/45">Risk Status</p>
+              <div className="mt-3 space-y-2 rounded-[1.5rem] border border-white/8 bg-black/15 p-4 text-sm text-mist/68">
+                <div className="flex items-center justify-between">
+                  <span>Exposure</span>
+                  <span className="text-sand">
+                    {portfolioRiskStatus.exposure_pct != null
+                      ? `${portfolioRiskStatus.exposure_pct.toFixed(2)}%`
+                      : "--"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>Drawdown</span>
+                  <span className="text-sand">
+                    {portfolioRiskStatus.drawdown_pct != null
+                      ? `${portfolioRiskStatus.drawdown_pct.toFixed(2)}%`
+                      : "--"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>Exposure limit</span>
+                  <span className="text-sand">
+                    {portfolioRiskStatus.limits?.max_exposure_pct != null
+                      ? `${portfolioRiskStatus.limits.max_exposure_pct}%`
+                      : "--"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>Drawdown halt</span>
+                  <span className="text-sand">
+                    {portfolioRiskStatus.limits?.portfolio_drawdown_halt_pct != null
+                      ? `${portfolioRiskStatus.limits.portfolio_drawdown_halt_pct}%`
+                      : "--"}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
       <div className="grid gap-6 xl:grid-cols-[1.2fr,0.8fr]">
-        <PriceChart title="Price Chart" candles={candles} trades={trades} />
+        <PriceChart title={`${chartSymbol} Price Chart`} candles={candles} trades={trades.filter((trade) => trade.symbol === chartSymbol)} />
         <AICallLog strategy={strategy} executionMessage={executionMessage} />
       </div>
 

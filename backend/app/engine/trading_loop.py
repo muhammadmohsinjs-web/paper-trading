@@ -29,14 +29,23 @@ from app.engine.ai_runtime import (
     evaluate_ai_validation,
     normalize_ai_strategy_key,
 )
+from app.engine.multi_coin import (
+    MULTI_COIN_MODE,
+    build_portfolio_positions,
+    compute_total_equity,
+    ensure_daily_picks,
+    resolve_execution_mode,
+    resolve_max_concurrent_positions,
+    resolve_primary_symbol,
+)
 from app.engine.executor import execute_buy, execute_sell
 from app.engine.exit_manager import evaluate_exit
-from app.engine.position_sizer import calculate_exit_levels
+from app.engine.position_sizer import calculate_exit_levels, calculate_position_size, calculate_scaled_exit_levels
 from app.engine.post_trade import (
     compute_equity,
     handle_post_trade,
 )
-from app.engine.wallet_manager import get_or_create_wallet, get_position
+from app.engine.wallet_manager import get_or_create_wallet, get_position, get_positions
 from app.models.ai_call_log import AICallLog
 from app.market.data_store import DataStore
 from app.market.indicators import compute_indicators
@@ -44,10 +53,12 @@ from app.models.snapshot import Snapshot
 from app.models.strategy import Strategy
 from app.regime.classifier import RegimeClassifier
 from app.regime.types import MarketRegime, RegimeResult
+from app.risk.portfolio import PortfolioRiskManager
 from app.strategies.base import StrategyContext
 from app.strategies.hybrid_composite import HybridCompositeStrategy, HybridDecision
 from app.strategies.registry import get_strategy_class
 from app.ai.trade_validator import validate_trade_signal
+from app.engine.mtf_confluence import check_confluence
 
 _regime_classifier = RegimeClassifier()
 
@@ -500,6 +511,50 @@ def _cap_quantity_pct(
     return max(capped_pct, Decimal("0"))
 
 
+def _build_portfolio_risk_manager(strategy: Strategy, config: dict[str, Any]) -> PortfolioRiskManager:
+    return PortfolioRiskManager(
+        max_exposure_pct=float(config.get("portfolio_max_exposure_pct", 70.0)),
+        max_single_asset_pct=float(config.get("portfolio_max_single_asset_pct", 40.0)),
+        max_concurrent_positions=resolve_max_concurrent_positions(strategy),
+        portfolio_drawdown_halt_pct=float(config.get("portfolio_drawdown_halt_pct", 20.0)),
+    )
+
+
+def _apply_portfolio_risk_limits(
+    *,
+    strategy: Strategy,
+    config: dict[str, Any],
+    wallet: Any,
+    symbol: str,
+    quantity_pct: Decimal,
+    regime: MarketRegime,
+    all_positions: list[Any],
+) -> tuple[Decimal, str | None]:
+    if quantity_pct <= Decimal("0"):
+        return Decimal("0"), "Position size is zero after sizing"
+
+    total_equity = compute_total_equity(wallet, all_positions)
+    manager = _build_portfolio_risk_manager(strategy, config)
+    decision = manager.evaluate(
+        proposed_symbol=symbol,
+        proposed_value=(Decimal(str(wallet.available_usdt)) * quantity_pct).quantize(Decimal("0.00000001")),
+        proposed_quantity_pct=quantity_pct,
+        total_portfolio_equity=total_equity,
+        portfolio_peak_equity=Decimal(str(wallet.peak_equity_usdt or total_equity)),
+        open_positions=build_portfolio_positions(all_positions, strategy_id=strategy.id),
+        regime=regime,
+    )
+    if not decision.approved:
+        return Decimal("0"), decision.reason
+
+    adjusted = decision.adjusted_quantity_pct if decision.adjusted_quantity_pct is not None else quantity_pct
+    warnings = f" ({'; '.join(decision.warnings)})" if decision.warnings else ""
+    reason = None
+    if adjusted != quantity_pct:
+        reason = f"{decision.reason}{warnings}"
+    return adjusted, reason
+
+
 def _decision_reason(decision: LiveTradeDecision) -> str:
     if decision.validator_reason:
         return f"{decision.reason} | validator={decision.validator_reason}"
@@ -659,6 +714,12 @@ async def _apply_ai_validation(
     )
     await session.commit()
 
+    if validation.status == "error":
+        decision.final_confidence = 0.0
+        decision.quantity_pct = Decimal("0")
+        decision.validator_reason = validation.error or validation.reason or "AI validation error blocked BUY"
+        return decision
+
     if validation.approved is None:
         return decision
 
@@ -722,6 +783,19 @@ async def _execute_shared_exit(
     if result.success:
         if decision_source == "hybrid_exit" and quantity_pct >= Decimal("0.99999999"):
             _update_hybrid_calibration(strategy, position, result.trade)
+
+        # Update scaled TP flags on remaining position after partial close
+        if exit_decision is not None and getattr(exit_decision, "tp_level", None) is not None:
+            remaining_pos = await get_position(session, strategy_id, symbol)
+            if remaining_pos is not None:
+                tp_level = exit_decision.tp_level
+                if tp_level == 1:
+                    remaining_pos.tp1_hit = True
+                    # Move SL to breakeven on TP1
+                    if exit_decision.updated_stop_loss_price is not None:
+                        remaining_pos.stop_loss_price = exit_decision.updated_stop_loss_price
+                elif tp_level == 2:
+                    remaining_pos.tp2_hit = True
 
         await handle_post_trade(
             session,
@@ -804,8 +878,8 @@ _strategy_locks: dict[str, asyncio.Lock] = {}
 
 async def run_single_cycle(
     strategy_id: str,
-    symbol: str = "BTCUSDT",
-    interval: str = "1h",
+    symbol: str | None = None,
+    interval: str | None = None,
     force: bool = False,
 ) -> dict[str, Any]:
     """Execute one decision cycle for a strategy."""
@@ -844,31 +918,13 @@ async def run_single_cycle(
 
 async def _run_single_cycle_locked(
     strategy_id: str,
-    symbol: str = "BTCUSDT",
-    interval: str = "1h",
+    symbol: str | None = None,
+    interval: str | None = None,
     force: bool = False,
 ) -> dict[str, Any]:
     """Execute one decision cycle for a strategy (must be called under lock)."""
-    store = DataStore.get_instance()
     manager = ConnectionManager.get_instance()
-    candles = store.get_candles(symbol, interval)
-    closes = [candle.close for candle in candles]
-
-    if len(closes) < 50:
-        logger.warning(
-            "insufficient candles strategy_id=%s symbol=%s candles=%d required=50",
-            strategy_id, symbol, len(closes),
-        )
-        return {
-            "status": "skipped",
-            "reason": "Not enough candle data",
-            "symbol": symbol,
-            "strategy_id": strategy_id,
-            "decision_source": "market_data",
-        }
-
     async with SessionLocal() as session:
-        # Load strategy
         result = await session.execute(
             select(Strategy).where(Strategy.id == strategy_id)
         )
@@ -882,65 +938,246 @@ async def _run_single_cycle_locked(
                 "decision_source": "strategy",
             }
 
-        # Override interval from strategy if set
-        interval = strategy.candle_interval or (strategy.config_json or {}).get("candle_interval", interval)
-
-        # Get strategy config
-        config = strategy.config_json or {}
-        strategy_type = config.get("strategy_type", "sma_crossover")
-        if strategy_type == "ai":
-            strategy_type = str(config.get("base_strategy_type", "sma_crossover"))
-        ai_config = _normalize_ai_counters(strategy)
-
-        # Get wallet and position
-        wallet = await get_or_create_wallet(
-            session, strategy_id, Decimal(str(config.get("initial_balance", 1000)))
-        )
-        position = await get_position(session, strategy_id, symbol)
-        has_position = position is not None
-
-        current_price = store.get_latest_price(symbol)
-        if current_price is None:
-            logger.warning("missing price symbol=%s strategy_id=%s", symbol, strategy_id)
-            return {
-                "status": "skipped",
-                "reason": "No price data",
-                "symbol": symbol,
-                "strategy_id": strategy_id,
-                "decision_source": "market_data",
-            }
-
-        market_price = Decimal(str(current_price))
-
-        # ── Compute indicators (pass highs/lows for ATR) ────────────────
-        highs = [candle.high for candle in candles]
-        lows = [candle.low for candle in candles]
-        volumes = [candle.volume for candle in candles]
-        indicators = compute_indicators(closes, config, highs=highs, lows=lows, volumes=volumes)
-        equity = compute_equity(wallet, position, market_price)
-
-        # ── Regime detection ─────────────────────────────────────────────
-        regime_result = _regime_classifier.classify(indicators)
-        logger.debug(
-            "regime detected strategy_id=%s regime=%s confidence=%.2f",
-            strategy_id, regime_result.regime.value, regime_result.confidence,
-        )
-
-        # ── HYBRID COMPOSITE PATH ────────────────────────────────────────
-        if strategy_type == "hybrid_composite":
-            return await _run_hybrid_cycle(
-                session, manager, strategy, strategy_id, wallet, position,
-                symbol, interval, market_price, equity, indicators,
-                config, ai_config, highs, lows, volumes, closes, force, regime_result,
+        resolved_interval = interval or strategy.candle_interval or (strategy.config_json or {}).get("candle_interval", settings.default_candle_interval)
+        execution_mode = resolve_execution_mode(strategy)
+        if execution_mode == MULTI_COIN_MODE:
+            return await _run_multi_coin_cycle(
+                session,
+                manager,
+                strategy,
+                strategy_id,
+                resolved_interval,
+                force,
             )
 
-        # ── RULE-BASED / AI PATH ─────────────────────────────────────────
-        return await _run_rule_based_cycle(
+        resolved_symbol = str(symbol or resolve_primary_symbol(strategy)).upper()
+        return await _run_loaded_symbol_cycle(
+            session,
+            manager,
+            strategy,
+            strategy_id,
+            resolved_symbol,
+            resolved_interval,
+            force,
+            entry_allowed=True,
+        )
+
+async def _run_loaded_symbol_cycle(
+    session: Any,
+    manager: ConnectionManager,
+    strategy: Strategy,
+    strategy_id: str,
+    symbol: str,
+    interval: str,
+    force: bool,
+    *,
+    entry_allowed: bool,
+) -> dict[str, Any]:
+    store = DataStore.get_instance()
+    candles = store.get_candles(symbol, interval)
+    closes = [candle.close for candle in candles]
+    if len(closes) < 50:
+        logger.warning(
+            "insufficient candles strategy_id=%s symbol=%s candles=%d required=50",
+            strategy_id, symbol, len(closes),
+        )
+        return {
+            "status": "skipped",
+            "reason": "Not enough candle data",
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "market_data",
+        }
+
+    config = strategy.config_json or {}
+    strategy_type = config.get("strategy_type", "sma_crossover")
+    if strategy_type == "ai":
+        strategy_type = str(config.get("base_strategy_type", "sma_crossover"))
+    ai_config = _normalize_ai_counters(strategy)
+
+    wallet = await get_or_create_wallet(
+        session,
+        strategy_id,
+        Decimal(str(config.get("initial_balance", 1000))),
+    )
+    position = await get_position(session, strategy_id, symbol)
+    if position is None and not entry_allowed:
+        return {
+            "status": "skipped",
+            "reason": "Symbol not eligible for new entries this cycle",
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "daily_pick_filter",
+        }
+
+    current_price = store.get_latest_price(symbol)
+    if current_price is None:
+        logger.warning("missing price symbol=%s strategy_id=%s", symbol, strategy_id)
+        return {
+            "status": "skipped",
+            "reason": "No price data",
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "market_data",
+        }
+
+    market_price = Decimal(str(current_price))
+    highs = [candle.high for candle in candles]
+    lows = [candle.low for candle in candles]
+    volumes = [candle.volume for candle in candles]
+    indicators = compute_indicators(closes, config, highs=highs, lows=lows, volumes=volumes)
+    indicators["symbol"] = symbol
+    all_positions = await get_positions(session, strategy_id)
+    equity = compute_total_equity(wallet, all_positions)
+    has_position = position is not None
+    regime_result, regime_transition = _regime_classifier.classify_with_transition(
+        indicators, symbol=symbol,
+    )
+    logger.debug(
+        "regime detected strategy_id=%s symbol=%s regime=%s confidence=%.2f transition=%s",
+        strategy_id,
+        symbol,
+        regime_result.regime.value,
+        regime_result.confidence,
+        f"{regime_transition.from_regime.value}->{regime_transition.to_regime.value}" if regime_transition else "none",
+    )
+
+    # React to dangerous regime transitions
+    if regime_transition is not None and regime_transition.is_dangerous and position is not None:
+        logger.warning(
+            "Dangerous regime transition %s->%s for %s, forcing exit",
+            regime_transition.from_regime.value,
+            regime_transition.to_regime.value,
+            symbol,
+        )
+        return await _execute_shared_exit(
+            session,
+            manager,
+            strategy,
+            strategy_id,
+            wallet,
+            position,
+            symbol,
+            market_price,
+            Decimal("1.0"),
+            f"Regime transition {regime_transition.from_regime.value}->{regime_transition.to_regime.value} — forced exit",
+            "regime_exit",
+            indicators,
+        )
+
+    if strategy_type == "hybrid_composite":
+        return await _run_hybrid_cycle(
             session, manager, strategy, strategy_id, wallet, position,
             symbol, interval, market_price, equity, indicators,
-            config, ai_config, highs, lows, volumes, closes, force,
-            strategy_type, has_position, regime_result,
+            config, ai_config, highs, lows, volumes, closes, force, regime_result,
+            all_positions,
         )
+
+    return await _run_rule_based_cycle(
+        session, manager, strategy, strategy_id, wallet, position,
+        symbol, interval, market_price, equity, indicators,
+        config, ai_config, highs, lows, volumes, closes, force,
+        strategy_type, has_position, regime_result, all_positions,
+    )
+
+
+def _summarize_multicoin_results(results: list[dict[str, Any]]) -> dict[str, int]:
+    summary = {
+        "executed": 0,
+        "buy_executed": 0,
+        "sell_executed": 0,
+        "hold": 0,
+        "skipped": 0,
+        "failed": 0,
+    }
+    for item in results:
+        status = item.get("status")
+        action = item.get("action")
+        if status == "executed":
+            summary["executed"] += 1
+            if action == "BUY":
+                summary["buy_executed"] += 1
+            elif action == "SELL":
+                summary["sell_executed"] += 1
+        elif status == "hold":
+            summary["hold"] += 1
+        elif status == "failed":
+            summary["failed"] += 1
+        else:
+            summary["skipped"] += 1
+    return summary
+
+
+async def _run_multi_coin_cycle(
+    session: Any,
+    manager: ConnectionManager,
+    strategy: Strategy,
+    strategy_id: str,
+    interval: str,
+    force: bool,
+) -> dict[str, Any]:
+    picks = await ensure_daily_picks(session, strategy, interval=interval, force_refresh=False)
+    selection_date = picks[0].selection_date.isoformat() if picks else datetime.now(timezone.utc).date().isoformat()
+    selected_symbols = [pick.symbol for pick in picks]
+    if not selected_symbols:
+        return {
+            "status": "skipped",
+            "reason": "No daily picks available",
+            "strategy_id": strategy_id,
+            "execution_mode": MULTI_COIN_MODE,
+            "selection_date": selection_date,
+            "selected_symbols": [],
+            "results": [],
+        }
+
+    results: list[dict[str, Any]] = []
+    open_positions = await get_positions(session, strategy_id)
+    open_symbols = [position.symbol for position in open_positions]
+    processed_symbols: set[str] = set()
+
+    for symbol in open_symbols:
+        result = await _run_loaded_symbol_cycle(
+            session,
+            manager,
+            strategy,
+            strategy_id,
+            symbol,
+            interval,
+            force,
+            entry_allowed=False,
+        )
+        results.append(result)
+        processed_symbols.add(symbol)
+
+    max_positions = resolve_max_concurrent_positions(strategy)
+    for pick in picks:
+        if pick.symbol in processed_symbols:
+            continue
+        open_positions = await get_positions(session, strategy_id)
+        if len(open_positions) >= max_positions:
+            break
+        result = await _run_loaded_symbol_cycle(
+            session,
+            manager,
+            strategy,
+            strategy_id,
+            pick.symbol,
+            interval,
+            force,
+            entry_allowed=True,
+        )
+        results.append(result)
+        processed_symbols.add(pick.symbol)
+
+    return {
+        "status": "completed",
+        "strategy_id": strategy_id,
+        "execution_mode": MULTI_COIN_MODE,
+        "selection_date": selection_date,
+        "selected_symbols": selected_symbols,
+        "results": results,
+        "summary": _summarize_multicoin_results(results),
+    }
 
 
 async def _run_hybrid_cycle(
@@ -963,6 +1200,7 @@ async def _run_hybrid_cycle(
     closes: list[float],
     force: bool,
     regime_result: RegimeResult,
+    all_positions: list[Any],
 ) -> dict[str, Any]:
     """Execute the deterministic hybrid path with shared validation and exits."""
     strategy_type = "hybrid_composite"
@@ -1028,14 +1266,21 @@ async def _run_hybrid_cycle(
         and decision.exit_decision.updated_trailing_stop_price is not None
     ):
         if position is not None:
+            hybrid_updated = False
             prior = position.trailing_stop_price
             new_ts = decision.exit_decision.updated_trailing_stop_price
             if new_ts != prior:
                 position.trailing_stop_price = new_ts
+                hybrid_updated = True
+            new_sl = decision.exit_decision.updated_stop_loss_price
+            if new_sl is not None and new_sl != position.stop_loss_price:
+                position.stop_loss_price = new_sl
+                hybrid_updated = True
+            if hybrid_updated:
                 await session.commit()
                 return {
                     "status": "hold",
-                    "reason": "Trailing stop updated",
+                    "reason": "Exit levels updated (trailing/breakeven)",
                     "symbol": symbol,
                     "strategy_id": strategy_id,
                     "decision_source": "hybrid_exit",
@@ -1094,6 +1339,21 @@ async def _run_hybrid_cycle(
             "composite": composite_dict,
         }
 
+    # Multi-timeframe confluence check
+    mtf = check_confluence(symbol, "BUY", interval)
+    if not mtf.aligned:
+        return {
+            "status": "skipped",
+            "reason": mtf.reason,
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "mtf_confluence",
+            "composite": composite_dict,
+        }
+    live_decision.final_confidence = min(
+        live_decision.final_confidence + mtf.confidence_boost, 1.0
+    )
+
     live_decision = await _apply_ai_validation(
         session,
         strategy,
@@ -1114,7 +1374,7 @@ async def _run_hybrid_cycle(
     if live_decision.final_confidence < min_confidence:
         return {
             "status": "skipped",
-            "reason": f"Hybrid confidence {live_decision.final_confidence:.3f} below gate {min_confidence:.3f}",
+            "reason": live_decision.validator_reason or f"Hybrid confidence {live_decision.final_confidence:.3f} below gate {min_confidence:.3f}",
             "symbol": symbol,
             "strategy_id": strategy_id,
             "decision_source": "confidence_gate",
@@ -1159,6 +1419,25 @@ async def _run_hybrid_cycle(
             "composite": composite_dict,
         }
 
+    quantity_pct, risk_reason = _apply_portfolio_risk_limits(
+        strategy=strategy,
+        config=config,
+        wallet=wallet,
+        symbol=symbol,
+        quantity_pct=quantity_pct,
+        regime=regime_result.regime,
+        all_positions=all_positions,
+    )
+    if quantity_pct <= Decimal("0"):
+        return {
+            "status": "skipped",
+            "reason": risk_reason or "Portfolio risk blocked entry",
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "portfolio_risk",
+            "composite": composite_dict,
+        }
+
     live_decision.quantity_pct = quantity_pct
     result = await execute_buy(
         session,
@@ -1198,6 +1477,17 @@ async def _run_hybrid_cycle(
         refreshed_position.entry_confidence_raw = Decimal(str(round(live_decision.raw_confidence, 4)))
         refreshed_position.entry_confidence_final = Decimal(str(round(live_decision.final_confidence, 4)))
         refreshed_position.entry_confidence_bucket = entry_bucket
+        # Scaled take-profit levels
+        scaled = calculate_scaled_exit_levels(
+            entry_price=market_price,
+            atr=sizing.entry_atr,
+            atr_multiplier=Decimal(str(config.get("atr_stop_multiplier", 2.0))),
+        )
+        refreshed_position.take_profit_1_price = scaled.take_profit_1_price
+        refreshed_position.take_profit_2_price = scaled.take_profit_2_price
+        refreshed_position.take_profit_3_price = scaled.take_profit_3_price
+        refreshed_position.tp1_hit = False
+        refreshed_position.tp2_hit = False
 
     await handle_post_trade(
         session,
@@ -1234,6 +1524,16 @@ async def _run_hybrid_cycle(
     }
 
 
+def _signal_to_confidence_tier(signal_quantity_pct: Decimal) -> str:
+    """Map a rule-based strategy's quantity_pct hint to a confidence tier."""
+    pct = float(signal_quantity_pct)
+    if pct >= 0.5:
+        return "full"
+    if pct >= 0.3:
+        return "reduced"
+    return "small"
+
+
 async def _run_rule_based_cycle(
     session: Any,
     manager: ConnectionManager,
@@ -1256,6 +1556,7 @@ async def _run_rule_based_cycle(
     strategy_type: str,
     has_position: bool,
     regime_result: RegimeResult,
+    all_positions: list[Any],
 ) -> dict[str, Any]:
     """Execute deterministic rule strategies with shared exits and validation."""
     strategy_impl = get_strategy_class(strategy_type)()
@@ -1267,6 +1568,7 @@ async def _run_rule_based_cycle(
             composite_score=None,
             config=config,
             now=datetime.now(timezone.utc),
+            regime=regime_result.regime.value,
         )
         if exit_decision.action == "SELL":
             return await _execute_shared_exit(
@@ -1285,15 +1587,24 @@ async def _run_rule_based_cycle(
                 exit_decision=exit_decision,
             )
 
+        updated = False
         if (
             exit_decision.updated_trailing_stop_price is not None
             and exit_decision.updated_trailing_stop_price != position.trailing_stop_price
         ):
             position.trailing_stop_price = exit_decision.updated_trailing_stop_price
+            updated = True
+        if (
+            exit_decision.updated_stop_loss_price is not None
+            and exit_decision.updated_stop_loss_price != position.stop_loss_price
+        ):
+            position.stop_loss_price = exit_decision.updated_stop_loss_price
+            updated = True
+        if updated:
             await session.commit()
             return {
                 "status": "hold",
-                "reason": "Trailing stop updated",
+                "reason": "Exit levels updated (trailing/breakeven)",
                 "symbol": symbol,
                 "strategy_id": strategy_id,
                 "decision_source": "rule_exit",
@@ -1333,25 +1644,50 @@ async def _run_rule_based_cycle(
             "decision_source": "rule_entry",
         }
 
-    levels = _precompute_entry_levels(indicators, market_price, config)
-    if levels is None:
+    atr_values = indicators.get("atr", [])
+    if not atr_values:
         return {
             "status": "skipped",
-            "reason": "ATR unavailable for shared exit levels",
+            "reason": "ATR unavailable for position sizing",
             "symbol": symbol,
             "strategy_id": strategy_id,
             "decision_source": "rule_entry",
         }
-    stop_loss_price, take_profit_price, entry_atr = levels
 
+    confidence_tier = _signal_to_confidence_tier(signal.quantity_pct)
+    sizing = calculate_position_size(
+        equity=equity,
+        entry_price=market_price,
+        atr=Decimal(str(atr_values[-1])),
+        atr_multiplier=Decimal(str(config.get("atr_stop_multiplier", 2.0))),
+        risk_per_trade_pct=Decimal(str(strategy.risk_per_trade_pct or settings.default_risk_per_trade_pct)),
+        confidence_tier=confidence_tier,
+        losing_streak_count=int(strategy.consecutive_losses or 0),
+        max_position_pct=Decimal(str(strategy.max_position_size_pct or settings.default_max_position_size_pct)),
+        take_profit_ratio=Decimal(str(config.get("take_profit_ratio", 2.0))),
+    )
+    if sizing.quantity_pct <= Decimal("0"):
+        return {
+            "status": "skipped",
+            "reason": "ATR-based sizing produced zero position",
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "rule_entry",
+        }
+    stop_loss_price = sizing.stop_loss_price
+    take_profit_price = sizing.take_profit_price
+    entry_atr = sizing.entry_atr
+
+    raw_confidence = float(sizing.quantity_pct)
     live_decision = LiveTradeDecision(
         action="BUY",
         reason=signal.reason,
-        raw_confidence=_signal_confidence(signal),
-        final_confidence=_signal_confidence(signal),
+        raw_confidence=raw_confidence,
+        final_confidence=raw_confidence,
         regime=regime_result.regime.value,
-        quantity_pct=signal.quantity_pct,
+        quantity_pct=sizing.quantity_pct,
         decision_source="rule_entry",
+        entry_confidence_bucket=_confidence_bucket(raw_confidence),
     )
 
     risk_reason = _entry_risk_status(strategy, wallet, equity, config)
@@ -1381,6 +1717,20 @@ async def _run_rule_based_cycle(
         }
     live_decision.quantity_pct *= size_multiplier
 
+    # Multi-timeframe confluence check
+    mtf = check_confluence(symbol, "BUY", interval)
+    if not mtf.aligned:
+        return {
+            "status": "skipped",
+            "reason": mtf.reason,
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "mtf_confluence",
+        }
+    live_decision.final_confidence = min(
+        live_decision.final_confidence + mtf.confidence_boost, 1.0
+    )
+
     live_decision = await _apply_ai_validation(
         session,
         strategy,
@@ -1401,7 +1751,7 @@ async def _run_rule_based_cycle(
     if live_decision.final_confidence < min_confidence:
         return {
             "status": "skipped",
-            "reason": f"Entry confidence {live_decision.final_confidence:.3f} below gate {min_confidence:.3f}",
+            "reason": live_decision.validator_reason or f"Entry confidence {live_decision.final_confidence:.3f} below gate {min_confidence:.3f}",
             "symbol": symbol,
             "strategy_id": strategy_id,
             "decision_source": "confidence_gate",
@@ -1422,7 +1772,26 @@ async def _run_rule_based_cycle(
             "decision_source": "risk",
         }
 
+    quantity_pct, risk_reason = _apply_portfolio_risk_limits(
+        strategy=strategy,
+        config=config,
+        wallet=wallet,
+        symbol=symbol,
+        quantity_pct=quantity_pct,
+        regime=regime_result.regime,
+        all_positions=all_positions,
+    )
+    if quantity_pct <= Decimal("0"):
+        return {
+            "status": "skipped",
+            "reason": risk_reason or "Portfolio risk blocked entry",
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "portfolio_risk",
+        }
+
     live_decision.quantity_pct = quantity_pct
+    entry_confidence_bucket = _confidence_bucket(live_decision.final_confidence)
     result = await execute_buy(
         session,
         strategy_id,
@@ -1435,6 +1804,9 @@ async def _run_rule_based_cycle(
         strategy_type=strategy_type,
         decision_source="rule_entry",
         indicator_snapshot=_build_indicator_snapshot(indicators),
+        entry_confidence_raw=Decimal(str(round(live_decision.raw_confidence, 4))),
+        entry_confidence_final=Decimal(str(round(live_decision.final_confidence, 4))),
+        entry_confidence_bucket=entry_confidence_bucket,
     )
     if not result.success:
         await session.rollback()
@@ -1452,6 +1824,17 @@ async def _run_rule_based_cycle(
         refreshed_position.take_profit_price = take_profit_price
         refreshed_position.trailing_stop_price = None
         refreshed_position.entry_atr = entry_atr
+        # Scaled take-profit levels
+        scaled = calculate_scaled_exit_levels(
+            entry_price=market_price,
+            atr=entry_atr,
+            atr_multiplier=Decimal(str(config.get("atr_stop_multiplier", 2.0))),
+        )
+        refreshed_position.take_profit_1_price = scaled.take_profit_1_price
+        refreshed_position.take_profit_2_price = scaled.take_profit_2_price
+        refreshed_position.take_profit_3_price = scaled.take_profit_3_price
+        refreshed_position.tp1_hit = False
+        refreshed_position.tp2_hit = False
 
     await handle_post_trade(
         session,
@@ -1487,18 +1870,27 @@ async def _run_rule_based_cycle(
     }
 
 
-async def take_equity_snapshot(strategy_id: str, symbol: str = "BTCUSDT") -> None:
+async def take_equity_snapshot(strategy_id: str, symbol: str | None = None) -> None:
     """Save current equity (cash + position value) as a snapshot."""
-    store = DataStore.get_instance()
-    price = store.get_latest_price(symbol)
-
     async with SessionLocal() as session:
-        wallet = await get_or_create_wallet(session, strategy_id)
-        position = await get_position(session, strategy_id, symbol)
+        result = await session.execute(select(Strategy).where(Strategy.id == strategy_id))
+        strategy = result.scalar_one_or_none()
+        if strategy is None:
+            return
 
-        total = wallet.available_usdt
-        if position and price:
-            total += position.quantity * Decimal(str(price))
+        wallet = await get_or_create_wallet(session, strategy_id)
+        positions = await get_positions(session, strategy_id)
+        execution_mode = resolve_execution_mode(strategy)
+        if execution_mode == MULTI_COIN_MODE:
+            total = compute_total_equity(wallet, positions)
+        else:
+            resolved_symbol = str(symbol or resolve_primary_symbol(strategy)).upper()
+            position = next((item for item in positions if item.symbol == resolved_symbol), None)
+            total = wallet.available_usdt
+            if position is not None:
+                price = DataStore.get_instance().get_latest_price(resolved_symbol)
+                if price is not None:
+                    total += position.quantity * Decimal(str(price))
 
         snapshot = Snapshot(
             strategy_id=strategy_id,
@@ -1512,7 +1904,6 @@ async def strategy_loop(strategy_id: str, interval_seconds: int = 3600) -> None:
     """Continuous trading loop for a single strategy."""
     # Ensure loop never runs faster than the smallest candle interval (1m = 60s)
     interval_seconds = max(interval_seconds, 60)
-    symbol = "BTCUSDT"
     cycle = 0
 
     from app.strategies.manager import StrategyManager
@@ -1521,16 +1912,22 @@ async def strategy_loop(strategy_id: str, interval_seconds: int = 3600) -> None:
         try:
             lock = StrategyManager.get_instance().get_lock(strategy_id)
             async with lock:
-                result = await run_single_cycle(strategy_id, symbol)
+                result = await run_single_cycle(strategy_id)
             cycle += 1
 
-            if result.get("status") == "executed":
+            executed_count = 1 if result.get("status") == "executed" else int(
+                (result.get("summary") or {}).get("executed", 0)
+            )
+            if executed_count > 0:
                 logger.info(
-                    "cycle complete strategy_id=%s cycle=%d status=executed action=%s",
-                    strategy_id, cycle, result.get("action"),
+                    "cycle complete strategy_id=%s cycle=%d executed=%d status=%s",
+                    strategy_id,
+                    cycle,
+                    executed_count,
+                    result.get("status"),
                 )
                 # Snapshot after every trade
-                await take_equity_snapshot(strategy_id, symbol)
+                await take_equity_snapshot(strategy_id)
             elif result.get("status") in {"skipped", "hold"}:
                 logger.debug(
                     "cycle complete strategy_id=%s cycle=%d status=%s reason=%s",
@@ -1538,7 +1935,7 @@ async def strategy_loop(strategy_id: str, interval_seconds: int = 3600) -> None:
                 )
 
             # Snapshot every cycle
-            await take_equity_snapshot(strategy_id, symbol)
+            await take_equity_snapshot(strategy_id)
 
         except Exception:
             logger.exception("strategy loop crashed strategy_id=%s", strategy_id)

@@ -37,16 +37,16 @@ export function PriceChart({
     const chart = createChart(containerRef.current, {
       autoSize: true,
       layout: {
-        background: { type: ColorType.Solid, color: "#17201d" },
+        background: { type: ColorType.Solid, color: "#101722" },
         textColor: "#dbe6df"
       },
       grid: {
-        vertLines: { color: "rgba(255,255,255,0.06)" },
-        horzLines: { color: "rgba(255,255,255,0.06)" }
+        vertLines: { color: "rgba(255,255,255,0.05)" },
+        horzLines: { color: "rgba(255,255,255,0.05)" }
       },
       crosshair: { mode: CrosshairMode.Normal },
-      rightPriceScale: { borderColor: "rgba(255,255,255,0.1)" },
-      timeScale: { borderColor: "rgba(255,255,255,0.1)" }
+      rightPriceScale: { borderColor: "rgba(255,255,255,0.08)" },
+      timeScale: { borderColor: "rgba(255,255,255,0.08)" }
     });
     chartRef.current = chart;
 
@@ -98,7 +98,10 @@ export function PriceChart({
   return (
     <div className="panel p-5">
       <div className="mb-4">
-        <h3 className="text-lg font-semibold text-sand">{title}</h3>
+        <p className="text-xs uppercase tracking-[0.22em] text-mist/45">
+          {mode === "equity" ? "Performance Curve" : "Market View"}
+        </p>
+        <h3 className="mt-2 text-xl font-semibold text-sand">{title}</h3>
       </div>
       <div ref={containerRef} className="h-[320px] w-full" />
     </div>

@@ -2,34 +2,49 @@
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import (
     default_ai_model_for_provider,
     get_settings,
 )
 from app.database import get_db_session
+from app.engine.multi_coin import (
+    build_open_exposure_by_symbol,
+    build_portfolio_status,
+    compute_total_equity,
+    compute_unrealized_pnl,
+    ensure_daily_picks,
+    get_daily_picks,
+    resolve_primary_symbol,
+)
+from app.models.ai_call_log import AICallLog
+from app.models.daily_pick import DailyPick
 from app.models.enums import TradeSide
 from app.models.position import Position
+from app.models.snapshot import Snapshot
 from app.models.strategy import Strategy
 from app.models.trade import Trade
 from app.models.wallet import Wallet
+from app.market.data_store import DataStore
 from app.schemas.wallet import PositionResponse, WalletResponse
 from app.schemas.strategy import (
+    DailyPickResponse,
     StrategyCreate,
     StrategyResponse,
     StrategyUpdate,
     StrategyWithStats,
 )
-from app.market.data_store import DataStore
 from app.strategies.manager import StrategyManager, resolve_strategy_interval
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 def _strategy_ai_defaults(strategy: Strategy) -> dict[str, object]:
@@ -68,6 +83,11 @@ def _strategy_ai_defaults(strategy: Strategy) -> dict[str, object]:
     }
 
 
+def _resolve_initial_balance(strategy: Strategy) -> Decimal:
+    config = strategy.config_json or {}
+    return Decimal(str(config.get("initial_balance", settings.default_balance_usdt)))
+
+
 async def _build_stats(session: AsyncSession, strategy: Strategy) -> StrategyWithStats:
     """Build a StrategyWithStats from DB data."""
     # Wallet
@@ -92,28 +112,23 @@ async def _build_stats(session: AsyncSession, strategy: Strategy) -> StrategyWit
     )
     total_trades = total_trade_result.scalar() or 0
 
-    # Equity = cash + current market value of open position
-    store = DataStore.get_instance()
-    price = store.get_latest_price("BTCUSDT")
     position_result = await session.execute(
-        select(Position).where(Position.strategy_id == strategy.id)
+        select(Position).where(Position.strategy_id == strategy.id).order_by(Position.opened_at.desc())
     )
-    position = position_result.scalar_one_or_none()
-
-    position_value = 0.0
-    unrealized_pnl = 0.0
-    has_open_position = position is not None
-    if position:
-        cost_basis = float(position.quantity) * float(position.entry_price)
-        if price:
-            current_value = float(position.quantity) * price
-            unrealized_pnl = round(current_value - cost_basis - float(position.entry_fee), 2)
-            position_value = current_value
-        else:
-            position_value = cost_basis
-
-    # Equity reflects live USDT value: cash + current market value of position
-    total_equity = float(wallet.available_usdt) + position_value if wallet else 0.0
+    positions = list(position_result.scalars().all())
+    has_open_position = bool(positions)
+    unrealized_pnl = float(compute_unrealized_pnl(positions)) if positions else 0.0
+    fallback_balance = float(_resolve_initial_balance(strategy))
+    total_equity = float(compute_total_equity(wallet, positions)) if wallet else fallback_balance
+    open_exposure_by_symbol = build_open_exposure_by_symbol(positions) if positions else {}
+    portfolio_risk_status = build_portfolio_status(strategy, wallet, positions) if wallet else {}
+    daily_picks = await get_daily_picks(session, strategy)
+    focus_symbol = (
+        positions[0].symbol
+        if positions
+        else daily_picks[0].symbol if daily_picks
+        else resolve_primary_symbol(strategy)
+    )
 
     return StrategyWithStats(
         id=strategy.id,
@@ -121,11 +136,17 @@ async def _build_stats(session: AsyncSession, strategy: Strategy) -> StrategyWit
         description=strategy.description,
         config_json=strategy.config_json or {},
         is_active=strategy.is_active,
+        execution_mode=strategy.execution_mode,
+        primary_symbol=strategy.primary_symbol,
+        scan_universe_json=strategy.scan_universe_json or [],
+        top_pick_count=strategy.top_pick_count,
+        selection_hour_utc=strategy.selection_hour_utc,
+        max_concurrent_positions=strategy.max_concurrent_positions,
         **_strategy_ai_defaults(strategy),
         created_at=strategy.created_at,
         updated_at=strategy.updated_at,
-        available_usdt=float(wallet.available_usdt) if wallet else None,
-        initial_balance_usdt=float(wallet.initial_balance_usdt) if wallet else None,
+        available_usdt=float(wallet.available_usdt) if wallet else fallback_balance,
+        initial_balance_usdt=float(wallet.initial_balance_usdt) if wallet else fallback_balance,
         total_equity=total_equity,
         total_trades=total_trades,
         winning_trades=winning,
@@ -133,6 +154,24 @@ async def _build_stats(session: AsyncSession, strategy: Strategy) -> StrategyWit
         unrealized_pnl=unrealized_pnl,
         has_open_position=has_open_position,
         win_rate=round(winning / sell_count * 100, 2) if sell_count else 0.0,
+        focus_symbol=focus_symbol,
+        open_positions_count=len(positions),
+        open_exposure_by_symbol=open_exposure_by_symbol,
+        portfolio_risk_status=portfolio_risk_status,
+        daily_picks=[
+            DailyPickResponse(
+                rank=pick.rank,
+                symbol=pick.symbol,
+                score=round(float(pick.score), 4),
+                regime=pick.regime,
+                setup_type=pick.setup_type,
+                recommended_strategy=pick.recommended_strategy,
+                reason=pick.reason,
+                selected_at=pick.selected_at,
+            )
+            for pick in daily_picks
+        ],
+        selection_date=daily_picks[0].selection_date.isoformat() if daily_picks else None,
     )
 
 
@@ -149,12 +188,22 @@ async def create_strategy(
     session: AsyncSession = Depends(get_db_session),
 ):
     config_json = body.config_json or {}
+    scan_universe = [
+        str(symbol).upper()
+        for symbol in (body.scan_universe_json or config_json.get("scan_universe") or settings.default_scan_universe)
+    ]
     strategy = Strategy(
         id=str(uuid4()),
         name=body.name,
         description=body.description,
         config_json=config_json,
         is_active=body.is_active,
+        execution_mode=body.execution_mode or config_json.get("execution_mode") or "single_symbol",
+        primary_symbol=(body.primary_symbol or config_json.get("primary_symbol") or settings.default_symbol).upper(),
+        scan_universe_json=scan_universe,
+        top_pick_count=body.top_pick_count or config_json.get("top_pick_count") or settings.multi_coin_top_pick_count,
+        selection_hour_utc=body.selection_hour_utc if body.selection_hour_utc is not None else config_json.get("selection_hour_utc", settings.multi_coin_selection_hour_utc),
+        max_concurrent_positions=body.max_concurrent_positions or config_json.get("max_concurrent_positions") or settings.multi_coin_max_concurrent_positions,
         ai_enabled=body.ai_enabled or bool(config_json.get("ai_enabled", False)),
         ai_provider=settings.ai_provider,
         ai_strategy_key=body.ai_strategy_key or config_json.get("ai_strategy_key") or config_json.get("strategy_type"),
@@ -175,9 +224,10 @@ async def create_strategy(
         candle_interval=body.candle_interval or settings.default_candle_interval,
     )
     session.add(strategy)
+    await session.flush()
 
     # Create wallet
-    initial = Decimal(str(body.config_json.get("initial_balance", 1000)))
+    initial = _resolve_initial_balance(strategy)
     wallet = Wallet(
         id=str(uuid4()),
         strategy_id=strategy.id,
@@ -186,6 +236,19 @@ async def create_strategy(
         peak_equity_usdt=initial,
     )
     session.add(wallet)
+    session.add(
+        Snapshot(
+            strategy_id=strategy.id,
+            total_equity_usdt=initial,
+        )
+    )
+
+    if strategy.execution_mode == "multi_coin_shared_wallet":
+        try:
+            await ensure_daily_picks(session, strategy, interval=strategy.candle_interval, force_refresh=False)
+        except Exception:
+            logger.exception("failed to initialize daily picks strategy_id=%s", strategy.id)
+
     await session.commit()
     await session.refresh(strategy)
 
@@ -312,6 +375,10 @@ async def update_strategy(
         strategy.ai_max_tokens = body.ai_max_tokens
     if "ai_temperature" in updates and body.ai_temperature is not None:
         strategy.ai_temperature = Decimal(str(body.ai_temperature))
+    if "primary_symbol" in updates and strategy.primary_symbol:
+        strategy.primary_symbol = strategy.primary_symbol.upper()
+    if "scan_universe_json" in updates and strategy.scan_universe_json:
+        strategy.scan_universe_json = [str(symbol).upper() for symbol in strategy.scan_universe_json]
 
     # Handle start/stop
     manager = StrategyManager.get_instance()
@@ -339,5 +406,11 @@ async def delete_strategy(
         raise HTTPException(404, "Strategy not found")
 
     await StrategyManager.get_instance().stop_strategy(strategy_id)
+    await session.execute(delete(AICallLog).where(AICallLog.strategy_id == strategy_id))
+    await session.execute(delete(DailyPick).where(DailyPick.strategy_id == strategy_id))
+    await session.execute(delete(Snapshot).where(Snapshot.strategy_id == strategy_id))
+    await session.execute(delete(Trade).where(Trade.strategy_id == strategy_id))
+    await session.execute(delete(Position).where(Position.strategy_id == strategy_id))
+    await session.execute(delete(Wallet).where(Wallet.strategy_id == strategy_id))
     await session.delete(strategy)
     await session.commit()

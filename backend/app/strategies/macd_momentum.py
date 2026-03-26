@@ -34,7 +34,7 @@ class MACDMomentumStrategy(BaseStrategy):
         curr_hist = histogram[-1]
         prev_hist = histogram[-2]
 
-        symbol = "BTCUSDT"
+        symbol = str(indicators.get("symbol") or "BTCUSDT")
 
         # Bullish crossover: MACD crosses above signal line
         if (
