@@ -173,7 +173,7 @@ async def _run_migrations(connection) -> None:
     # ── Cleanup orphan rows ───────────────────────────────────────────
     orphan_tables = (
         "wallets", "positions", "trades", "snapshots",
-        "daily_picks", "ai_call_logs", "strategy_cycle_locks",
+        "daily_picks", "ai_call_logs", "symbol_evaluation_logs", "strategy_cycle_locks",
     )
     for table_name in orphan_tables:
         result = await connection.execute(text(f"PRAGMA table_info({table_name})"))
@@ -185,6 +185,41 @@ async def _run_migrations(connection) -> None:
             "WHERE strategy_id IS NOT NULL "
             "AND strategy_id NOT IN (SELECT id FROM strategies)"
         ))
+
+    await connection.execute(text(
+        """
+        CREATE TABLE IF NOT EXISTS symbol_evaluation_logs (
+            id VARCHAR(36) PRIMARY KEY,
+            strategy_id VARCHAR(36) NOT NULL,
+            cycle_id VARCHAR(36) NOT NULL,
+            symbol VARCHAR(24) NOT NULL,
+            stage VARCHAR(64) NOT NULL,
+            status VARCHAR(32) NOT NULL,
+            reason_code VARCHAR(64),
+            reason_text TEXT,
+            metrics_json JSON NOT NULL DEFAULT '{}',
+            context_json JSON NOT NULL DEFAULT '{}',
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(strategy_id) REFERENCES strategies(id) ON DELETE CASCADE
+        )
+        """
+    ))
+    await connection.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_symbol_evaluation_logs_strategy_id "
+        "ON symbol_evaluation_logs(strategy_id)"
+    ))
+    await connection.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_symbol_evaluation_logs_cycle_id "
+        "ON symbol_evaluation_logs(cycle_id)"
+    ))
+    await connection.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_symbol_evaluation_logs_symbol "
+        "ON symbol_evaluation_logs(symbol)"
+    ))
+    await connection.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_symbol_evaluation_logs_stage "
+        "ON symbol_evaluation_logs(stage)"
+    ))
 
 
 async def init_database() -> None:

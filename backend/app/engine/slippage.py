@@ -24,12 +24,20 @@ _TIERS: list[tuple[Decimal, Decimal, Decimal]] = [
 ]
 
 
+def estimate_slippage_rate(notional: Decimal) -> Decimal:
+    """Return the midpoint slippage rate for a notional tier."""
+    for threshold, lo, hi in _TIERS:
+        if notional < threshold:
+            return ((lo + hi) / 2).quantize(Decimal("0.0000001"))
+    return Decimal("0.001")
+
+
 def _pick_rate(notional: Decimal) -> Decimal:
     for threshold, lo, hi in _TIERS:
         if notional < threshold:
             if notional < Decimal("10000"):
                 # Deterministic midpoint for small orders
-                rate = (lo + hi) / 2
+                rate = estimate_slippage_rate(notional)
             else:
                 rate = Decimal(str(random.uniform(float(lo), float(hi))))
             return rate.quantize(Decimal("0.0000001"))

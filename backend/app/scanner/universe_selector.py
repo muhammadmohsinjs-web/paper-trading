@@ -13,12 +13,15 @@ from __future__ import annotations
 import logging
 import math
 import time
+import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 
 from app.config import DEFAULT_SCAN_UNIVERSE, get_settings
+from app.engine.tradability import evaluate_symbol_tradability
+from app.market.binance_rest import fetch_candles
 from app.market.data_store import DataStore
 from app.scanner.relative_strength import get_relative_strength
 from app.scanner.types import ActivityScore, CandidateInfo, UniverseSnapshot
@@ -51,6 +54,8 @@ class UniverseSelector:
 
         # Last snapshot for API observability
         self._last_snapshot: UniverseSnapshot | None = None
+        self._hydrated_symbols_at: dict[str, float] = {}
+        self._hydration_semaphore = asyncio.Semaphore(4)
 
     @classmethod
     def get_instance(cls) -> UniverseSelector:
@@ -196,6 +201,7 @@ class UniverseSelector:
 
         store = DataStore.get_instance()
         scores: list[ActivityScore] = []
+        candidate_evaluations: list[CandidateInfo] = []
 
         for candidate in self._candidate_pool:
             ticker = ticker_map.get(candidate.symbol)
@@ -205,6 +211,37 @@ class UniverseSelector:
             volume_24h = float(ticker.get("quoteVolume", 0))
             price = float(ticker.get("lastPrice", 0))
             price_change_pct = float(ticker.get("priceChangePercent", 0))
+
+            await self._ensure_symbol_candles(candidate.symbol, store)
+            candles = store.get_candles(candidate.symbol, "1h", 200)
+            closes = [c.close for c in candles]
+            highs = [c.high for c in candles]
+            lows = [c.low for c in candles]
+            volumes = [c.volume for c in candles]
+
+            tradability = evaluate_symbol_tradability(
+                symbol=candidate.symbol,
+                closes=closes,
+                highs=highs,
+                lows=lows,
+                volumes=volumes,
+                volume_24h_usdt=volume_24h,
+            )
+            candidate_evaluations.append(
+                CandidateInfo(
+                    symbol=candidate.symbol,
+                    price=price,
+                    volume_24h_usdt=volume_24h,
+                    price_change_pct_24h=price_change_pct,
+                    tradability_passed=tradability.passed,
+                    reason_codes=tradability.reason_codes,
+                    reason_text=tradability.reason_text,
+                    metrics=tradability.metrics.to_dict(),
+                    market_quality_score=tradability.market_quality_score,
+                )
+            )
+            if not tradability.passed:
+                continue
 
             # A. Volume Surge Score
             volume_surge = self._score_volume_surge(candidate.symbol, volume_24h, store)
@@ -239,6 +276,10 @@ class UniverseSelector:
                 liquidity_depth=round(liquidity_depth, 4),
                 relative_strength=round(relative_strength, 4),
                 volume_24h_usdt=volume_24h,
+                tradability_passed=True,
+                reason_codes=[],
+                reason_text="Symbol passed tradability and activity checks",
+                metrics=tradability.metrics.to_dict(),
             ))
 
         # Sort by score descending
@@ -277,6 +318,10 @@ class UniverseSelector:
                         liquidity_depth=0.0,
                         relative_strength=0.0,
                         volume_24h_usdt=0.0,
+                        tradability_passed=False,
+                        reason_codes=["RETAINED_OPEN_POSITION"],
+                        reason_text="Retained because strategy still has an open position",
+                        metrics={},
                     ))
                 retained_added.append(sym)
                 selected_symbols.add(sym)
@@ -298,6 +343,7 @@ class UniverseSelector:
             promoted=sorted(new_symbols),
             demoted=sorted(removed_symbols),
             scores=selected,
+            candidate_evaluations=candidate_evaluations,
         )
 
         logger.info(
@@ -309,6 +355,30 @@ class UniverseSelector:
             logger.info("universe_selector: promoted: %s", ", ".join(sorted(new_symbols)[:10]))
         if removed_symbols:
             logger.info("universe_selector: demoted: %s", ", ".join(sorted(removed_symbols)[:10]))
+
+    async def _ensure_symbol_candles(self, symbol: str, store: DataStore) -> None:
+        candles = store.get_candles(symbol, "1h", 48)
+        if len(candles) >= 48:
+            return
+
+        last_refresh = self._hydrated_symbols_at.get(symbol, 0.0)
+        now = time.monotonic()
+        if now - last_refresh < 900:
+            return
+
+        async with self._hydration_semaphore:
+            candles = store.get_candles(symbol, "1h", 48)
+            if len(candles) >= 48:
+                self._hydrated_symbols_at[symbol] = now
+                return
+            try:
+                fetched = await fetch_candles(symbol=symbol, interval="1h", limit=200)
+            except Exception:
+                logger.exception("universe_selector: failed to hydrate candles for symbol=%s", symbol)
+                self._hydrated_symbols_at[symbol] = now
+                return
+            store.set_candles(symbol, "1h", fetched)
+            self._hydrated_symbols_at[symbol] = now
 
     # ── Scoring Functions ───────────────────────────────────────
 

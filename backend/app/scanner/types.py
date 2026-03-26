@@ -18,6 +18,10 @@ class ActivityScore:
     liquidity_depth: float  # 24h USDT volume tier
     relative_strength: float  # Performance vs BTC
     volume_24h_usdt: float  # Raw 24h quote volume
+    tradability_passed: bool = True
+    reason_codes: list[str] = field(default_factory=list)
+    reason_text: str = ""
+    metrics: dict[str, Any] = field(default_factory=dict)
     is_new_entrant: bool = False  # Newly entered Active Universe
 
 
@@ -29,6 +33,11 @@ class CandidateInfo:
     price: float
     volume_24h_usdt: float  # 24h quote volume
     price_change_pct_24h: float  # 24h price change %
+    tradability_passed: bool = True
+    reason_codes: list[str] = field(default_factory=list)
+    reason_text: str = ""
+    metrics: dict[str, Any] = field(default_factory=dict)
+    market_quality_score: float = 0.0
 
 
 @dataclass
@@ -42,6 +51,17 @@ class UniverseSnapshot:
     promoted: list[str] = field(default_factory=list)  # Newly entered
     demoted: list[str] = field(default_factory=list)  # Removed
     scores: list[ActivityScore] = field(default_factory=list)
+    candidate_evaluations: list[CandidateInfo] = field(default_factory=list)
+
+
+@dataclass
+class SetupAuditNote:
+    symbol: str
+    setup_type: str
+    status: str
+    reason_code: str | None = None
+    reason_text: str = ""
+    metrics: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -56,6 +76,9 @@ class RankedSetup:
     recommended_strategy: str
     reason: str
     indicators: dict[str, Any] = field(default_factory=dict)
+    reason_code: str | None = None
+    reason_text: str = ""
+    movement_quality: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -70,6 +93,9 @@ class RankedSymbol:
     reason: str
     liquidity_usdt: float
     indicators: dict[str, Any] = field(default_factory=dict)
+    reason_code: str | None = None
+    reason_text: str = ""
+    movement_quality: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

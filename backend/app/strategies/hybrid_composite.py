@@ -85,7 +85,11 @@ class HybridCompositeStrategy(BaseStrategy):
         if context is None:
             return self.decide(indicators, has_position, available_usdt)
         result = compute_composite_score(
-            indicators, config=context.config, regime=context.regime
+            indicators,
+            config=context.config,
+            regime=context.regime,
+            market_quality_score=context.market_quality_score,
+            movement_quality_score=context.movement_quality_score,
         )
         if not has_position and result.signal == "BUY":
             return TradeSignal(
@@ -113,6 +117,8 @@ class HybridCompositeStrategy(BaseStrategy):
             indicators,
             config=config,
             regime=context.regime,
+            market_quality_score=context.market_quality_score,
+            movement_quality_score=context.movement_quality_score,
         )
 
         # Step 4: Exit evaluation (if has position)

@@ -34,6 +34,16 @@ class ScaledExitLevels:
     take_profit_3_price: Decimal  # 3:1 R:R
 
 
+@dataclass(frozen=True)
+class PositionSizingSafetyResult:
+    passed: bool
+    reason_code: str | None
+    reason_text: str
+    atr_pct: Decimal
+    stop_distance_pct: Decimal
+    take_profit_distance_pct: Decimal
+
+
 def calculate_exit_levels(
     *,
     entry_price: Decimal,
@@ -140,4 +150,62 @@ def calculate_position_size(
         confidence_multiplier=confidence_multiplier,
         streak_multiplier=streak_multiplier,
         entry_atr=atr.quantize(Decimal("0.00000001")),
+    )
+
+
+def evaluate_position_sizing_safety(
+    *,
+    entry_price: Decimal,
+    sizing: PositionSizingResult,
+    total_round_trip_cost_pct: Decimal,
+) -> PositionSizingSafetyResult:
+    if entry_price <= 0:
+        return PositionSizingSafetyResult(
+            passed=False,
+            reason_code="ATR_TOO_SMALL_FOR_SIZING",
+            reason_text="Entry price is invalid for sizing safety checks",
+            atr_pct=Decimal("0"),
+            stop_distance_pct=Decimal("0"),
+            take_profit_distance_pct=Decimal("0"),
+        )
+
+    atr_pct = (sizing.entry_atr / entry_price) * Decimal("100")
+    stop_distance_pct = sizing.stop_distance_pct * Decimal("100")
+    take_profit_distance_pct = ((sizing.take_profit_price - entry_price) / entry_price) * Decimal("100")
+
+    if atr_pct < Decimal("0.20"):
+        return PositionSizingSafetyResult(
+            passed=False,
+            reason_code="ATR_TOO_SMALL_FOR_SIZING",
+            reason_text="ATR percent is below the minimum safety floor",
+            atr_pct=atr_pct.quantize(Decimal("0.0001")),
+            stop_distance_pct=stop_distance_pct.quantize(Decimal("0.0001")),
+            take_profit_distance_pct=take_profit_distance_pct.quantize(Decimal("0.0001")),
+        )
+    if stop_distance_pct < total_round_trip_cost_pct * Decimal("1.25"):
+        return PositionSizingSafetyResult(
+            passed=False,
+            reason_code="STOP_DISTANCE_TOO_SMALL",
+            reason_text="Stop distance is too small relative to total trading costs",
+            atr_pct=atr_pct.quantize(Decimal("0.0001")),
+            stop_distance_pct=stop_distance_pct.quantize(Decimal("0.0001")),
+            take_profit_distance_pct=take_profit_distance_pct.quantize(Decimal("0.0001")),
+        )
+    if take_profit_distance_pct < total_round_trip_cost_pct * Decimal("1.5"):
+        return PositionSizingSafetyResult(
+            passed=False,
+            reason_code="TARGET_DISTANCE_TOO_SMALL",
+            reason_text="Take-profit distance is too small relative to total trading costs",
+            atr_pct=atr_pct.quantize(Decimal("0.0001")),
+            stop_distance_pct=stop_distance_pct.quantize(Decimal("0.0001")),
+            take_profit_distance_pct=take_profit_distance_pct.quantize(Decimal("0.0001")),
+        )
+
+    return PositionSizingSafetyResult(
+        passed=True,
+        reason_code=None,
+        reason_text="Sizing safety checks passed",
+        atr_pct=atr_pct.quantize(Decimal("0.0001")),
+        stop_distance_pct=stop_distance_pct.quantize(Decimal("0.0001")),
+        take_profit_distance_pct=take_profit_distance_pct.quantize(Decimal("0.0001")),
     )

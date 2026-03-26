@@ -111,6 +111,9 @@ class AIValidationResult:
     approved: bool | None = None
     confidence_adjustment: float | None = None
     reason: str | None = None
+    reason_code: str | None = None
+    fatal_flags: list[str] | None = None
+    evidence: dict[str, Any] | None = None
     usage: AIUsage | None = None
     raw_response: str | None = None
     error: str | None = None
@@ -189,16 +192,16 @@ def _system_prompt(strategy_key: str) -> str:
 
 def _validation_system_prompt(proposed_action: str) -> str:
     return (
-        "You are a crypto trade validator.\n"
+        "You are a crypto trade safety validator.\n"
         f"The algorithm already proposed a {proposed_action} trade.\n"
-        "You cannot create a new trade direction and you cannot reverse the action.\n"
         "Return exactly one JSON object with these fields:\n"
-        '{ "approve": true, "confidence_adjustment": -0.10, "reason": "short rationale" }\n'
+        '{ "approve": true, "reason_code": "SAFE", "reason": "short rationale", "fatal_flags": [], "evidence": {"summary": "short facts"} }\n'
         "Rules:\n"
         "- approve must be true or false.\n"
-        "- confidence_adjustment must be between -0.30 and 0.00.\n"
-        "- Use false only when the setup quality is poor or the risk is unacceptable.\n"
-        "- Never return a positive confidence adjustment.\n"
+        "- Use false when the setup is near-peg, ultra-low-volatility, fee-negative, has no expansion path, or has contradictory/low-quality structure.\n"
+        "- reason_code must be a compact machine-readable code.\n"
+        "- fatal_flags must be an array of strings.\n"
+        "- evidence must be a small JSON object summarizing the numeric facts you relied on.\n"
         "- Base your answer only on the supplied numeric context.\n"
         "- Do not add markdown or commentary outside the JSON object."
     )
@@ -412,12 +415,16 @@ def _coerce_confidence(payload: dict[str, Any]) -> float | None:
     return confidence
 
 
-def _coerce_validation_payload(payload: dict[str, Any]) -> tuple[bool, float, str]:
+def _coerce_validation_payload(payload: dict[str, Any]) -> tuple[bool, float, str, str | None, list[str], dict[str, Any]]:
     approved = bool(payload.get("approve", True))
     raw_adjustment = float(payload.get("confidence_adjustment", 0.0) or 0.0)
     adjustment = max(-0.30, min(0.0, raw_adjustment))
     reason = str(payload.get("reason", "")).strip() or "AI validation"
-    return approved, adjustment, reason
+    reason_code = str(payload.get("reason_code", "")).strip() or None
+    raw_flags = payload.get("fatal_flags") or []
+    fatal_flags = [str(flag).strip() for flag in raw_flags if str(flag).strip()] if isinstance(raw_flags, list) else []
+    evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+    return approved, adjustment, reason, reason_code, fatal_flags, evidence
 
 
 def _flat_market_metrics(
@@ -834,12 +841,15 @@ async def evaluate_ai_validation(
                         raise ValueError(f"{provider_label} validation response did not contain text content")
                     last_usage = _usage_from_response(response_json, provider)
                     payload = _extract_json_payload(raw_text)
-                    approved, confidence_adjustment, reason = _coerce_validation_payload(payload)
+                    approved, confidence_adjustment, reason, reason_code, fatal_flags, evidence = _coerce_validation_payload(payload)
                     return AIValidationResult(
                         status="validated" if approved else "rejected",
                         approved=approved,
                         confidence_adjustment=confidence_adjustment,
                         reason=reason,
+                        reason_code=reason_code,
+                        fatal_flags=fatal_flags,
+                        evidence=evidence,
                         usage=last_usage,
                         raw_response=raw_text,
                     )

@@ -139,10 +139,12 @@ async def lifespan(_: FastAPI):
         raise
     finally:
         shutdown_started_at = monotonic()
+        running_strategies = getattr(manager, "running_strategies", lambda: [])
+        active_strategies = list(running_strategies())
         logger.info(
             "shutdown initiated websocket_clients=%d running_strategies=%d",
             len(_ws_clients),
-            len(manager.running_strategies()),
+            len(active_strategies),
         )
         if _bootstrap_task is not None:
             _bootstrap_task.cancel()
@@ -161,7 +163,7 @@ async def lifespan(_: FastAPI):
         stopped_strategies = await _timed_shutdown_step(
             "strategies",
             manager.stop_all(),
-            count=len(manager.running_strategies()),
+            count=len(active_strategies),
         )
         await _timed_shutdown_step("database", dispose_database())
         total_elapsed_ms = (monotonic() - shutdown_started_at) * 1000

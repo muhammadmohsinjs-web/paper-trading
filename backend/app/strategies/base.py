@@ -41,6 +41,8 @@ class StrategyContext:
     strategy_type: str = ""
     config: dict[str, Any] = field(default_factory=dict)
     regime: str = ""
+    market_quality_score: float = 0.0
+    movement_quality_score: float = 0.0
 
     # AI configuration (resolved)
     ai_config: dict[str, Any] = field(default_factory=dict)

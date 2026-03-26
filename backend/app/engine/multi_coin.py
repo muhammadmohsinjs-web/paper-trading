@@ -3,11 +3,13 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.engine.evaluation_logging import build_symbol_evaluation_log
 from app.market.data_store import DataStore
 from app.models.daily_pick import DailyPick
 from app.models.position import Position
@@ -109,9 +111,11 @@ async def ensure_daily_picks(
     selection_date: date | None = None,
     force_refresh: bool = False,
     open_position_symbols: set[str] | None = None,
+    cycle_id: str | None = None,
 ) -> list[DailyPick]:
     chosen_date = selection_date or resolve_selection_date(strategy)
     now = datetime.now(timezone.utc)
+    evaluation_cycle_id = cycle_id or str(uuid4())
 
     if not force_refresh:
         existing = await get_daily_picks(session, strategy, selection_date=chosen_date)
@@ -140,11 +144,64 @@ async def ensure_daily_picks(
     if settings.dynamic_universe_enabled and not explicit_universe:
         retained = open_position_symbols or set()
         await scanner.resolve_symbols(retained_symbols=retained)
+        snapshot = UniverseSelector.get_instance().get_last_snapshot()
+        if snapshot is not None:
+            for candidate in snapshot.candidate_evaluations:
+                session.add(
+                    build_symbol_evaluation_log(
+                        strategy_id=strategy.id,
+                        cycle_id=evaluation_cycle_id,
+                        symbol=candidate.symbol,
+                        stage="universe_tradability",
+                        status="passed" if candidate.tradability_passed else "rejected",
+                        reason_code=(candidate.reason_codes[0] if candidate.reason_codes else None),
+                        reason_text=candidate.reason_text,
+                        metrics_json=candidate.metrics,
+                        context_json={
+                            "selection_date": chosen_date.isoformat(),
+                            "market_quality_score": candidate.market_quality_score,
+                        },
+                    )
+                )
+    elif explicit_universe:
+        for symbol in scanner.symbols:
+            session.add(
+                build_symbol_evaluation_log(
+                    strategy_id=strategy.id,
+                    cycle_id=evaluation_cycle_id,
+                    symbol=symbol,
+                    stage="universe_tradability",
+                    status="passed",
+                    reason_code="EXPLICIT_UNIVERSE_SYMBOL",
+                    reason_text="Symbol provided by explicit scan universe",
+                    context_json={"selection_date": chosen_date.isoformat()},
+                )
+            )
 
     ranked_symbols = scanner.rank_symbols(
         interval=interval or strategy.candle_interval or settings.default_candle_interval,
         max_results=resolve_top_pick_count(strategy),
     )
+    for audit in scanner.get_last_rank_audit():
+        session.add(
+            build_symbol_evaluation_log(
+                strategy_id=strategy.id,
+                cycle_id=evaluation_cycle_id,
+                symbol=str(audit.get("symbol") or ""),
+                stage="scanner",
+                status=str(audit.get("status") or "rejected"),
+                reason_code=audit.get("reason_code"),
+                reason_text=audit.get("reason_text"),
+                metrics_json={
+                    "score": audit.get("score"),
+                    "movement_quality": audit.get("movement_quality") or {},
+                },
+                context_json={
+                    "setup_type": audit.get("setup_type"),
+                    "selection_date": chosen_date.isoformat(),
+                },
+            )
+        )
 
     await session.execute(
         delete(DailyPick).where(

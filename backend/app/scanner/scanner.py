@@ -7,23 +7,22 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.config import DEFAULT_SCAN_UNIVERSE, get_settings
+from app.engine.tradability import build_tradability_metrics, evaluate_movement_quality
 from app.market.data_store import DataStore
 from app.market.indicators import compute_indicators
 from app.regime.classifier import RegimeClassifier
 from app.regime.types import MarketRegime
 from app.risk.portfolio import get_correlation
 from app.scanner.relative_strength import get_relative_strength
-from app.scanner.types import RankedSetup, RankedSymbol, ScanResult
+from app.scanner.types import RankedSetup, RankedSymbol, ScanResult, SetupAuditNote
 from app.scanner.universe_selector import UniverseSelector
 from app.selector.selector import REGIME_AFFINITY
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# Kept as fallback when dynamic selection is disabled
 DEFAULT_SYMBOLS = list(DEFAULT_SCAN_UNIVERSE)
-
-MIN_SETUP_SCORE = 0.20  # Lowered from 0.3 to catch moderate opportunities
+MIN_SETUP_SCORE = 0.20
 MIN_CANDLES_FOR_SCAN = 50
 
 
@@ -34,34 +33,23 @@ class OpportunityScanner:
         self.symbols = symbols or DEFAULT_SYMBOLS
         self._symbols_from_dynamic: bool = symbols is None
         self.regime_classifier = RegimeClassifier()
+        self._last_rank_audit: list[dict[str, Any]] = []
 
     async def resolve_symbols(
         self,
         *,
         retained_symbols: set[str] | None = None,
     ) -> list[str]:
-        """Resolve the active symbol list, using dynamic universe if enabled.
-
-        Call this before scan()/rank_symbols() to update self.symbols
-        with the dynamically selected universe.
-        """
         if not self._symbols_from_dynamic:
-            # Symbols were explicitly provided — don't override
             return self.symbols
-
         if not settings.dynamic_universe_enabled:
             return self.symbols
 
         selector = UniverseSelector.get_instance()
-        dynamic_symbols = await selector.get_active_universe(
-            retained_symbols=retained_symbols,
-        )
+        dynamic_symbols = await selector.get_active_universe(retained_symbols=retained_symbols)
         if dynamic_symbols:
             self.symbols = dynamic_symbols
-            logger.info(
-                "scanner: using dynamic universe (%d symbols)",
-                len(dynamic_symbols),
-            )
+            logger.info("scanner: using dynamic universe (%d symbols)", len(dynamic_symbols))
         else:
             logger.warning("scanner: dynamic universe returned empty, using defaults")
         return self.symbols
@@ -71,11 +59,6 @@ class OpportunityScanner:
         interval: str = "1h",
         max_results: int = 5,
     ) -> ScanResult:
-        """Scan all configured symbols for trading opportunities.
-
-        Reads from the DataStore (must have data for each symbol).
-        Returns ranked setups sorted by score.
-        """
         store = DataStore.get_instance()
         opportunities: list[RankedSetup] = []
         symbols_with_data = 0
@@ -94,18 +77,20 @@ class OpportunityScanner:
             highs = [c.high for c in candles]
             lows = [c.low for c in candles]
             volumes = [c.volume for c in candles]
-
-            indicators = compute_indicators(
-                closes, highs=highs, lows=lows, volumes=volumes
-            )
-
-            # Detect regime
+            indicators = compute_indicators(closes, highs=highs, lows=lows, volumes=volumes)
             regime_result = self.regime_classifier.classify(indicators)
             if symbol == "BTCUSDT":
                 overall_regime = regime_result.regime.value
 
-            # Detect setups
-            setups = self._detect_setups(symbol, indicators, regime_result.regime, closes=closes)
+            setups, _ = self._detect_setups(
+                symbol,
+                indicators,
+                regime_result.regime,
+                closes=closes,
+                highs=highs,
+                lows=lows,
+                volumes=volumes,
+            )
             if not setups:
                 symbols_no_setup.append(symbol)
             opportunities.extend(setups)
@@ -113,22 +98,24 @@ class OpportunityScanner:
         if symbols_no_data:
             logger.warning(
                 "scanner: %d/%d symbols skipped (insufficient data): %s",
-                len(symbols_no_data), len(self.symbols),
+                len(symbols_no_data),
+                len(self.symbols),
                 ", ".join(symbols_no_data[:10]),
             )
         if symbols_no_setup:
             logger.info(
                 "scanner: %d symbols had data but no setup detected: %s",
-                len(symbols_no_setup), ", ".join(symbols_no_setup[:10]),
+                len(symbols_no_setup),
+                ", ".join(symbols_no_setup[:10]),
             )
         logger.info(
             "scanner: %d symbols scanned, %d setups found, regime=%s",
-            symbols_with_data, len(opportunities), overall_regime,
+            symbols_with_data,
+            len(opportunities),
+            overall_regime,
         )
 
-        # Sort by score descending
         opportunities.sort(key=lambda s: s.score, reverse=True)
-
         return ScanResult(
             scanned_at=datetime.now(timezone.utc).isoformat(),
             symbols_scanned=symbols_with_data,
@@ -143,23 +130,30 @@ class OpportunityScanner:
         *,
         liquidity_floor_usdt: float | None = None,
     ) -> list[RankedSymbol]:
-        """Return one ranked candidate per symbol with diversification-aware ordering."""
         store = DataStore.get_instance()
         candidates: list[RankedSymbol] = []
         min_liquidity = float(
-            liquidity_floor_usdt
-            if liquidity_floor_usdt is not None
-            else settings.multi_coin_liquidity_floor_usdt
+            liquidity_floor_usdt if liquidity_floor_usdt is not None else settings.multi_coin_liquidity_floor_usdt
         )
 
         skipped_data: list[str] = []
         skipped_setup: list[str] = []
         skipped_liquidity: list[str] = []
+        audit_rows: list[dict[str, Any]] = []
 
         for symbol in self.symbols:
             candles = store.get_candles(symbol, interval, 200)
             if len(candles) < MIN_CANDLES_FOR_SCAN:
                 skipped_data.append(f"{symbol}({len(candles)})")
+                audit_rows.append({
+                    "symbol": symbol,
+                    "status": "skipped",
+                    "reason_code": "MARKET_DATA_INSUFFICIENT",
+                    "reason_text": "Insufficient candle history for scan",
+                    "setup_type": None,
+                    "movement_quality": {},
+                    "score": 0.0,
+                })
                 continue
 
             closes = [c.close for c in candles]
@@ -168,27 +162,47 @@ class OpportunityScanner:
             volumes = [c.volume for c in candles]
             indicators = compute_indicators(closes, highs=highs, lows=lows, volumes=volumes)
             regime_result = self.regime_classifier.classify(indicators)
-            setups = self._detect_setups(symbol, indicators, regime_result.regime, closes=closes)
+            setups, audits = self._detect_setups(
+                symbol,
+                indicators,
+                regime_result.regime,
+                closes=closes,
+                highs=highs,
+                lows=lows,
+                volumes=volumes,
+            )
             if not setups:
                 skipped_setup.append(symbol)
+                first_rejection = next((audit for audit in audits if audit.status == "rejected"), None)
+                audit_rows.append({
+                    "symbol": symbol,
+                    "status": "rejected",
+                    "reason_code": first_rejection.reason_code if first_rejection else "NO_QUALIFYING_SETUP",
+                    "reason_text": first_rejection.reason_text if first_rejection else "No setup passed movement-quality checks",
+                    "setup_type": first_rejection.setup_type if first_rejection else None,
+                    "movement_quality": first_rejection.metrics if first_rejection else {},
+                    "score": 0.0,
+                })
                 continue
 
             liquidity_usdt = self._estimate_liquidity_usdt(candles)
+            best_setup = max(setups, key=lambda setup: setup.score)
             if liquidity_usdt < min_liquidity:
                 skipped_liquidity.append(f"{symbol}(${liquidity_usdt:,.0f})")
+                audit_rows.append({
+                    "symbol": symbol,
+                    "status": "rejected",
+                    "reason_code": "LIQUIDITY_TOO_LOW",
+                    "reason_text": f"Liquidity ${liquidity_usdt:,.0f} below floor ${min_liquidity:,.0f}",
+                    "setup_type": best_setup.setup_type,
+                    "movement_quality": best_setup.movement_quality,
+                    "score": best_setup.score,
+                })
                 continue
 
-            best_setup = max(setups, key=lambda setup: setup.score)
-            regime_affinity = REGIME_AFFINITY.get(regime_result.regime, {}).get(
-                best_setup.recommended_strategy,
-                0.5,
-            )
+            regime_affinity = REGIME_AFFINITY.get(regime_result.regime, {}).get(best_setup.recommended_strategy, 0.5)
             liquidity_score = min(liquidity_usdt / max(min_liquidity * 4.0, 1.0), 1.0)
-            final_score = (
-                best_setup.score * 0.75
-                + regime_affinity * 0.15
-                + liquidity_score * 0.10
-            )
+            final_score = best_setup.score * 0.75 + regime_affinity * 0.15 + liquidity_score * 0.10
             candidates.append(
                 RankedSymbol(
                     symbol=symbol,
@@ -199,29 +213,33 @@ class OpportunityScanner:
                     reason=best_setup.reason,
                     liquidity_usdt=liquidity_usdt,
                     indicators=best_setup.indicators,
+                    reason_code=best_setup.reason_code,
+                    reason_text=best_setup.reason_text or best_setup.reason,
+                    movement_quality=best_setup.movement_quality,
                 )
             )
+            audit_rows.append({
+                "symbol": symbol,
+                "status": "qualified",
+                "reason_code": best_setup.reason_code,
+                "reason_text": best_setup.reason_text or best_setup.reason,
+                "setup_type": best_setup.setup_type,
+                "movement_quality": best_setup.movement_quality,
+                "score": best_setup.score,
+            })
 
         if skipped_data:
-            logger.warning(
-                "rank_symbols: %d symbols skipped (no data): %s",
-                len(skipped_data), ", ".join(skipped_data[:10]),
-            )
+            logger.warning("rank_symbols: %d symbols skipped (no data): %s", len(skipped_data), ", ".join(skipped_data[:10]))
         if skipped_setup:
-            logger.info(
-                "rank_symbols: %d symbols skipped (no setup): %s",
-                len(skipped_setup), ", ".join(skipped_setup[:10]),
-            )
+            logger.info("rank_symbols: %d symbols skipped (no setup): %s", len(skipped_setup), ", ".join(skipped_setup[:10]))
         if skipped_liquidity:
             logger.info(
                 "rank_symbols: %d symbols skipped (low liquidity, floor=$%s): %s",
-                len(skipped_liquidity), f"{min_liquidity:,.0f}",
+                len(skipped_liquidity),
+                f"{min_liquidity:,.0f}",
                 ", ".join(skipped_liquidity[:10]),
             )
-        logger.info(
-            "rank_symbols: %d candidates from %d symbols scanned",
-            len(candidates), len(self.symbols),
-        )
+        logger.info("rank_symbols: %d candidates from %d symbols scanned", len(candidates), len(self.symbols))
 
         candidates.sort(key=lambda item: item.score, reverse=True)
 
@@ -250,10 +268,17 @@ class OpportunityScanner:
                     reason=selected_candidate.reason,
                     liquidity_usdt=selected_candidate.liquidity_usdt,
                     indicators=selected_candidate.indicators,
+                    reason_code=selected_candidate.reason_code,
+                    reason_text=selected_candidate.reason_text,
+                    movement_quality=selected_candidate.movement_quality,
                 )
             )
 
+        self._last_rank_audit = audit_rows
         return selected
+
+    def get_last_rank_audit(self) -> list[dict[str, Any]]:
+        return list(self._last_rank_audit)
 
     def _detect_setups(
         self,
@@ -261,15 +286,29 @@ class OpportunityScanner:
         indicators: dict[str, Any],
         regime: MarketRegime,
         closes: list[float] | None = None,
-    ) -> list[RankedSetup]:
-        """Detect trading setups for a single symbol.
-
-        Checks 12 setup types covering extreme, moderate, and trend conditions
-        so the scanner can find opportunities in any market environment.
-        """
+        highs: list[float] | None = None,
+        lows: list[float] | None = None,
+        volumes: list[float] | None = None,
+    ) -> tuple[list[RankedSetup], list[SetupAuditNote]]:
         setups: list[RankedSetup] = []
+        audits: list[SetupAuditNote] = []
+        closes = closes or []
+        highs = highs or []
+        lows = lows or []
+        volumes = volumes or []
 
-        # Extract indicator values
+        recent_quote_volumes = [close * volume for close, volume in zip(closes[-24:], volumes[-24:])]
+        volume_24h_usdt = sum(recent_quote_volumes)
+        tradability_metrics = build_tradability_metrics(
+            symbol=symbol,
+            closes=closes,
+            highs=highs,
+            lows=lows,
+            volumes=volumes,
+            volume_24h_usdt=volume_24h_usdt,
+            indicators=indicators,
+        )
+
         rsi_values = indicators.get("rsi", [])
         latest_rsi = rsi_values[-1] if rsi_values else None
 
@@ -286,10 +325,7 @@ class OpportunityScanner:
         previous_close = indicators.get("previous_close")
 
         macd_data = indicators.get("macd", ([], [], []))
-        macd_line, macd_signal, macd_hist = (
-            macd_data if isinstance(macd_data, tuple) and len(macd_data) == 3
-            else ([], [], [])
-        )
+        macd_line, macd_signal, macd_hist = macd_data if isinstance(macd_data, tuple) and len(macd_data) == 3 else ([], [], [])
 
         adx_values = indicators.get("adx", [])
         latest_adx = adx_values[-1] if adx_values else None
@@ -297,71 +333,119 @@ class OpportunityScanner:
         ema_12 = indicators.get("ema_12", [])
         ema_26 = indicators.get("ema_26", [])
 
-        atr_values = indicators.get("atr", [])
+        def reject(setup_type: str, reason_code: str, reason_text: str, metrics: dict[str, Any] | None = None) -> None:
+            audits.append(
+                SetupAuditNote(
+                    symbol=symbol,
+                    setup_type=setup_type,
+                    status="rejected",
+                    reason_code=reason_code,
+                    reason_text=reason_text,
+                    metrics=metrics or {},
+                )
+            )
 
-        # ── Setup 1: RSI Oversold (relaxed from <30 to <35) ──
+        def qualify(
+            *,
+            setup_type: str,
+            signal: str,
+            score: float,
+            recommended_strategy: str,
+            reason: str,
+            indicators_payload: dict[str, Any],
+            require_volume: bool = True,
+            extra_checks: list[tuple[bool, str, str]] | None = None,
+        ) -> None:
+            direction = "BUY" if signal == "BUY" else "SELL"
+            movement = evaluate_movement_quality(direction=direction, metrics=tradability_metrics, require_volume=require_volume)
+            if not movement.passed:
+                reject(setup_type, movement.reason_code or "SETUP_NO_ABSOLUTE_EXPANSION", movement.reason_text, movement.metrics)
+                return
+            for passed, reason_code, reason_text in extra_checks or []:
+                if not passed:
+                    reject(setup_type, reason_code, reason_text, movement.metrics)
+                    return
+            if score < MIN_SETUP_SCORE:
+                reject(setup_type, "SETUP_SCORE_TOO_LOW", "Setup score below minimum threshold", movement.metrics)
+                return
+            setups.append(
+                RankedSetup(
+                    symbol=symbol,
+                    score=score,
+                    setup_type=setup_type,
+                    signal=signal,
+                    regime=regime.value,
+                    recommended_strategy=recommended_strategy,
+                    reason=reason,
+                    indicators=indicators_payload,
+                    reason_code="QUALIFIED_SETUP",
+                    reason_text=reason,
+                    movement_quality=movement.to_dict(),
+                )
+            )
+            audits.append(
+                SetupAuditNote(
+                    symbol=symbol,
+                    setup_type=setup_type,
+                    status="qualified",
+                    reason_code="QUALIFIED_SETUP",
+                    reason_text=reason,
+                    metrics=movement.metrics,
+                )
+            )
+
         if latest_rsi is not None and latest_rsi < 35:
             strength = max(0, (35 - latest_rsi) / 35)
             regime_align = 1.0 if regime == MarketRegime.RANGING else 0.6
             vol_confirm = min(latest_volume_ratio / 1.0, 1.0) if latest_volume_ratio else 0.5
             score = self._setup_score(strength, regime_align, vol_confirm, 0.5, symbol)
-            if score >= MIN_SETUP_SCORE:
-                setups.append(RankedSetup(
-                    symbol=symbol,
-                    score=score,
-                    setup_type="rsi_oversold",
-                    signal="BUY",
-                    regime=regime.value,
-                    recommended_strategy="rsi_mean_reversion",
-                    reason=f"RSI oversold at {latest_rsi:.1f}",
-                    indicators={"rsi": round(latest_rsi, 2), "volume_ratio": round(latest_volume_ratio or 0, 2)},
-                ))
+            qualify(
+                setup_type="rsi_oversold",
+                signal="BUY",
+                score=score,
+                recommended_strategy="rsi_mean_reversion",
+                reason=f"RSI oversold at {latest_rsi:.1f}",
+                indicators_payload={"rsi": round(latest_rsi, 2), "volume_ratio": round(latest_volume_ratio or 0, 2)},
+                require_volume=False,
+            )
 
-        # ── Setup 2: RSI Overbought (relaxed from >70 to >65) ──
         if latest_rsi is not None and latest_rsi > 65:
             strength = max(0, (latest_rsi - 65) / 35)
             regime_align = 1.0 if regime == MarketRegime.RANGING else 0.6
             vol_confirm = min(latest_volume_ratio / 1.0, 1.0) if latest_volume_ratio else 0.5
             score = self._setup_score(strength, regime_align, vol_confirm, 0.5, symbol)
-            if score >= MIN_SETUP_SCORE:
-                setups.append(RankedSetup(
-                    symbol=symbol,
-                    score=score,
-                    setup_type="rsi_overbought",
-                    signal="SELL",
-                    regime=regime.value,
-                    recommended_strategy="rsi_mean_reversion",
-                    reason=f"RSI overbought at {latest_rsi:.1f}",
-                    indicators={"rsi": round(latest_rsi, 2)},
-                ))
+            qualify(
+                setup_type="rsi_overbought",
+                signal="SELL",
+                score=score,
+                recommended_strategy="rsi_mean_reversion",
+                reason=f"RSI overbought at {latest_rsi:.1f}",
+                indicators_payload={"rsi": round(latest_rsi, 2)},
+                require_volume=False,
+            )
 
-        # ── Setup 3: Bollinger Band squeeze (relaxed from 80% to 70%) ──
-        if bb_upper and bb_middle and bb_lower and bb_middle[-1] != 0:
+        if bb_upper and bb_middle and bb_lower and bb_middle[-1] != 0 and len(bb_upper) >= 50:
             current_width = (bb_upper[-1] - bb_lower[-1]) / bb_middle[-1]
-            if len(bb_upper) >= 50:
-                widths = [
-                    (bb_upper[i] - bb_lower[i]) / bb_middle[i]
-                    for i in range(max(0, len(bb_upper) - 50), len(bb_upper))
-                    if bb_middle[i] != 0
-                ]
-                pct_rank = sum(1 for w in widths if w > current_width) / len(widths)
-                if pct_rank > 0.70:  # Current width is in lowest 30%
-                    strength = pct_rank
-                    vol_confirm = min(latest_volume_ratio / 1.2, 1.0) if latest_volume_ratio and latest_volume_ratio > 1.2 else 0.4
-                    score = self._setup_score(strength, 0.7, vol_confirm, 0.6, symbol)
-                    if score >= MIN_SETUP_SCORE:
-                        setups.append(RankedSetup(
-                            symbol=symbol,
-                            score=score,
-                            setup_type="bb_squeeze",
-                            signal="BUY",
-                            regime=regime.value,
-                            recommended_strategy="bollinger_bounce",
-                            reason=f"BB squeeze detected (width percentile: {(1-pct_rank)*100:.0f}%)",
-                            indicators={"bb_width": round(current_width, 4), "width_percentile": round((1-pct_rank)*100, 1)},
-                        ))
+            widths = [
+                (bb_upper[i] - bb_lower[i]) / bb_middle[i]
+                for i in range(max(0, len(bb_upper) - 50), len(bb_upper))
+                if bb_middle[i] != 0
+            ]
+            pct_rank = sum(1 for w in widths if w > current_width) / len(widths)
+            if pct_rank > 0.70:
+                strength = pct_rank
+                vol_confirm = min(latest_volume_ratio / 1.2, 1.0) if latest_volume_ratio and latest_volume_ratio > 1.2 else 0.4
+                score = self._setup_score(strength, 0.7, vol_confirm, 0.6, symbol)
+                qualify(
+                    setup_type="bb_squeeze",
+                    signal="BUY",
+                    score=score,
+                    recommended_strategy="bollinger_bounce",
+                    reason=f"BB squeeze detected (width percentile: {(1 - pct_rank) * 100:.0f}%)",
+                    indicators_payload={"bb_width": round(current_width, 4), "width_percentile": round((1 - pct_rank) * 100, 1)},
+                    extra_checks=[(tradability_metrics.bb_width_pct >= 0.80, "SETUP_RANGE_TOO_SMALL", "Bollinger width is too narrow")],
+                )
 
-        # ── Setup 4: SMA crossover proximity (relaxed from 0.5% to 1.0%) ──
         if len(sma_short) >= 2 and len(sma_long) >= 2:
             gap_pct = abs(sma_short[-1] - sma_long[-1]) / sma_long[-1] * 100 if sma_long[-1] != 0 else 999
             if gap_pct < 1.0:
@@ -372,203 +456,177 @@ class OpportunityScanner:
                     trend_align = 1.0 if regime in (MarketRegime.TRENDING_UP, MarketRegime.RANGING) else 0.4
                     strength = 0.8 if recent_golden_cross else 0.6
                     score = self._setup_score(strength, trend_align, vol_confirm, 0.6, symbol)
-                    if score >= MIN_SETUP_SCORE:
-                        reason = "SMA golden cross just occurred" if recent_golden_cross else f"SMA approaching golden cross (gap: {gap_pct:.2f}%)"
-                        setups.append(RankedSetup(
-                            symbol=symbol,
-                            score=score,
-                            setup_type="sma_crossover_proximity",
-                            signal="BUY",
-                            regime=regime.value,
-                            recommended_strategy="sma_crossover",
-                            reason=reason,
-                            indicators={"sma_gap_pct": round(gap_pct, 3)},
-                        ))
-
-        # ── Setup 5: Volume breakout (relaxed from >2.0 to >1.5) ──
-        if latest_volume_ratio is not None and latest_volume_ratio > 1.5:
-            if latest_close and previous_close:
-                price_up = latest_close > previous_close
-                strength = min((latest_volume_ratio - 1.5) / 2.5, 1.0)
-                trend_align = 1.0 if regime in (MarketRegime.TRENDING_UP,) and price_up else 0.5
-                score = self._setup_score(strength, trend_align, 1.0, 0.7, symbol)
-                if score >= MIN_SETUP_SCORE:
-                    setups.append(RankedSetup(
-                        symbol=symbol,
+                    reason = "SMA golden cross just occurred" if recent_golden_cross else f"SMA approaching golden cross (gap: {gap_pct:.2f}%)"
+                    qualify(
+                        setup_type="sma_crossover_proximity",
+                        signal="BUY",
                         score=score,
-                        setup_type="volume_breakout",
-                        signal="BUY" if price_up else "SELL",
-                        regime=regime.value,
-                        recommended_strategy="macd_momentum",
-                        reason=f"Volume breakout ({latest_volume_ratio:.1f}x avg) with price {'up' if price_up else 'down'}",
-                        indicators={"volume_ratio": round(latest_volume_ratio, 2)},
-                    ))
+                        recommended_strategy="sma_crossover",
+                        reason=reason,
+                        indicators_payload={"sma_gap_pct": round(gap_pct, 3)},
+                        extra_checks=[
+                            (abs(tradability_metrics.short_sma_slope_pct_3) >= 0.10, "SETUP_SLOPE_TOO_WEAK", "Short SMA slope is too weak"),
+                            (tradability_metrics.close_vs_close_5_pct >= 0.25, "SETUP_GAP_ONLY", "Cross is proximity-only without enough price movement"),
+                            (tradability_metrics.range_pct_20 >= 0.80, "SETUP_RANGE_TOO_SMALL", "Range floor not met for crossover setup"),
+                        ],
+                    )
 
-        # ── Setup 6: MACD bullish crossover ──
+        if latest_volume_ratio is not None and latest_volume_ratio > 1.5 and latest_close and previous_close:
+            price_up = latest_close > previous_close
+            strength = min((latest_volume_ratio - 1.5) / 2.5, 1.0)
+            trend_align = 1.0 if regime in (MarketRegime.TRENDING_UP,) and price_up else 0.5
+            score = self._setup_score(strength, trend_align, 1.0, 0.7, symbol)
+            qualify(
+                setup_type="volume_breakout",
+                signal="BUY" if price_up else "SELL",
+                score=score,
+                recommended_strategy="macd_momentum",
+                reason=f"Volume breakout ({latest_volume_ratio:.1f}x avg) with price {'up' if price_up else 'down'}",
+                indicators_payload={"volume_ratio": round(latest_volume_ratio, 2)},
+            )
+
         if len(macd_line) >= 2 and len(macd_signal) >= 2:
             macd_cross_up = macd_line[-1] > macd_signal[-1] and macd_line[-2] <= macd_signal[-2]
             macd_cross_down = macd_line[-1] < macd_signal[-1] and macd_line[-2] >= macd_signal[-2]
             if macd_cross_up or macd_cross_down:
                 signal = "BUY" if macd_cross_up else "SELL"
-                hist_val = macd_hist[-1] if macd_hist else 0
+                hist_val = macd_hist[-1] if macd_hist else 0.0
                 strength = min(abs(hist_val) / (abs(macd_signal[-1]) + 1e-9), 1.0) * 0.7
                 regime_align = 0.8 if regime in (MarketRegime.TRENDING_UP, MarketRegime.RANGING) else 0.5
                 vol_confirm = min(latest_volume_ratio / 1.0, 1.0) if latest_volume_ratio else 0.5
                 score = self._setup_score(max(strength, 0.4), regime_align, vol_confirm, 0.6, symbol)
-                if score >= MIN_SETUP_SCORE:
-                    direction = "bullish" if macd_cross_up else "bearish"
-                    setups.append(RankedSetup(
-                        symbol=symbol,
-                        score=score,
-                        setup_type="macd_crossover",
-                        signal=signal,
-                        regime=regime.value,
-                        recommended_strategy="macd_momentum",
-                        reason=f"MACD {direction} crossover (hist: {hist_val:.4f})",
-                        indicators={
-                            "macd": round(macd_line[-1], 4),
-                            "macd_signal": round(macd_signal[-1], 4),
-                            "macd_hist": round(hist_val, 4),
-                        },
-                    ))
+                hist_pct = abs(hist_val) / latest_close * 100 if latest_close else 0.0
+                direction = "bullish" if macd_cross_up else "bearish"
+                qualify(
+                    setup_type="macd_crossover",
+                    signal=signal,
+                    score=score,
+                    recommended_strategy="macd_momentum",
+                    reason=f"MACD {direction} crossover (hist: {hist_val:.4f})",
+                    indicators_payload={
+                        "macd": round(macd_line[-1], 4),
+                        "macd_signal": round(macd_signal[-1], 4),
+                        "macd_hist": round(hist_val, 4),
+                    },
+                    extra_checks=[(hist_pct >= 0.02, "SETUP_NO_ABSOLUTE_EXPANSION", "MACD histogram magnitude is too small")],
+                )
 
-        # ── Setup 7: MACD histogram momentum (growing for 3+ bars) ──
         if len(macd_hist) >= 4:
             hist_growing = all(macd_hist[-i] > macd_hist[-i - 1] for i in range(1, 4))
             hist_shrinking = all(macd_hist[-i] < macd_hist[-i - 1] for i in range(1, 4))
             if hist_growing and macd_hist[-1] > 0:
                 strength = min(abs(macd_hist[-1]) * 100, 1.0) * 0.6
                 score = self._setup_score(max(strength, 0.35), 0.7, 0.6, 0.7, symbol)
-                if score >= MIN_SETUP_SCORE:
-                    setups.append(RankedSetup(
-                        symbol=symbol,
-                        score=score,
-                        setup_type="macd_momentum_rising",
-                        signal="BUY",
-                        regime=regime.value,
-                        recommended_strategy="macd_momentum",
-                        reason=f"MACD histogram rising for 3+ bars ({macd_hist[-1]:.4f})",
-                        indicators={"macd_hist": round(macd_hist[-1], 4)},
-                    ))
+                qualify(
+                    setup_type="macd_momentum_rising",
+                    signal="BUY",
+                    score=score,
+                    recommended_strategy="macd_momentum",
+                    reason=f"MACD histogram rising for 3+ bars ({macd_hist[-1]:.4f})",
+                    indicators_payload={"macd_hist": round(macd_hist[-1], 4)},
+                )
             elif hist_shrinking and macd_hist[-1] < 0:
                 strength = min(abs(macd_hist[-1]) * 100, 1.0) * 0.6
                 score = self._setup_score(max(strength, 0.35), 0.7, 0.6, 0.7, symbol)
-                if score >= MIN_SETUP_SCORE:
-                    setups.append(RankedSetup(
-                        symbol=symbol,
-                        score=score,
-                        setup_type="macd_momentum_falling",
-                        signal="SELL",
-                        regime=regime.value,
-                        recommended_strategy="macd_momentum",
-                        reason=f"MACD histogram falling for 3+ bars ({macd_hist[-1]:.4f})",
-                        indicators={"macd_hist": round(macd_hist[-1], 4)},
-                    ))
+                qualify(
+                    setup_type="macd_momentum_falling",
+                    signal="SELL",
+                    score=score,
+                    recommended_strategy="macd_momentum",
+                    reason=f"MACD histogram falling for 3+ bars ({macd_hist[-1]:.4f})",
+                    indicators_payload={"macd_hist": round(macd_hist[-1], 4)},
+                )
 
-        # ── Setup 8: EMA trend alignment (price > EMA12 > EMA26 = strong uptrend) ──
         if latest_close and len(ema_12) >= 2 and len(ema_26) >= 2:
             bullish_stack = latest_close > ema_12[-1] > ema_26[-1]
             bearish_stack = latest_close < ema_12[-1] < ema_26[-1]
             if bullish_stack:
                 ema_spread = (ema_12[-1] - ema_26[-1]) / ema_26[-1] * 100
-                strength = min(ema_spread / 3.0, 1.0)  # 3% spread = max strength
-                # Bonus for widening spread (momentum increasing)
+                strength = min(ema_spread / 3.0, 1.0)
                 prev_spread = (ema_12[-2] - ema_26[-2]) / ema_26[-2] * 100 if ema_26[-2] != 0 else 0
                 widening = ema_spread > prev_spread
                 trend_align = 0.9 if regime == MarketRegime.TRENDING_UP else 0.5
                 vol_confirm = min(latest_volume_ratio / 0.8, 1.0) if latest_volume_ratio else 0.5
                 score = self._setup_score(max(strength, 0.3), trend_align, vol_confirm, 0.8, symbol)
-                if score >= MIN_SETUP_SCORE:
-                    setups.append(RankedSetup(
-                        symbol=symbol,
-                        score=score,
-                        setup_type="ema_trend_bullish",
-                        signal="BUY",
-                        regime=regime.value,
-                        recommended_strategy="sma_crossover",
-                        reason=f"Bullish EMA stack (spread: {ema_spread:.2f}%, {'widening' if widening else 'steady'})",
-                        indicators={"ema_spread_pct": round(ema_spread, 3), "widening": widening},
-                    ))
+                qualify(
+                    setup_type="ema_trend_bullish",
+                    signal="BUY",
+                    score=score,
+                    recommended_strategy="sma_crossover",
+                    reason=f"Bullish EMA stack (spread: {ema_spread:.2f}%, {'widening' if widening else 'steady'})",
+                    indicators_payload={"ema_spread_pct": round(ema_spread, 3), "widening": widening},
+                )
             elif bearish_stack:
                 ema_spread = (ema_26[-1] - ema_12[-1]) / ema_26[-1] * 100
                 strength = min(ema_spread / 3.0, 1.0)
                 trend_align = 0.9 if regime == MarketRegime.TRENDING_DOWN else 0.5
                 vol_confirm = min(latest_volume_ratio / 0.8, 1.0) if latest_volume_ratio else 0.5
                 score = self._setup_score(max(strength, 0.3), trend_align, vol_confirm, 0.8, symbol)
-                if score >= MIN_SETUP_SCORE:
-                    setups.append(RankedSetup(
-                        symbol=symbol,
-                        score=score,
-                        setup_type="ema_trend_bearish",
-                        signal="SELL",
-                        regime=regime.value,
-                        recommended_strategy="sma_crossover",
-                        reason=f"Bearish EMA stack (spread: {ema_spread:.2f}%)",
-                        indicators={"ema_spread_pct": round(ema_spread, 3)},
-                    ))
+                qualify(
+                    setup_type="ema_trend_bearish",
+                    signal="SELL",
+                    score=score,
+                    recommended_strategy="sma_crossover",
+                    reason=f"Bearish EMA stack (spread: {ema_spread:.2f}%)",
+                    indicators_payload={"ema_spread_pct": round(ema_spread, 3)},
+                )
 
-        # ── Setup 9: ADX strong trend ──
-        if latest_adx is not None and latest_adx > 25:
-            # ADX > 25 = strong trend. Determine direction from EMA or SMA
-            if len(ema_12) >= 1 and len(ema_26) >= 1:
-                trend_up = ema_12[-1] > ema_26[-1]
-                signal = "BUY" if trend_up else "SELL"
-                strength = min((latest_adx - 25) / 25, 1.0)  # ADX 50 = max strength
-                regime_align = 0.9 if regime in (MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN) else 0.5
-                vol_confirm = min(latest_volume_ratio / 1.0, 1.0) if latest_volume_ratio else 0.5
-                score = self._setup_score(max(strength, 0.35), regime_align, vol_confirm, 0.8, symbol)
-                if score >= MIN_SETUP_SCORE:
-                    setups.append(RankedSetup(
-                        symbol=symbol,
-                        score=score,
-                        setup_type="adx_strong_trend",
-                        signal=signal,
-                        regime=regime.value,
-                        recommended_strategy="macd_momentum" if trend_up else "rsi_mean_reversion",
-                        reason=f"ADX strong trend at {latest_adx:.1f} ({'bullish' if trend_up else 'bearish'})",
-                        indicators={"adx": round(latest_adx, 2)},
-                    ))
+        if latest_adx is not None and latest_adx > 25 and len(ema_12) >= 1 and len(ema_26) >= 1:
+            trend_up = ema_12[-1] > ema_26[-1]
+            signal = "BUY" if trend_up else "SELL"
+            strength = min((latest_adx - 25) / 25, 1.0)
+            regime_align = 0.9 if regime in (MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN) else 0.5
+            vol_confirm = min(latest_volume_ratio / 1.0, 1.0) if latest_volume_ratio else 0.5
+            score = self._setup_score(max(strength, 0.35), regime_align, vol_confirm, 0.8, symbol)
+            qualify(
+                setup_type="adx_strong_trend",
+                signal=signal,
+                score=score,
+                recommended_strategy="macd_momentum" if trend_up else "rsi_mean_reversion",
+                reason=f"ADX strong trend at {latest_adx:.1f} ({'bullish' if trend_up else 'bearish'})",
+                indicators_payload={"adx": round(latest_adx, 2)},
+                extra_checks=[
+                    (abs(tradability_metrics.ema_spread_pct) >= 0.20, "SETUP_SLOPE_TOO_WEAK", "EMA spread is too small for a trend setup"),
+                    (abs(tradability_metrics.directional_displacement_pct_10) >= 0.50, "SETUP_NO_ABSOLUTE_EXPANSION", "Directional displacement is too small for ADX trend"),
+                    (tradability_metrics.range_pct_20 >= 1.00, "SETUP_RANGE_TOO_SMALL", "Trend setup needs at least 1.00% range"),
+                ],
+            )
 
-        # ── Setup 10: Bollinger Band mean reversion (price touching lower/upper band) ──
         if bb_upper and bb_lower and latest_close and bb_middle:
             bb_width = bb_upper[-1] - bb_lower[-1]
             if bb_width > 0:
-                # %B: 0 = at lower band, 1 = at upper band
                 pct_b = (latest_close - bb_lower[-1]) / bb_width
-                if pct_b <= 0.05:  # Price at or below lower band
+                if pct_b <= 0.05:
                     strength = max(0, (0.1 - pct_b) / 0.1) * 0.8
                     regime_align = 1.0 if regime == MarketRegime.RANGING else 0.6
                     vol_confirm = min(latest_volume_ratio / 1.0, 1.0) if latest_volume_ratio else 0.5
                     score = self._setup_score(max(strength, 0.4), regime_align, vol_confirm, 0.5, symbol)
-                    if score >= MIN_SETUP_SCORE:
-                        setups.append(RankedSetup(
-                            symbol=symbol,
-                            score=score,
-                            setup_type="bb_lower_touch",
-                            signal="BUY",
-                            regime=regime.value,
-                            recommended_strategy="bollinger_bounce",
-                            reason=f"Price touching lower BB (%B: {pct_b:.2f})",
-                            indicators={"pct_b": round(pct_b, 3), "bb_width": round(bb_width, 4)},
-                        ))
-                elif pct_b >= 0.95:  # Price at or above upper band
+                    qualify(
+                        setup_type="bb_lower_touch",
+                        signal="BUY",
+                        score=score,
+                        recommended_strategy="bollinger_bounce",
+                        reason=f"Price touching lower BB (%B: {pct_b:.2f})",
+                        indicators_payload={"pct_b": round(pct_b, 3), "bb_width": round(bb_width, 4)},
+                        require_volume=False,
+                        extra_checks=[(tradability_metrics.bb_width_pct >= 0.80, "SETUP_RANGE_TOO_SMALL", "Bollinger width is too narrow")],
+                    )
+                elif pct_b >= 0.95:
                     strength = max(0, (pct_b - 0.9) / 0.1) * 0.8
                     regime_align = 1.0 if regime == MarketRegime.RANGING else 0.6
                     vol_confirm = min(latest_volume_ratio / 1.0, 1.0) if latest_volume_ratio else 0.5
                     score = self._setup_score(max(strength, 0.4), regime_align, vol_confirm, 0.5, symbol)
-                    if score >= MIN_SETUP_SCORE:
-                        setups.append(RankedSetup(
-                            symbol=symbol,
-                            score=score,
-                            setup_type="bb_upper_touch",
-                            signal="SELL",
-                            regime=regime.value,
-                            recommended_strategy="bollinger_bounce",
-                            reason=f"Price touching upper BB (%B: {pct_b:.2f})",
-                            indicators={"pct_b": round(pct_b, 3), "bb_width": round(bb_width, 4)},
-                        ))
+                    qualify(
+                        setup_type="bb_upper_touch",
+                        signal="SELL",
+                        score=score,
+                        recommended_strategy="bollinger_bounce",
+                        reason=f"Price touching upper BB (%B: {pct_b:.2f})",
+                        indicators_payload={"pct_b": round(pct_b, 3), "bb_width": round(bb_width, 4)},
+                        require_volume=False,
+                        extra_checks=[(tradability_metrics.bb_width_pct >= 0.80, "SETUP_RANGE_TOO_SMALL", "Bollinger width is too narrow")],
+                    )
 
-        # ── Setup 11: RSI divergence (bullish/bearish) ──
         rsi_div = indicators.get("rsi_divergence")
         if rsi_div and getattr(rsi_div, "detected", False) and getattr(rsi_div, "divergence_type", "none") in ("bullish", "bearish"):
             div_type = rsi_div.divergence_type
@@ -577,19 +635,16 @@ class OpportunityScanner:
             regime_align = 0.8 if regime == MarketRegime.RANGING else 0.6
             vol_confirm = min(latest_volume_ratio / 1.0, 1.0) if latest_volume_ratio else 0.5
             score = self._setup_score(max(strength, 0.45), regime_align, vol_confirm, 0.6, symbol)
-            if score >= MIN_SETUP_SCORE:
-                setups.append(RankedSetup(
-                    symbol=symbol,
-                    score=score,
-                    setup_type=f"rsi_divergence_{div_type}",
-                    signal=signal,
-                    regime=regime.value,
-                    recommended_strategy="rsi_mean_reversion",
-                    reason=f"RSI {div_type} divergence detected",
-                    indicators={"rsi": round(latest_rsi or 0, 2), "divergence_type": div_type},
-                ))
+            qualify(
+                setup_type=f"rsi_divergence_{div_type}",
+                signal=signal,
+                score=score,
+                recommended_strategy="rsi_mean_reversion",
+                reason=f"RSI {div_type} divergence detected",
+                indicators_payload={"rsi": round(latest_rsi or 0, 2), "divergence_type": div_type},
+                require_volume=False,
+            )
 
-        # ── Setup 12: Momentum breakout (price breaking 20-candle high/low) ──
         if latest_close and previous_close and closes and len(closes) >= 20:
             recent = closes[-20:]
             highest_20 = max(recent[:-1])
@@ -600,48 +655,39 @@ class OpportunityScanner:
                 vol_confirm = min(latest_volume_ratio / 1.0, 1.0) if latest_volume_ratio else 0.5
                 trend_align = 0.9 if regime in (MarketRegime.TRENDING_UP, MarketRegime.RANGING) else 0.4
                 score = self._setup_score(max(strength, 0.35), trend_align, vol_confirm, 0.8, symbol)
-                if score >= MIN_SETUP_SCORE:
-                    setups.append(RankedSetup(
-                        symbol=symbol,
-                        score=score,
-                        setup_type="momentum_breakout_high",
-                        signal="BUY",
-                        regime=regime.value,
-                        recommended_strategy="macd_momentum",
-                        reason=f"Breaking 20-candle high (+{breakout_pct:.2f}%)",
-                        indicators={"breakout_pct": round(breakout_pct, 3), "volume_ratio": round(latest_volume_ratio or 0, 2)},
-                    ))
+                qualify(
+                    setup_type="momentum_breakout_high",
+                    signal="BUY",
+                    score=score,
+                    recommended_strategy="macd_momentum",
+                    reason=f"Breaking 20-candle high (+{breakout_pct:.2f}%)",
+                    indicators_payload={"breakout_pct": round(breakout_pct, 3), "volume_ratio": round(latest_volume_ratio or 0, 2)},
+                )
             elif latest_close < lowest_20 and latest_close < previous_close:
                 breakdown_pct = (lowest_20 - latest_close) / lowest_20 * 100
                 strength = min(breakdown_pct / 2.0, 1.0)
                 vol_confirm = min(latest_volume_ratio / 1.0, 1.0) if latest_volume_ratio else 0.5
                 trend_align = 0.9 if regime == MarketRegime.TRENDING_DOWN else 0.4
                 score = self._setup_score(max(strength, 0.35), trend_align, vol_confirm, 0.8, symbol)
-                if score >= MIN_SETUP_SCORE:
-                    setups.append(RankedSetup(
-                        symbol=symbol,
-                        score=score,
-                        setup_type="momentum_breakout_low",
-                        signal="SELL",
-                        regime=regime.value,
-                        recommended_strategy="rsi_mean_reversion",
-                        reason=f"Breaking 20-candle low (-{breakdown_pct:.2f}%)",
-                        indicators={"breakdown_pct": round(breakdown_pct, 3)},
-                    ))
+                qualify(
+                    setup_type="momentum_breakout_low",
+                    signal="SELL",
+                    score=score,
+                    recommended_strategy="rsi_mean_reversion",
+                    reason=f"Breaking 20-candle low (-{breakdown_pct:.2f}%)",
+                    indicators_payload={"breakdown_pct": round(breakdown_pct, 3)},
+                )
 
         for setup in setups:
             setup.indicators = self._to_native(setup.indicators)
+            setup.movement_quality = self._to_native(setup.movement_quality)
 
-        return setups
+        return setups, audits
 
     @staticmethod
     def _to_native(value: Any) -> Any:
-        """Convert numpy scalar values into JSON-safe Python primitives."""
         if isinstance(value, dict):
-            return {
-                key: OpportunityScanner._to_native(item)
-                for key, item in value.items()
-            }
+            return {key: OpportunityScanner._to_native(item) for key, item in value.items()}
         if isinstance(value, list):
             return [OpportunityScanner._to_native(item) for item in value]
         if isinstance(value, tuple):
@@ -653,7 +699,6 @@ class OpportunityScanner:
                 return scalar_to_python()
             except (TypeError, ValueError):
                 return value
-
         return value
 
     def _setup_score(
@@ -664,13 +709,10 @@ class OpportunityScanner:
         trend_alignment: float,
         symbol: str | None = None,
     ) -> float:
-        """Compute setup ranking score with relative strength."""
-        rs_score = 0.5  # default neutral
+        rs_score = 0.5
         if symbol is not None:
             rs = get_relative_strength(symbol)
             if rs is not None:
-                # Map relative strength to 0-1 score
-                # +5% vs BTC → 1.0, 0% → 0.5, -5% → 0.0
                 rs_score = max(0.0, min(1.0, 0.5 + rs / 10.0))
         return (
             signal_strength * 0.25

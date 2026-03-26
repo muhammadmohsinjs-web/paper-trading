@@ -29,6 +29,8 @@ from app.engine.ai_runtime import (
     evaluate_ai_validation,
     normalize_ai_strategy_key,
 )
+from app.engine.economic_viability import EconomicViabilityResult, evaluate_economic_viability
+from app.engine.evaluation_logging import build_symbol_evaluation_log
 from app.engine.multi_coin import (
     MULTI_COIN_MODE,
     build_portfolio_positions,
@@ -40,10 +42,23 @@ from app.engine.multi_coin import (
 )
 from app.engine.executor import execute_buy, execute_sell
 from app.engine.exit_manager import evaluate_exit
-from app.engine.position_sizer import calculate_exit_levels, calculate_position_size, calculate_scaled_exit_levels
+from app.engine.position_sizer import (
+    PositionSizingSafetyResult,
+    calculate_exit_levels,
+    calculate_position_size,
+    calculate_scaled_exit_levels,
+    evaluate_position_sizing_safety,
+)
 from app.engine.post_trade import (
     compute_equity,
     handle_post_trade,
+)
+from app.engine.safety_validator import SafetyVerdict, evaluate_local_trade_safety
+from app.engine.tradability import (
+    MovementQuality,
+    TradabilityResult,
+    evaluate_movement_quality,
+    evaluate_symbol_tradability,
 )
 from app.engine.wallet_manager import get_or_create_wallet, get_position, get_positions
 from app.models.ai_call_log import AICallLog
@@ -57,7 +72,6 @@ from app.risk.portfolio import PortfolioRiskManager
 from app.strategies.base import StrategyContext
 from app.strategies.hybrid_composite import HybridCompositeStrategy, HybridDecision
 from app.strategies.registry import get_strategy_class
-from app.ai.trade_validator import validate_trade_signal
 from app.engine.mtf_confluence import check_confluence
 
 _regime_classifier = RegimeClassifier()
@@ -300,6 +314,12 @@ def _serialize_composite_result(result: Any) -> dict[str, Any]:
         "votes": result.votes,
         "weights": result.weights,
         "dampening_multiplier": result.dampening_multiplier,
+        "directional_score": getattr(result, "directional_score", result.composite_score),
+        "edge_strength": getattr(result, "edge_strength", 0.0),
+        "signal_agreement": getattr(result, "signal_agreement", 0.0),
+        "market_quality": getattr(result, "market_quality", 0.0),
+        "regime_alignment": getattr(result, "regime_alignment", 0.0),
+        "reject_reason_codes": getattr(result, "reject_reason_codes", []),
     }
 
 
@@ -315,6 +335,107 @@ class LiveTradeDecision:
     decision_source: str = "rule_entry"
     composite_result: Any | None = None
     entry_confidence_bucket: str | None = None
+
+
+@dataclass
+class ExecutionReadiness:
+    tradability_passed: bool
+    signal_quality_passed: bool
+    economic_viability_passed: bool
+    ai_safety_passed: bool
+    sizing_passed: bool
+    fatal_flags: list[str]
+    reason_codes: list[str]
+    reason_text: str
+    metrics: dict[str, Any]
+
+
+def _first_reason_code(reason_codes: list[str] | None) -> str | None:
+    if not reason_codes:
+        return None
+    return reason_codes[0]
+
+
+def _join_reason_codes(reason_codes: list[str]) -> str:
+    return "; ".join(reason_codes) if reason_codes else "Checks passed"
+
+
+def _log_stage(
+    session: Any,
+    *,
+    strategy_id: str,
+    cycle_id: str,
+    symbol: str,
+    stage: str,
+    status: str,
+    reason_code: str | None = None,
+    reason_text: str | None = None,
+    metrics_json: dict[str, Any] | None = None,
+    context_json: dict[str, Any] | None = None,
+) -> None:
+    session.add(
+        build_symbol_evaluation_log(
+            strategy_id=strategy_id,
+            cycle_id=cycle_id,
+            symbol=symbol,
+            stage=stage,
+            status=status,
+            reason_code=reason_code,
+            reason_text=reason_text,
+            metrics_json=metrics_json,
+            context_json=context_json,
+        )
+    )
+
+
+def _build_execution_readiness(
+    *,
+    tradability: TradabilityResult,
+    signal_quality_passed: bool,
+    economic_viability: EconomicViabilityResult,
+    ai_safety: SafetyVerdict,
+    sizing_safety: PositionSizingSafetyResult,
+) -> ExecutionReadiness:
+    reason_codes: list[str] = []
+    if not tradability.passed:
+        reason_codes.extend(tradability.reason_codes)
+    if not signal_quality_passed:
+        reason_codes.append("FINAL_SANITY_FAILED")
+    if not economic_viability.passed:
+        reason_codes.extend(economic_viability.reason_codes)
+    if not ai_safety.approved:
+        if ai_safety.reason_code:
+            reason_codes.append(ai_safety.reason_code)
+        if ai_safety.fatal_flags:
+            reason_codes.extend(ai_safety.fatal_flags)
+    if not sizing_safety.passed and sizing_safety.reason_code:
+        reason_codes.append(sizing_safety.reason_code)
+
+    deduped_codes = list(dict.fromkeys(reason_codes))
+    fatal_flags = list(dict.fromkeys(ai_safety.fatal_flags or []))
+    return ExecutionReadiness(
+        tradability_passed=tradability.passed,
+        signal_quality_passed=signal_quality_passed,
+        economic_viability_passed=economic_viability.passed,
+        ai_safety_passed=ai_safety.approved,
+        sizing_passed=sizing_safety.passed,
+        fatal_flags=fatal_flags,
+        reason_codes=deduped_codes,
+        reason_text=_join_reason_codes(deduped_codes),
+        metrics={
+            "tradability": tradability.to_dict(),
+            "economic_viability": economic_viability.to_dict(),
+            "ai_safety": ai_safety.to_dict(),
+            "sizing_safety": {
+                "passed": sizing_safety.passed,
+                "reason_code": sizing_safety.reason_code,
+                "reason_text": sizing_safety.reason_text,
+                "atr_pct": float(sizing_safety.atr_pct),
+                "stop_distance_pct": float(sizing_safety.stop_distance_pct),
+                "take_profit_distance_pct": float(sizing_safety.take_profit_distance_pct),
+            },
+        },
+    )
 
 
 def _touch_ai_metrics(
@@ -594,13 +715,14 @@ def _build_validation_context(
     position: Any,
     market_price: Decimal,
     decision: LiveTradeDecision,
+    safety_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     flat_metrics = analyze_flat_market(
         closes,
         ai_config.get("flat_market_threshold_pct", settings.ai_flat_market_threshold_pct),
         indicators.get("atr"),
     )[1]
-    return build_ai_context(
+    context = build_ai_context(
         strategy_id=strategy.id,
         strategy_name=strategy.name,
         symbol=symbol,
@@ -639,6 +761,9 @@ def _build_validation_context(
             ),
         },
     )
+    if safety_context:
+        context["safety"] = safety_context
+    return context
 
 
 async def _apply_ai_validation(
@@ -657,27 +782,27 @@ async def _apply_ai_validation(
     market_price: Decimal,
     decision: LiveTradeDecision,
     force: bool,
-) -> LiveTradeDecision:
-    if decision.action != "BUY" or not ai_config["ai_enabled"]:
-        return decision
-
-    cooldown_remaining = _cooldown_remaining(strategy, ai_config["ai_cooldown_seconds"])
-    if cooldown_remaining > 0 and not force:
-        session.add(
-            _build_ai_validation_log(
-                strategy.id,
-                symbol,
-                status="skipped",
-                skip_reason="cooldown",
-                reason=f"AI cooldown active ({cooldown_remaining}s remaining)",
-                proposed_action=decision.action,
-            )
-        )
-        await session.commit()
-        return decision
+    cycle_id: str | None = None,
+    local_safety: SafetyVerdict | None = None,
+) -> SafetyVerdict | LiveTradeDecision:
+    legacy_mode = local_safety is None
+    effective_cycle_id = cycle_id or str(uuid4())
+    safety_verdict = local_safety or SafetyVerdict(
+        status="approved",
+        approved=True,
+        reason_code=None,
+        reason_text="Legacy AI validation path assumed deterministic safety pass",
+        fatal_flags=[],
+        evidence={},
+    )
+    if decision.action != "BUY":
+        return decision if legacy_mode else safety_verdict
+    if not ai_config["ai_enabled"]:
+        return decision if legacy_mode else safety_verdict
 
     context = _build_validation_context(
         strategy=strategy,
+        safety_context=safety_verdict.to_dict(),
         symbol=symbol,
         interval=interval,
         indicators=indicators,
@@ -712,31 +837,67 @@ async def _apply_ai_validation(
             proposed_action=decision.action,
         )
     )
-    await session.commit()
+    ai_reason_code = validation.reason_code or "AI_SAFETY_UNAVAILABLE"
+    ai_fatal_flags = list(validation.fatal_flags or [])
+    if validation.status in {"error", "skipped"} or validation.approved is None:
+        ai_fatal_flags.append("AI_SAFETY_UNAVAILABLE")
+        verdict = SafetyVerdict(
+            status="rejected",
+            approved=False,
+            reason_code="AI_SAFETY_UNAVAILABLE",
+            reason_text=validation.error or validation.reason or "AI safety validation unavailable",
+            fatal_flags=list(dict.fromkeys(ai_fatal_flags)),
+            evidence={"validation": validation.evidence or {}, "local_safety": safety_verdict.to_dict()},
+            usage=validation.usage,
+            raw_response=validation.raw_response,
+            error=validation.error,
+        )
+    elif not validation.approved:
+        verdict = SafetyVerdict(
+            status="rejected",
+            approved=False,
+            reason_code=ai_reason_code,
+            reason_text=validation.reason or "AI safety validation rejected the trade",
+            fatal_flags=list(dict.fromkeys(ai_fatal_flags or [ai_reason_code])),
+            evidence={"validation": validation.evidence or {}, "local_safety": safety_verdict.to_dict()},
+            usage=validation.usage,
+            raw_response=validation.raw_response,
+            error=validation.error,
+        )
+    else:
+        verdict = SafetyVerdict(
+            status="approved",
+            approved=True,
+            reason_code=validation.reason_code,
+            reason_text=validation.reason or "AI safety validation approved the trade",
+            fatal_flags=[],
+            evidence={"validation": validation.evidence or {}, "local_safety": safety_verdict.to_dict()},
+            usage=validation.usage,
+            raw_response=validation.raw_response,
+            error=validation.error,
+        )
 
-    if validation.status == "error":
-        decision.final_confidence = 0.0
-        decision.quantity_pct = Decimal("0")
-        decision.validator_reason = validation.error or validation.reason or "AI validation error blocked BUY"
-        return decision
-
-    if validation.approved is None:
-        return decision
-
-    validation_result = validate_trade_signal(
-        decision.action,
-        decision.final_confidence,
-        indicators,
-        decision.regime,
-        ai_response={
-            "approve": validation.approved,
-            "confidence_adjustment": validation.confidence_adjustment or 0.0,
-            "reason": validation.reason or "AI validation",
-        },
+    _log_stage(
+        session,
+        strategy_id=strategy.id,
+        cycle_id=effective_cycle_id,
+        symbol=symbol,
+        stage="ai_safety",
+        status="passed" if verdict.approved else "rejected",
+        reason_code=verdict.reason_code,
+        reason_text=verdict.reason_text,
+        metrics_json=verdict.evidence,
+        context_json={"fatal_flags": verdict.fatal_flags},
     )
-    decision.final_confidence = validation_result.adjusted_confidence
-    decision.validator_reason = validation_result.reason
-    return decision
+    if legacy_mode:
+        if not verdict.approved:
+            decision.final_confidence = 0.0
+            decision.quantity_pct = Decimal("0")
+            decision.validator_reason = verdict.error or verdict.reason_text
+        if hasattr(session, "commit"):
+            await session.commit()
+        return decision
+    return verdict
 
 
 async def _execute_shared_exit(
@@ -924,6 +1085,7 @@ async def _run_single_cycle_locked(
 ) -> dict[str, Any]:
     """Execute one decision cycle for a strategy (must be called under lock)."""
     manager = ConnectionManager.get_instance()
+    cycle_id = str(uuid4())
     async with SessionLocal() as session:
         result = await session.execute(
             select(Strategy).where(Strategy.id == strategy_id)
@@ -941,17 +1103,20 @@ async def _run_single_cycle_locked(
         resolved_interval = interval or strategy.candle_interval or (strategy.config_json or {}).get("candle_interval", settings.default_candle_interval)
         execution_mode = resolve_execution_mode(strategy)
         if execution_mode == MULTI_COIN_MODE:
-            return await _run_multi_coin_cycle(
+            result_payload = await _run_multi_coin_cycle(
                 session,
                 manager,
                 strategy,
                 strategy_id,
                 resolved_interval,
                 force,
+                cycle_id,
             )
+            await session.commit()
+            return result_payload
 
         resolved_symbol = str(symbol or resolve_primary_symbol(strategy)).upper()
-        return await _run_loaded_symbol_cycle(
+        result_payload = await _run_loaded_symbol_cycle(
             session,
             manager,
             strategy,
@@ -959,8 +1124,11 @@ async def _run_single_cycle_locked(
             resolved_symbol,
             resolved_interval,
             force,
+            cycle_id,
             entry_allowed=True,
         )
+        await session.commit()
+        return result_payload
 
 async def _run_loaded_symbol_cycle(
     session: Any,
@@ -970,6 +1138,7 @@ async def _run_loaded_symbol_cycle(
     symbol: str,
     interval: str,
     force: bool,
+    cycle_id: str,
     *,
     entry_allowed: bool,
 ) -> dict[str, Any]:
@@ -1027,6 +1196,25 @@ async def _run_loaded_symbol_cycle(
     volumes = [candle.volume for candle in candles]
     indicators = compute_indicators(closes, config, highs=highs, lows=lows, volumes=volumes)
     indicators["symbol"] = symbol
+    quote_volumes = [close * volume for close, volume in zip(closes[-24:], volumes[-24:])]
+    tradability_result = evaluate_symbol_tradability(
+        symbol=symbol,
+        closes=closes,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+        volume_24h_usdt=sum(quote_volumes),
+        config=config,
+        indicators=indicators,
+    )
+    indicators["market_quality_score"] = tradability_result.market_quality_score
+    indicators["movement_quality_score"] = min(
+        1.0,
+        max(
+            tradability_result.metrics.market_quality_score,
+            min(abs(tradability_result.metrics.directional_displacement_pct_10) / 1.0, 1.0),
+        ),
+    )
     all_positions = await get_positions(session, strategy_id)
     equity = compute_total_equity(wallet, all_positions)
     has_position = position is not None
@@ -1065,19 +1253,41 @@ async def _run_loaded_symbol_cycle(
             indicators,
         )
 
+    if position is None and entry_allowed:
+        _log_stage(
+            session,
+            strategy_id=strategy_id,
+            cycle_id=cycle_id,
+            symbol=symbol,
+            stage="entry_tradability",
+            status="passed" if tradability_result.passed else "rejected",
+            reason_code=_first_reason_code(tradability_result.reason_codes),
+            reason_text=tradability_result.reason_text,
+            metrics_json=tradability_result.metrics.to_dict(),
+            context_json={"market_quality_score": tradability_result.market_quality_score},
+        )
+        if not tradability_result.passed:
+            return {
+                "status": "skipped",
+                "reason": tradability_result.reason_text,
+                "symbol": symbol,
+                "strategy_id": strategy_id,
+                "decision_source": "entry_tradability",
+            }
+
     if strategy_type == "hybrid_composite":
         return await _run_hybrid_cycle(
             session, manager, strategy, strategy_id, wallet, position,
             symbol, interval, market_price, equity, indicators,
             config, ai_config, highs, lows, volumes, closes, force, regime_result,
-            all_positions,
+            all_positions, cycle_id, tradability_result,
         )
 
     return await _run_rule_based_cycle(
         session, manager, strategy, strategy_id, wallet, position,
         symbol, interval, market_price, equity, indicators,
         config, ai_config, highs, lows, volumes, closes, force,
-        strategy_type, has_position, regime_result, all_positions,
+        strategy_type, has_position, regime_result, all_positions, cycle_id, tradability_result,
     )
 
 
@@ -1115,6 +1325,7 @@ async def _run_multi_coin_cycle(
     strategy_id: str,
     interval: str,
     force: bool,
+    cycle_id: str,
 ) -> dict[str, Any]:
     # Gather open position symbols for position-aware retention
     open_positions = await get_positions(session, strategy_id)
@@ -1123,6 +1334,7 @@ async def _run_multi_coin_cycle(
     picks = await ensure_daily_picks(
         session, strategy, interval=interval, force_refresh=False,
         open_position_symbols=open_position_symbols,
+        cycle_id=cycle_id,
     )
     selection_date = picks[0].selection_date.isoformat() if picks else datetime.now(timezone.utc).date().isoformat()
     selected_symbols = [pick.symbol for pick in picks]
@@ -1151,8 +1363,10 @@ async def _run_multi_coin_cycle(
             symbol,
             interval,
             force,
+            cycle_id,
             entry_allowed=False,
         )
+        await session.commit()
         results.append(result)
         processed_symbols.add(symbol)
 
@@ -1171,8 +1385,10 @@ async def _run_multi_coin_cycle(
             pick.symbol,
             interval,
             force,
+            cycle_id,
             entry_allowed=True,
         )
+        await session.commit()
         results.append(result)
         processed_symbols.add(pick.symbol)
 
@@ -1208,6 +1424,8 @@ async def _run_hybrid_cycle(
     force: bool,
     regime_result: RegimeResult,
     all_positions: list[Any],
+    cycle_id: str,
+    tradability_result: TradabilityResult,
 ) -> dict[str, Any]:
     """Execute the deterministic hybrid path with shared validation and exits."""
     strategy_type = "hybrid_composite"
@@ -1231,6 +1449,8 @@ async def _run_hybrid_cycle(
         config=config,
         ai_config=ai_config,
         regime=regime_result.regime.value,
+        market_quality_score=tradability_result.market_quality_score,
+        movement_quality_score=float(indicators.get("movement_quality_score", 0.0)),
         risk_per_trade_pct=Decimal(str(strategy.risk_per_trade_pct)),
         max_position_size_pct=Decimal(str(strategy.max_position_size_pct)),
         stop_loss_pct=Decimal(str(strategy.stop_loss_pct or settings.default_stop_loss_pct)),
@@ -1295,6 +1515,19 @@ async def _run_hybrid_cycle(
                 }
 
     if decision.status != "candidate" or decision.composite_result is None or decision.raw_confidence is None:
+        if decision.composite_result is not None:
+            _log_stage(
+                session,
+                strategy_id=strategy_id,
+                cycle_id=cycle_id,
+                symbol=symbol,
+                stage="composite",
+                status="rejected",
+                reason_code=_first_reason_code(getattr(decision.composite_result, "reject_reason_codes", [])),
+                reason_text=decision.reason,
+                metrics_json=_serialize_composite_result(decision.composite_result),
+                context_json={"status": decision.status},
+            )
         return {
             "status": decision.status,
             "reason": decision.reason,
@@ -1317,6 +1550,27 @@ async def _run_hybrid_cycle(
         composite_result=decision.composite_result,
         entry_confidence_bucket=entry_bucket,
     )
+    _log_stage(
+        session,
+        strategy_id=strategy_id,
+        cycle_id=cycle_id,
+        symbol=symbol,
+        stage="composite",
+        status="passed" if not decision.composite_result.reject_reason_codes else "rejected",
+        reason_code=_first_reason_code(decision.composite_result.reject_reason_codes),
+        reason_text=decision.reason,
+        metrics_json=_serialize_composite_result(decision.composite_result),
+        context_json={"raw_confidence": raw_confidence},
+    )
+    if decision.composite_result.reject_reason_codes:
+        return {
+            "status": "skipped",
+            "reason": decision.reason,
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "composite",
+            "composite": composite_dict,
+        }
 
     risk_reason = _entry_risk_status(strategy, wallet, equity, config)
     if risk_reason is not None:
@@ -1360,10 +1614,91 @@ async def _run_hybrid_cycle(
     live_decision.final_confidence = max(
         0.0, min(live_decision.final_confidence + mtf.confidence_boost, 1.0)
     )
+    if live_decision.final_confidence < min_confidence:
+        return {
+            "status": "skipped",
+            "reason": f"Hybrid confidence {live_decision.final_confidence:.3f} below gate {min_confidence:.3f}",
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "confidence_gate",
+            "composite": composite_dict,
+        }
 
-    live_decision = await _apply_ai_validation(
+    entry_levels = _precompute_entry_levels(indicators, market_price, config)
+    if entry_levels is None:
+        return {
+            "status": "skipped",
+            "reason": "ATR unavailable for economic viability",
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "economic_viability",
+            "composite": composite_dict,
+        }
+    stop_loss_price, take_profit_price, _ = entry_levels
+    estimated_notional = min(
+        Decimal(str(wallet.available_usdt)),
+        equity * (Decimal(str(strategy.max_position_size_pct)) / Decimal("100")),
+    )
+    economic_viability = evaluate_economic_viability(
+        entry_price=market_price,
+        stop_loss_price=stop_loss_price,
+        take_profit_price=take_profit_price,
+        notional=estimated_notional,
+    )
+    _log_stage(
+        session,
+        strategy_id=strategy_id,
+        cycle_id=cycle_id,
+        symbol=symbol,
+        stage="economic_viability",
+        status="passed" if economic_viability.passed else "rejected",
+        reason_code=_first_reason_code(economic_viability.reason_codes),
+        reason_text=economic_viability.reason_text,
+        metrics_json=economic_viability.to_dict(),
+        context_json={"estimated_notional": float(estimated_notional)},
+    )
+    if not economic_viability.passed:
+        return {
+            "status": "skipped",
+            "reason": economic_viability.reason_text,
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "economic_viability",
+            "composite": composite_dict,
+        }
+
+    movement_quality = evaluate_movement_quality(direction="BUY", metrics=tradability_result.metrics)
+    local_safety = evaluate_local_trade_safety(
+        tradability=tradability_result,
+        movement_quality=movement_quality,
+        economic_viability=economic_viability,
+    )
+    _log_stage(
+        session,
+        strategy_id=strategy_id,
+        cycle_id=cycle_id,
+        symbol=symbol,
+        stage="local_safety",
+        status="passed" if local_safety.approved else "rejected",
+        reason_code=local_safety.reason_code,
+        reason_text=local_safety.reason_text,
+        metrics_json=local_safety.evidence,
+        context_json={"fatal_flags": local_safety.fatal_flags},
+    )
+    if not local_safety.approved:
+        return {
+            "status": "skipped",
+            "reason": local_safety.reason_text,
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "local_safety",
+            "composite": composite_dict,
+        }
+
+    ai_safety = await _apply_ai_validation(
         session,
         strategy,
+        cycle_id,
         symbol,
         interval,
         indicators,
@@ -1377,16 +1712,11 @@ async def _run_hybrid_cycle(
         market_price,
         live_decision,
         force,
+        local_safety,
     )
-    if live_decision.final_confidence < min_confidence:
-        return {
-            "status": "skipped",
-            "reason": live_decision.validator_reason or f"Hybrid confidence {live_decision.final_confidence:.3f} below gate {min_confidence:.3f}",
-            "symbol": symbol,
-            "strategy_id": strategy_id,
-            "decision_source": "confidence_gate",
-            "composite": composite_dict,
-        }
+    if not ai_safety.approved:
+        live_decision.final_confidence = 0.0
+        live_decision.validator_reason = ai_safety.reason_text
 
     sizing_result = hybrid_strategy.compute_sizing(indicators, ctx, live_decision.final_confidence)
     if sizing_result is None:
@@ -1408,6 +1738,28 @@ async def _run_hybrid_cycle(
             "decision_source": "hybrid_entry",
             "composite": composite_dict,
         }
+
+    sizing_safety = evaluate_position_sizing_safety(
+        entry_price=market_price,
+        sizing=sizing,
+        total_round_trip_cost_pct=Decimal(str(economic_viability.total_round_trip_cost_pct)),
+    )
+    _log_stage(
+        session,
+        strategy_id=strategy_id,
+        cycle_id=cycle_id,
+        symbol=symbol,
+        stage="position_sizing",
+        status="passed" if sizing_safety.passed else "rejected",
+        reason_code=sizing_safety.reason_code,
+        reason_text=sizing_safety.reason_text,
+        metrics_json={
+            "atr_pct": float(sizing_safety.atr_pct),
+            "stop_distance_pct": float(sizing_safety.stop_distance_pct),
+            "take_profit_distance_pct": float(sizing_safety.take_profit_distance_pct),
+        },
+        context_json={"quantity_pct": float(sizing.quantity_pct)},
+    )
 
     quantity_pct = sizing.quantity_pct * size_multiplier
     quantity_pct = _cap_quantity_pct(
@@ -1446,6 +1798,42 @@ async def _run_hybrid_cycle(
         }
 
     live_decision.quantity_pct = quantity_pct
+    execution_readiness = _build_execution_readiness(
+        tradability=tradability_result,
+        signal_quality_passed=not decision.composite_result.reject_reason_codes,
+        economic_viability=economic_viability,
+        ai_safety=ai_safety,
+        sizing_safety=sizing_safety,
+    )
+    if (
+        not execution_readiness.tradability_passed
+        or not execution_readiness.signal_quality_passed
+        or not execution_readiness.economic_viability_passed
+        or not execution_readiness.ai_safety_passed
+        or not execution_readiness.sizing_passed
+        or execution_readiness.fatal_flags
+    ):
+        _log_stage(
+            session,
+            strategy_id=strategy_id,
+            cycle_id=cycle_id,
+            symbol=symbol,
+            stage="final_execution",
+            status="rejected",
+            reason_code=_first_reason_code(execution_readiness.reason_codes),
+            reason_text=execution_readiness.reason_text,
+            metrics_json=execution_readiness.metrics,
+            context_json={"fatal_flags": execution_readiness.fatal_flags},
+        )
+        return {
+            "status": "skipped",
+            "reason": execution_readiness.reason_text,
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "final_execution",
+            "composite": composite_dict,
+        }
+
     result = await execute_buy(
         session,
         strategy_id,
@@ -1510,6 +1898,18 @@ async def _run_hybrid_cycle(
         decision_source="hybrid_entry",
         is_sell=False,
     )
+    _log_stage(
+        session,
+        strategy_id=strategy_id,
+        cycle_id=cycle_id,
+        symbol=symbol,
+        stage="final_execution",
+        status="passed",
+        reason_code=None,
+        reason_text="Trade executed after final sanity check",
+        metrics_json=execution_readiness.metrics,
+        context_json={"fatal_flags": execution_readiness.fatal_flags, "trade_id": result.trade.id},
+    )
     return {
         "status": "executed",
         "strategy_id": strategy_id,
@@ -1564,6 +1964,8 @@ async def _run_rule_based_cycle(
     has_position: bool,
     regime_result: RegimeResult,
     all_positions: list[Any],
+    cycle_id: str,
+    tradability_result: TradabilityResult,
 ) -> dict[str, Any]:
     """Execute deterministic rule strategies with shared exits and validation."""
     strategy_impl = get_strategy_class(strategy_type)()
@@ -1737,10 +2139,76 @@ async def _run_rule_based_cycle(
     live_decision.final_confidence = max(
         0.0, min(live_decision.final_confidence + mtf.confidence_boost, 1.0)
     )
+    if live_decision.final_confidence < min_confidence:
+        return {
+            "status": "skipped",
+            "reason": f"Entry confidence {live_decision.final_confidence:.3f} below gate {min_confidence:.3f}",
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "confidence_gate",
+        }
 
-    live_decision = await _apply_ai_validation(
+    economic_viability = evaluate_economic_viability(
+        entry_price=market_price,
+        stop_loss_price=stop_loss_price,
+        take_profit_price=take_profit_price,
+        notional=min(
+            Decimal(str(wallet.available_usdt)),
+            equity * (Decimal(str(strategy.max_position_size_pct)) / Decimal("100")),
+        ),
+    )
+    _log_stage(
+        session,
+        strategy_id=strategy_id,
+        cycle_id=cycle_id,
+        symbol=symbol,
+        stage="economic_viability",
+        status="passed" if economic_viability.passed else "rejected",
+        reason_code=_first_reason_code(economic_viability.reason_codes),
+        reason_text=economic_viability.reason_text,
+        metrics_json=economic_viability.to_dict(),
+        context_json={"strategy_type": strategy_type},
+    )
+    if not economic_viability.passed:
+        return {
+            "status": "skipped",
+            "reason": economic_viability.reason_text,
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "economic_viability",
+        }
+
+    movement_quality = evaluate_movement_quality(direction="BUY", metrics=tradability_result.metrics)
+    local_safety = evaluate_local_trade_safety(
+        tradability=tradability_result,
+        movement_quality=movement_quality,
+        economic_viability=economic_viability,
+    )
+    _log_stage(
+        session,
+        strategy_id=strategy_id,
+        cycle_id=cycle_id,
+        symbol=symbol,
+        stage="local_safety",
+        status="passed" if local_safety.approved else "rejected",
+        reason_code=local_safety.reason_code,
+        reason_text=local_safety.reason_text,
+        metrics_json=local_safety.evidence,
+        context_json={"fatal_flags": local_safety.fatal_flags},
+    )
+    if not local_safety.approved:
+        return {
+            "status": "skipped",
+            "reason": local_safety.reason_text,
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "local_safety",
+        }
+
+    ai_safety = await _apply_ai_validation(
         session,
         strategy,
+        cycle_id,
         symbol,
         interval,
         indicators,
@@ -1754,15 +2222,11 @@ async def _run_rule_based_cycle(
         market_price,
         live_decision,
         force,
+        local_safety,
     )
-    if live_decision.final_confidence < min_confidence:
-        return {
-            "status": "skipped",
-            "reason": live_decision.validator_reason or f"Entry confidence {live_decision.final_confidence:.3f} below gate {min_confidence:.3f}",
-            "symbol": symbol,
-            "strategy_id": strategy_id,
-            "decision_source": "confidence_gate",
-        }
+    if not ai_safety.approved:
+        live_decision.final_confidence = 0.0
+        live_decision.validator_reason = ai_safety.reason_text
 
     quantity_pct = _cap_quantity_pct(
         quantity_pct=live_decision.quantity_pct,
@@ -1798,6 +2262,62 @@ async def _run_rule_based_cycle(
         }
 
     live_decision.quantity_pct = quantity_pct
+    sizing_safety = evaluate_position_sizing_safety(
+        entry_price=market_price,
+        sizing=sizing,
+        total_round_trip_cost_pct=Decimal(str(economic_viability.total_round_trip_cost_pct)),
+    )
+    _log_stage(
+        session,
+        strategy_id=strategy_id,
+        cycle_id=cycle_id,
+        symbol=symbol,
+        stage="position_sizing",
+        status="passed" if sizing_safety.passed else "rejected",
+        reason_code=sizing_safety.reason_code,
+        reason_text=sizing_safety.reason_text,
+        metrics_json={
+            "atr_pct": float(sizing_safety.atr_pct),
+            "stop_distance_pct": float(sizing_safety.stop_distance_pct),
+            "take_profit_distance_pct": float(sizing_safety.take_profit_distance_pct),
+        },
+        context_json={"quantity_pct": float(quantity_pct)},
+    )
+    execution_readiness = _build_execution_readiness(
+        tradability=tradability_result,
+        signal_quality_passed=True,
+        economic_viability=economic_viability,
+        ai_safety=ai_safety,
+        sizing_safety=sizing_safety,
+    )
+    if (
+        not execution_readiness.tradability_passed
+        or not execution_readiness.signal_quality_passed
+        or not execution_readiness.economic_viability_passed
+        or not execution_readiness.ai_safety_passed
+        or not execution_readiness.sizing_passed
+        or execution_readiness.fatal_flags
+    ):
+        _log_stage(
+            session,
+            strategy_id=strategy_id,
+            cycle_id=cycle_id,
+            symbol=symbol,
+            stage="final_execution",
+            status="rejected",
+            reason_code=_first_reason_code(execution_readiness.reason_codes),
+            reason_text=execution_readiness.reason_text,
+            metrics_json=execution_readiness.metrics,
+            context_json={"fatal_flags": execution_readiness.fatal_flags},
+        )
+        return {
+            "status": "skipped",
+            "reason": execution_readiness.reason_text,
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "final_execution",
+        }
+
     entry_confidence_bucket = _confidence_bucket(live_decision.final_confidence)
     result = await execute_buy(
         session,
@@ -1856,6 +2376,17 @@ async def _run_rule_based_cycle(
         reason=_decision_reason(live_decision),
         decision_source="rule_entry",
         is_sell=False,
+    )
+    _log_stage(
+        session,
+        strategy_id=strategy_id,
+        cycle_id=cycle_id,
+        symbol=symbol,
+        stage="final_execution",
+        status="passed",
+        reason_text="Trade executed after final sanity check",
+        metrics_json=execution_readiness.metrics,
+        context_json={"fatal_flags": execution_readiness.fatal_flags, "trade_id": result.trade.id},
     )
     return {
         "status": "executed",
