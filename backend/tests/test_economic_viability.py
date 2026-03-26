@@ -31,3 +31,17 @@ def test_economic_viability_accepts_post_cost_positive_setup():
     assert result.passed is True
     assert result.net_reward_pct > 0.25
     assert result.net_rr >= 1.2
+
+
+def test_economic_viability_rejects_low_reward_to_cost_ratio():
+    result = evaluate_economic_viability(
+        entry_price=Decimal("100"),
+        stop_loss_price=Decimal("99.2"),
+        take_profit_price=Decimal("100.3"),
+        fee_rate=Decimal("0.001"),
+        entry_slippage_rate=Decimal("0.0004"),
+        exit_slippage_rate=Decimal("0.0004"),
+    )
+
+    assert result.passed is False
+    assert "REWARD_TO_COST_TOO_LOW" in result.reason_codes

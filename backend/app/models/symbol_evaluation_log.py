@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 from sqlalchemy import DateTime, ForeignKey, String, Text, func
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, backref, mapped_column, relationship
 from sqlalchemy.types import JSON
 
 from app.models.base import Base
@@ -35,4 +35,7 @@ class SymbolEvaluationLog(UUIDPrimaryKeyMixin, Base):
         index=True,
     )
 
-    strategy = relationship("Strategy", backref="symbol_evaluation_logs")
+    strategy = relationship(
+        "Strategy",
+        backref=backref("symbol_evaluation_logs", passive_deletes=True),
+    )

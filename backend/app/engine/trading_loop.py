@@ -54,6 +54,7 @@ from app.engine.post_trade import (
     handle_post_trade,
 )
 from app.engine.safety_validator import SafetyVerdict, evaluate_local_trade_safety
+from app.engine.reason_codes import AI_SAFETY_UNAVAILABLE
 from app.engine.tradability import (
     MovementQuality,
     TradabilityResult,
@@ -316,9 +317,12 @@ def _serialize_composite_result(result: Any) -> dict[str, Any]:
         "dampening_multiplier": result.dampening_multiplier,
         "directional_score": getattr(result, "directional_score", result.composite_score),
         "edge_strength": getattr(result, "edge_strength", 0.0),
+        "base_edge_score": getattr(result, "base_edge_score", 0.0),
         "signal_agreement": getattr(result, "signal_agreement", 0.0),
         "market_quality": getattr(result, "market_quality", 0.0),
         "regime_alignment": getattr(result, "regime_alignment", 0.0),
+        "edge_floor_passed": getattr(result, "edge_floor_passed", False),
+        "quality_floor_passed": getattr(result, "quality_floor_passed", False),
         "reject_reason_codes": getattr(result, "reject_reason_codes", []),
     }
 
@@ -433,6 +437,9 @@ def _build_execution_readiness(
                 "atr_pct": float(sizing_safety.atr_pct),
                 "stop_distance_pct": float(sizing_safety.stop_distance_pct),
                 "take_profit_distance_pct": float(sizing_safety.take_profit_distance_pct),
+                "min_atr_pct": float(sizing_safety.min_atr_pct),
+                "min_stop_distance_pct": float(sizing_safety.min_stop_distance_pct),
+                "min_take_profit_distance_pct": float(sizing_safety.min_take_profit_distance_pct),
             },
         },
     )
@@ -837,14 +844,14 @@ async def _apply_ai_validation(
             proposed_action=decision.action,
         )
     )
-    ai_reason_code = validation.reason_code or "AI_SAFETY_UNAVAILABLE"
+    ai_reason_code = validation.reason_code or AI_SAFETY_UNAVAILABLE
     ai_fatal_flags = list(validation.fatal_flags or [])
     if validation.status in {"error", "skipped"} or validation.approved is None:
-        ai_fatal_flags.append("AI_SAFETY_UNAVAILABLE")
+        ai_fatal_flags.append(AI_SAFETY_UNAVAILABLE)
         verdict = SafetyVerdict(
             status="rejected",
             approved=False,
-            reason_code="AI_SAFETY_UNAVAILABLE",
+            reason_code=AI_SAFETY_UNAVAILABLE,
             reason_text=validation.error or validation.reason or "AI safety validation unavailable",
             fatal_flags=list(dict.fromkeys(ai_fatal_flags)),
             evidence={"validation": validation.evidence or {}, "local_safety": safety_verdict.to_dict()},
@@ -1208,13 +1215,9 @@ async def _run_loaded_symbol_cycle(
         indicators=indicators,
     )
     indicators["market_quality_score"] = tradability_result.market_quality_score
-    indicators["movement_quality_score"] = min(
-        1.0,
-        max(
-            tradability_result.metrics.market_quality_score,
-            min(abs(tradability_result.metrics.directional_displacement_pct_10) / 1.0, 1.0),
-        ),
-    )
+    entry_movement_quality = evaluate_movement_quality(direction="BUY", metrics=tradability_result.metrics, config=config)
+    indicators["movement_quality_score"] = entry_movement_quality.score
+    indicators["movement_quality"] = entry_movement_quality.to_dict()
     all_positions = await get_positions(session, strategy_id)
     equity = compute_total_equity(wallet, all_positions)
     has_position = position is not None
@@ -1644,6 +1647,7 @@ async def _run_hybrid_cycle(
         stop_loss_price=stop_loss_price,
         take_profit_price=take_profit_price,
         notional=estimated_notional,
+        config=config,
     )
     _log_stage(
         session,
@@ -1667,7 +1671,7 @@ async def _run_hybrid_cycle(
             "composite": composite_dict,
         }
 
-    movement_quality = evaluate_movement_quality(direction="BUY", metrics=tradability_result.metrics)
+    movement_quality = evaluate_movement_quality(direction="BUY", metrics=tradability_result.metrics, config=config)
     local_safety = evaluate_local_trade_safety(
         tradability=tradability_result,
         movement_quality=movement_quality,
@@ -1696,23 +1700,23 @@ async def _run_hybrid_cycle(
         }
 
     ai_safety = await _apply_ai_validation(
-        session,
-        strategy,
-        cycle_id,
-        symbol,
-        interval,
-        indicators,
-        ai_config,
-        highs,
-        lows,
-        volumes,
-        closes,
-        wallet,
-        position,
-        market_price,
-        live_decision,
-        force,
-        local_safety,
+        session=session,
+        strategy=strategy,
+        symbol=symbol,
+        interval=interval,
+        indicators=indicators,
+        ai_config=ai_config,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+        closes=closes,
+        wallet=wallet,
+        position=position,
+        market_price=market_price,
+        decision=live_decision,
+        force=force,
+        cycle_id=cycle_id,
+        local_safety=local_safety,
     )
     if not ai_safety.approved:
         live_decision.final_confidence = 0.0
@@ -1743,6 +1747,7 @@ async def _run_hybrid_cycle(
         entry_price=market_price,
         sizing=sizing,
         total_round_trip_cost_pct=Decimal(str(economic_viability.total_round_trip_cost_pct)),
+        config=config,
     )
     _log_stage(
         session,
@@ -1757,6 +1762,9 @@ async def _run_hybrid_cycle(
             "atr_pct": float(sizing_safety.atr_pct),
             "stop_distance_pct": float(sizing_safety.stop_distance_pct),
             "take_profit_distance_pct": float(sizing_safety.take_profit_distance_pct),
+            "min_atr_pct": float(sizing_safety.min_atr_pct),
+            "min_stop_distance_pct": float(sizing_safety.min_stop_distance_pct),
+            "min_take_profit_distance_pct": float(sizing_safety.min_take_profit_distance_pct),
         },
         context_json={"quantity_pct": float(sizing.quantity_pct)},
     )
@@ -2156,6 +2164,7 @@ async def _run_rule_based_cycle(
             Decimal(str(wallet.available_usdt)),
             equity * (Decimal(str(strategy.max_position_size_pct)) / Decimal("100")),
         ),
+        config=config,
     )
     _log_stage(
         session,
@@ -2178,7 +2187,7 @@ async def _run_rule_based_cycle(
             "decision_source": "economic_viability",
         }
 
-    movement_quality = evaluate_movement_quality(direction="BUY", metrics=tradability_result.metrics)
+    movement_quality = evaluate_movement_quality(direction="BUY", metrics=tradability_result.metrics, config=config)
     local_safety = evaluate_local_trade_safety(
         tradability=tradability_result,
         movement_quality=movement_quality,
@@ -2206,23 +2215,23 @@ async def _run_rule_based_cycle(
         }
 
     ai_safety = await _apply_ai_validation(
-        session,
-        strategy,
-        cycle_id,
-        symbol,
-        interval,
-        indicators,
-        ai_config,
-        highs,
-        lows,
-        volumes,
-        closes,
-        wallet,
-        position,
-        market_price,
-        live_decision,
-        force,
-        local_safety,
+        session=session,
+        strategy=strategy,
+        symbol=symbol,
+        interval=interval,
+        indicators=indicators,
+        ai_config=ai_config,
+        highs=highs,
+        lows=lows,
+        volumes=volumes,
+        closes=closes,
+        wallet=wallet,
+        position=position,
+        market_price=market_price,
+        decision=live_decision,
+        force=force,
+        cycle_id=cycle_id,
+        local_safety=local_safety,
     )
     if not ai_safety.approved:
         live_decision.final_confidence = 0.0
@@ -2266,6 +2275,7 @@ async def _run_rule_based_cycle(
         entry_price=market_price,
         sizing=sizing,
         total_round_trip_cost_pct=Decimal(str(economic_viability.total_round_trip_cost_pct)),
+        config=config,
     )
     _log_stage(
         session,
@@ -2280,6 +2290,9 @@ async def _run_rule_based_cycle(
             "atr_pct": float(sizing_safety.atr_pct),
             "stop_distance_pct": float(sizing_safety.stop_distance_pct),
             "take_profit_distance_pct": float(sizing_safety.take_profit_distance_pct),
+            "min_atr_pct": float(sizing_safety.min_atr_pct),
+            "min_stop_distance_pct": float(sizing_safety.min_stop_distance_pct),
+            "min_take_profit_distance_pct": float(sizing_safety.min_take_profit_distance_pct),
         },
         context_json={"quantity_pct": float(quantity_pct)},
     )

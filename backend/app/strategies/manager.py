@@ -14,6 +14,13 @@ from app.models.strategy import Strategy
 logger = logging.getLogger(__name__)
 
 
+def _task_loop_closed(task: asyncio.Task) -> bool:
+    try:
+        return task.get_loop().is_closed()
+    except RuntimeError:
+        return True
+
+
 def resolve_strategy_interval(strategy: Strategy) -> int:
     """Resolve runtime loop interval, never faster than the configured candle cadence."""
     candle_seconds = INTERVAL_TO_SECONDS.get(strategy.candle_interval or "1h", 3600)
@@ -67,6 +74,9 @@ class StrategyManager:
         task = self._tasks.pop(strategy_id, None)
         if task is None:
             return False
+        if task.done() or _task_loop_closed(task):
+            logger.info("strategy stopped strategy_id=%s (loop already closed)", strategy_id)
+            return True
         task.cancel()
         try:
             await task
@@ -96,14 +106,19 @@ class StrategyManager:
             return 0
 
         self._tasks.clear()
-        for _, task in active_tasks:
+        awaitable_tasks: list[tuple[str, asyncio.Task]] = []
+        for sid, task in active_tasks:
+            if task.done() or _task_loop_closed(task):
+                logger.info("strategy stopped strategy_id=%s (loop already closed)", sid)
+                continue
             task.cancel()
+            awaitable_tasks.append((sid, task))
 
         results = await asyncio.gather(
-            *(task for _, task in active_tasks),
+            *(task for _, task in awaitable_tasks),
             return_exceptions=True,
-        )
-        for (sid, _), result in zip(active_tasks, results):
+        ) if awaitable_tasks else []
+        for (sid, _), result in zip(awaitable_tasks, results):
             if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
                 logger.error(
                     "strategy stop failed strategy_id=%s",
@@ -115,4 +130,4 @@ class StrategyManager:
         return len(active_tasks)
 
     def running_strategies(self) -> list[str]:
-        return [sid for sid, t in self._tasks.items() if not t.done()]
+        return [sid for sid, t in self._tasks.items() if not t.done() and not _task_loop_closed(t)]

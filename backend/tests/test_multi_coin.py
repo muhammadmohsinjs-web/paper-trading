@@ -5,9 +5,11 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 
 from app.engine.multi_coin import compute_total_equity, compute_unrealized_pnl, ensure_daily_picks
 from app.market.data_store import Candle, DataStore
+from app.models.symbol_evaluation_log import SymbolEvaluationLog
 from app.models.strategy import Strategy
 from app.scanner.types import RankedSymbol
 
@@ -117,3 +119,53 @@ def test_compute_total_equity_and_unrealized_pnl_sum_across_symbols(data_store):
 
     assert total_equity == Decimal("400") + Decimal("520") + Decimal("4050")
     assert unrealized_pnl == Decimal("315")
+
+
+@pytest.mark.asyncio
+async def test_explicit_universe_logs_real_tradability(db_session):
+    strategy = Strategy(
+        id="multi-explicit-logs",
+        name="Explicit Logs",
+        execution_mode="multi_coin_shared_wallet",
+        primary_symbol="BTCUSDT",
+        scan_universe_json=["USDCUSDT"],
+        top_pick_count=1,
+        candle_interval="1h",
+        config_json={"ai_enabled": False},
+    )
+    db_session.add(strategy)
+    await db_session.commit()
+
+    store = DataStore.get_instance()
+    candles: list[Candle] = []
+    base_t = 1_700_000_000_000
+    for i in range(220):
+        close = 1.0 + ((i % 2) * 0.0002)
+        candles.append(
+            Candle(
+                open_time=base_t + i * 3_600_000,
+                open=close,
+                high=close + 0.0003,
+                low=close - 0.0003,
+                close=close,
+                volume=5_000.0,
+            )
+        )
+    store.set_candles("USDCUSDT", "1h", candles)
+
+    await ensure_daily_picks(db_session, strategy, interval="1h", force_refresh=True)
+    await db_session.commit()
+
+    logs = (
+        await db_session.execute(
+            select(SymbolEvaluationLog)
+            .where(
+                SymbolEvaluationLog.strategy_id == strategy.id,
+                SymbolEvaluationLog.stage == "universe_tradability",
+            )
+        )
+    ).scalars().all()
+
+    assert logs
+    assert logs[0].status == "rejected"
+    assert logs[0].reason_code in {"DENYLIST_STABLE_BASE", "NEAR_PEG_PROFILE"}

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.engine.evaluation_logging import build_symbol_evaluation_log
+from app.engine.tradability import evaluate_symbol_tradability
 from app.market.data_store import DataStore
 from app.models.daily_pick import DailyPick
 from app.models.position import Position
@@ -160,21 +161,47 @@ async def ensure_daily_picks(
                         context_json={
                             "selection_date": chosen_date.isoformat(),
                             "market_quality_score": candidate.market_quality_score,
+                            "source": "dynamic",
                         },
                     )
                 )
     elif explicit_universe:
+        store = DataStore.get_instance()
         for symbol in scanner.symbols:
+            candles = store.get_candles(
+                symbol,
+                interval or strategy.candle_interval or settings.default_candle_interval,
+                200,
+            )
+            closes = [candle.close for candle in candles]
+            highs = [candle.high for candle in candles]
+            lows = [candle.low for candle in candles]
+            volumes = [candle.volume for candle in candles]
+            volume_24h_usdt = sum(close * volume for close, volume in zip(closes[-24:], volumes[-24:]))
+            tradability = evaluate_symbol_tradability(
+                symbol=symbol,
+                closes=closes,
+                highs=highs,
+                lows=lows,
+                volumes=volumes,
+                volume_24h_usdt=volume_24h_usdt,
+                config=strategy.config_json or {},
+            ) if candles else None
             session.add(
                 build_symbol_evaluation_log(
                     strategy_id=strategy.id,
                     cycle_id=evaluation_cycle_id,
                     symbol=symbol,
                     stage="universe_tradability",
-                    status="passed",
-                    reason_code="EXPLICIT_UNIVERSE_SYMBOL",
-                    reason_text="Symbol provided by explicit scan universe",
-                    context_json={"selection_date": chosen_date.isoformat()},
+                    status="passed" if tradability is None or tradability.passed else "rejected",
+                    reason_code=(tradability.reason_codes[0] if tradability and tradability.reason_codes else "EXPLICIT_UNIVERSE_SYMBOL"),
+                    reason_text=(
+                        tradability.reason_text
+                        if tradability is not None
+                        else "Symbol provided by explicit scan universe but missing local candles"
+                    ),
+                    metrics_json=tradability.metrics.to_dict() if tradability is not None else {},
+                    context_json={"selection_date": chosen_date.isoformat(), "source": "explicit"},
                 )
             )
 
@@ -199,6 +226,7 @@ async def ensure_daily_picks(
                 context_json={
                     "setup_type": audit.get("setup_type"),
                     "selection_date": chosen_date.isoformat(),
+                    "source": "scanner_rank",
                 },
             )
         )

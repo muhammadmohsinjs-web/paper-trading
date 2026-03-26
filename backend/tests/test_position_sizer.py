@@ -2,7 +2,11 @@
 
 from decimal import Decimal
 
-from app.engine.position_sizer import calculate_position_size, streak_multiplier_for_losses
+from app.engine.position_sizer import (
+    calculate_position_size,
+    evaluate_position_sizing_safety,
+    streak_multiplier_for_losses,
+)
 
 
 def test_streak_multiplier_matches_protocol():
@@ -122,6 +126,26 @@ def test_full_confidence_caps_at_60pct():
         confidence_tier="full",
     )
     assert result.quantity_pct <= Decimal("0.60")
+
+
+def test_position_sizing_safety_rejects_tiny_atr_structure():
+    sizing = calculate_position_size(
+        equity=Decimal("10000"),
+        entry_price=Decimal("1.0"),
+        atr=Decimal("0.001"),
+        atr_multiplier=Decimal("1.0"),
+        take_profit_ratio=Decimal("1.5"),
+        max_position_pct=Decimal("30"),
+    )
+
+    safety = evaluate_position_sizing_safety(
+        entry_price=Decimal("1.0"),
+        sizing=sizing,
+        total_round_trip_cost_pct=Decimal("0.20"),
+    )
+
+    assert safety.passed is False
+    assert safety.reason_code in {"ATR_TOO_SMALL_FOR_SIZING", "STOP_DISTANCE_TOO_SMALL", "TARGET_DISTANCE_TOO_SMALL"}
 
 
 def test_streak_multiplier_boundary_2():

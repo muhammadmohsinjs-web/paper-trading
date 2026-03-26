@@ -186,3 +186,28 @@ def test_confidence_gets_regime_bonus_in_supportive_market():
     crash = compute_composite_score(indicators, regime="crash")
 
     assert trending.confidence > crash.confidence
+
+
+def test_weak_directional_score_cannot_be_rescued_by_agreement():
+    indicators = {
+        "rsi": [39.5],
+        "macd": ([0.010, 0.011], [0.0105, 0.0108], [0.0001, 0.0002]),
+        "sma_short": [100.0, 100.08],
+        "sma_long": [99.99, 100.01],
+        "ema_12": [100.0, 100.07],
+        "ema_26": [99.99, 100.0],
+        "volume_ratio": [1.8],
+        "latest_close": 100.15,
+        "previous_close": 100.10,
+    }
+
+    result = compute_composite_score(
+        indicators,
+        regime="trending_up",
+        movement_quality_score=0.58,
+        market_quality_score=0.75,
+        config={"confidence_gate": 0.2},
+    )
+
+    assert result.signal == "HOLD"
+    assert "EDGE_TOO_WEAK" in result.reject_reason_codes

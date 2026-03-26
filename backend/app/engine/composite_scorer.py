@@ -5,6 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from app.engine.reason_codes import (
+    DIRECTIONAL_SCORE_TOO_SMALL,
+    EDGE_TOO_WEAK,
+    FINAL_CONFIDENCE_TOO_LOW,
+    MARKET_QUALITY_TOO_LOW,
+    MOVEMENT_QUALITY_TOO_LOW,
+)
+from app.engine.trade_quality import resolve_trade_quality_thresholds
+
 DEFAULT_WEIGHTS = {
     "rsi": 0.20,
     "macd": 0.20,
@@ -30,9 +39,12 @@ class CompositeScoreResult:
     ai_vote_present: bool
     directional_score: float
     edge_strength: float
+    base_edge_score: float
     signal_agreement: float
     market_quality: float
     regime_alignment: float
+    edge_floor_passed: bool
+    quality_floor_passed: bool
     reject_reason_codes: list[str]
 
 
@@ -269,6 +281,7 @@ def compute_composite_score(
     movement_quality_score: float | None = None,
     market_quality_score: float | None = None,
 ) -> CompositeScoreResult:
+    thresholds = resolve_trade_quality_thresholds(config)
     latest_rsi = indicators.get("rsi", [None])[-1] if indicators.get("rsi") else None
     macd_line, signal_line, histogram = indicators.get("macd", ([], [], []))
     latest_volume_ratio = indicators.get("volume_ratio", [None])[-1] if indicators.get("volume_ratio") else None
@@ -303,30 +316,36 @@ def compute_composite_score(
     movement_quality = _derive_movement_quality(indicators, movement_quality_score)
     market_quality = _derive_market_quality(indicators, market_quality_score)
     signal_agreement = _signal_agreement(votes, directional_score)
-    edge_strength = min(abs(directional_score) * max(movement_quality, 0.0), 1.0)
     regime_alignment = _regime_alignment_score(regime, direction)
-    confidence = max(
-        0.0,
-        min(
-            0.55 * edge_strength
-            + 0.15 * signal_agreement
-            + 0.20 * market_quality
-            + 0.10 * regime_alignment,
-            1.0,
-        ),
+    base_edge_score = min(
+        1.0,
+        0.70 * abs(directional_score)
+        + 0.20 * movement_quality
+        + 0.10 * market_quality,
     )
+    agreement_multiplier = 0.85 + (0.20 * signal_agreement)
+    regime_multiplier = 0.90 + (0.10 * regime_alignment)
+    edge_strength = min(base_edge_score, 1.0)
+    confidence = max(0.0, min(edge_strength * agreement_multiplier * regime_multiplier, 1.0))
 
     reject_reason_codes: list[str] = []
-    if abs(directional_score) < 0.20:
-        reject_reason_codes.append("DIRECTIONAL_SCORE_TOO_SMALL")
-    if edge_strength < 0.30:
-        reject_reason_codes.append("EDGE_TOO_WEAK")
-    if market_quality < 0.45:
-        reject_reason_codes.append("MARKET_QUALITY_TOO_LOW")
+    edge_floor_passed = abs(directional_score) >= thresholds.min_directional_score and edge_strength >= thresholds.min_edge_strength
+    quality_floor_passed = (
+        movement_quality >= thresholds.min_movement_quality_score
+        and market_quality >= thresholds.min_composite_market_quality_score
+    )
+    if abs(directional_score) < thresholds.min_directional_score:
+        reject_reason_codes.append(DIRECTIONAL_SCORE_TOO_SMALL)
+    if movement_quality < thresholds.min_movement_quality_score:
+        reject_reason_codes.append(MOVEMENT_QUALITY_TOO_LOW)
+    if market_quality < thresholds.min_composite_market_quality_score:
+        reject_reason_codes.append(MARKET_QUALITY_TOO_LOW)
+    if edge_strength < thresholds.min_edge_strength:
+        reject_reason_codes.append(EDGE_TOO_WEAK)
 
-    gate = max(float((config or {}).get("confidence_gate", DEFAULT_CONFIDENCE_GATE)), 0.55)
+    gate = max(float((config or {}).get("confidence_gate", DEFAULT_CONFIDENCE_GATE)), thresholds.min_edge_strength)
     if confidence < gate:
-        reject_reason_codes.append("FINAL_CONFIDENCE_TOO_LOW")
+        reject_reason_codes.append(FINAL_CONFIDENCE_TOO_LOW)
 
     signal = direction if direction != "HOLD" and not reject_reason_codes else "HOLD"
 
@@ -341,8 +360,11 @@ def compute_composite_score(
         ai_vote_present=ai_vote_value is not None,
         directional_score=directional_score,
         edge_strength=edge_strength,
+        base_edge_score=base_edge_score,
         signal_agreement=signal_agreement,
         market_quality=market_quality,
         regime_alignment=regime_alignment,
+        edge_floor_passed=edge_floor_passed,
+        quality_floor_passed=quality_floor_passed,
         reject_reason_codes=reject_reason_codes,
     )

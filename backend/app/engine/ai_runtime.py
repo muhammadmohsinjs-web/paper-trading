@@ -199,6 +199,7 @@ def _validation_system_prompt(proposed_action: str) -> str:
         "Rules:\n"
         "- approve must be true or false.\n"
         "- Use false when the setup is near-peg, ultra-low-volatility, fee-negative, has no expansion path, or has contradictory/low-quality structure.\n"
+        "- This validator is veto-only. Do not suggest position-size or confidence changes.\n"
         "- reason_code must be a compact machine-readable code.\n"
         "- fatal_flags must be an array of strings.\n"
         "- evidence must be a small JSON object summarizing the numeric facts you relied on.\n"
@@ -417,8 +418,7 @@ def _coerce_confidence(payload: dict[str, Any]) -> float | None:
 
 def _coerce_validation_payload(payload: dict[str, Any]) -> tuple[bool, float, str, str | None, list[str], dict[str, Any]]:
     approved = bool(payload.get("approve", True))
-    raw_adjustment = float(payload.get("confidence_adjustment", 0.0) or 0.0)
-    adjustment = max(-0.30, min(0.0, raw_adjustment))
+    adjustment = 0.0
     reason = str(payload.get("reason", "")).strip() or "AI validation"
     reason_code = str(payload.get("reason_code", "")).strip() or None
     raw_flags = payload.get("fatal_flags") or []

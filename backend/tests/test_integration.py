@@ -15,6 +15,7 @@ from app.models.daily_pick import DailyPick
 from app.models.snapshot import Snapshot
 from app.models.strategy import Strategy
 from app.models.wallet import Wallet
+from app.scanner.types import RankedSymbol
 from app.market.data_store import Candle, DataStore
 
 
@@ -310,21 +311,21 @@ async def test_activate_strategy_clamps_loop_interval_to_candle_interval(test_ap
 
 
 @pytest.mark.asyncio
-async def test_create_multicoin_strategy_initializes_wallet_snapshot_and_daily_picks(test_app):
+async def test_create_multicoin_strategy_initializes_wallet_snapshot_and_daily_picks(test_app, monkeypatch):
     """Shared-wallet strategies should surface an initial funded state immediately."""
     store = DataStore.get_instance()
 
     def seed_symbol(symbol: str, price_offset: float) -> None:
         candles = []
         for i in range(200):
-            close = 50000.0 + price_offset + i * 8
-            volume = 120.0 if i < 199 else 500.0
+            close = 50000.0 + price_offset + i * 14 + max(0, i - 165) * 10
+            volume = 150.0 + i * 2 + (900.0 if i > 188 else 0.0)
             candles.append(
                 Candle(
                     open_time=1700000000000 + i * 3600000,
-                    open=close - 10,
-                    high=close + 20,
-                    low=close - 20,
+                    open=close - 15,
+                    high=close + 35,
+                    low=close - 30,
                     close=close,
                     volume=volume,
                 )
@@ -333,6 +334,21 @@ async def test_create_multicoin_strategy_initializes_wallet_snapshot_and_daily_p
 
     seed_symbol("BTCUSDT", 0.0)
     seed_symbol("ETHUSDT", 1500.0)
+
+    def fake_rank_symbols(self, interval="1h", max_results=5, liquidity_floor_usdt=None):
+        return [
+            RankedSymbol(
+                "BTCUSDT",
+                0.91,
+                "trending_up",
+                "ema_trend_bullish",
+                "sma_crossover",
+                "synthetic qualified setup",
+                2_000_000.0,
+            )
+        ][:max_results]
+
+    monkeypatch.setattr("app.engine.multi_coin.OpportunityScanner.rank_symbols", fake_rank_symbols)
 
     transport = ASGITransport(app=test_app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

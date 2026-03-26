@@ -20,6 +20,7 @@ from typing import Any
 import httpx
 
 from app.config import DEFAULT_SCAN_UNIVERSE, get_settings
+from app.engine.reason_codes import ENTRY_BLOCKED_RETAINED_SYMBOL, RETAINED_OPEN_POSITION
 from app.engine.tradability import evaluate_symbol_tradability
 from app.market.binance_rest import fetch_candles
 from app.market.data_store import DataStore
@@ -319,9 +320,9 @@ class UniverseSelector:
                         relative_strength=0.0,
                         volume_24h_usdt=0.0,
                         tradability_passed=False,
-                        reason_codes=["RETAINED_OPEN_POSITION"],
-                        reason_text="Retained because strategy still has an open position",
-                        metrics={},
+                        reason_codes=[RETAINED_OPEN_POSITION, ENTRY_BLOCKED_RETAINED_SYMBOL],
+                        reason_text="Retained because strategy still has an open position; blocked for fresh entries",
+                        metrics={"entry_blocked": True},
                     ))
                 retained_added.append(sym)
                 selected_symbols.add(sym)

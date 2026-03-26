@@ -7,7 +7,23 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.config import DEFAULT_SCAN_UNIVERSE, get_settings
-from app.engine.tradability import build_tradability_metrics, evaluate_movement_quality
+from app.engine.reason_codes import (
+    LIQUIDITY_TOO_LOW,
+    MARKET_DATA_INSUFFICIENT,
+    NO_QUALIFYING_SETUP,
+    QUALIFIED_SETUP,
+    SETUP_GAP_ONLY,
+    SETUP_NO_ABSOLUTE_EXPANSION,
+    SETUP_RANGE_TOO_SMALL,
+    SETUP_SCORE_TOO_LOW,
+    SETUP_SLOPE_TOO_WEAK,
+    SETUP_STRUCTURE_TOO_WEAK,
+)
+from app.engine.tradability import (
+    build_tradability_metrics,
+    evaluate_movement_quality,
+    evaluate_symbol_tradability,
+)
 from app.market.data_store import DataStore
 from app.market.indicators import compute_indicators
 from app.regime.classifier import RegimeClassifier
@@ -22,7 +38,7 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 DEFAULT_SYMBOLS = list(DEFAULT_SCAN_UNIVERSE)
-MIN_SETUP_SCORE = 0.20
+MIN_SETUP_SCORE = 0.30
 MIN_CANDLES_FOR_SCAN = 50
 
 
@@ -78,6 +94,18 @@ class OpportunityScanner:
             lows = [c.low for c in candles]
             volumes = [c.volume for c in candles]
             indicators = compute_indicators(closes, highs=highs, lows=lows, volumes=volumes)
+            tradability = evaluate_symbol_tradability(
+                symbol=symbol,
+                closes=closes,
+                highs=highs,
+                lows=lows,
+                volumes=volumes,
+                volume_24h_usdt=self._estimate_liquidity_usdt(candles, window=24),
+                indicators=indicators,
+            )
+            if not tradability.passed:
+                symbols_no_setup.append(symbol)
+                continue
             regime_result = self.regime_classifier.classify(indicators)
             if symbol == "BTCUSDT":
                 overall_regime = regime_result.regime.value
@@ -148,7 +176,7 @@ class OpportunityScanner:
                 audit_rows.append({
                     "symbol": symbol,
                     "status": "skipped",
-                    "reason_code": "MARKET_DATA_INSUFFICIENT",
+                    "reason_code": MARKET_DATA_INSUFFICIENT,
                     "reason_text": "Insufficient candle history for scan",
                     "setup_type": None,
                     "movement_quality": {},
@@ -161,6 +189,26 @@ class OpportunityScanner:
             lows = [c.low for c in candles]
             volumes = [c.volume for c in candles]
             indicators = compute_indicators(closes, highs=highs, lows=lows, volumes=volumes)
+            tradability = evaluate_symbol_tradability(
+                symbol=symbol,
+                closes=closes,
+                highs=highs,
+                lows=lows,
+                volumes=volumes,
+                volume_24h_usdt=self._estimate_liquidity_usdt(candles, window=24),
+                indicators=indicators,
+            )
+            if not tradability.passed:
+                audit_rows.append({
+                    "symbol": symbol,
+                    "status": "rejected",
+                    "reason_code": tradability.reason_codes[0] if tradability.reason_codes else None,
+                    "reason_text": tradability.reason_text,
+                    "setup_type": None,
+                    "movement_quality": tradability.metrics.to_dict(),
+                    "score": 0.0,
+                })
+                continue
             regime_result = self.regime_classifier.classify(indicators)
             setups, audits = self._detect_setups(
                 symbol,
@@ -177,7 +225,7 @@ class OpportunityScanner:
                 audit_rows.append({
                     "symbol": symbol,
                     "status": "rejected",
-                    "reason_code": first_rejection.reason_code if first_rejection else "NO_QUALIFYING_SETUP",
+                    "reason_code": first_rejection.reason_code if first_rejection else NO_QUALIFYING_SETUP,
                     "reason_text": first_rejection.reason_text if first_rejection else "No setup passed movement-quality checks",
                     "setup_type": first_rejection.setup_type if first_rejection else None,
                     "movement_quality": first_rejection.metrics if first_rejection else {},
@@ -192,7 +240,7 @@ class OpportunityScanner:
                 audit_rows.append({
                     "symbol": symbol,
                     "status": "rejected",
-                    "reason_code": "LIQUIDITY_TOO_LOW",
+                    "reason_code": LIQUIDITY_TOO_LOW,
                     "reason_text": f"Liquidity ${liquidity_usdt:,.0f} below floor ${min_liquidity:,.0f}",
                     "setup_type": best_setup.setup_type,
                     "movement_quality": best_setup.movement_quality,
@@ -214,6 +262,7 @@ class OpportunityScanner:
                     liquidity_usdt=liquidity_usdt,
                     indicators=best_setup.indicators,
                     reason_code=best_setup.reason_code,
+                    reason_codes=best_setup.reason_codes,
                     reason_text=best_setup.reason_text or best_setup.reason,
                     movement_quality=best_setup.movement_quality,
                 )
@@ -269,6 +318,7 @@ class OpportunityScanner:
                     liquidity_usdt=selected_candidate.liquidity_usdt,
                     indicators=selected_candidate.indicators,
                     reason_code=selected_candidate.reason_code,
+                    reason_codes=selected_candidate.reason_codes,
                     reason_text=selected_candidate.reason_text,
                     movement_quality=selected_candidate.movement_quality,
                 )
@@ -340,6 +390,7 @@ class OpportunityScanner:
                     setup_type=setup_type,
                     status="rejected",
                     reason_code=reason_code,
+                    reason_codes=[reason_code],
                     reason_text=reason_text,
                     metrics=metrics or {},
                 )
@@ -359,14 +410,14 @@ class OpportunityScanner:
             direction = "BUY" if signal == "BUY" else "SELL"
             movement = evaluate_movement_quality(direction=direction, metrics=tradability_metrics, require_volume=require_volume)
             if not movement.passed:
-                reject(setup_type, movement.reason_code or "SETUP_NO_ABSOLUTE_EXPANSION", movement.reason_text, movement.metrics)
+                reject(setup_type, movement.reason_code or SETUP_NO_ABSOLUTE_EXPANSION, movement.reason_text, movement.metrics)
                 return
             for passed, reason_code, reason_text in extra_checks or []:
                 if not passed:
                     reject(setup_type, reason_code, reason_text, movement.metrics)
                     return
             if score < MIN_SETUP_SCORE:
-                reject(setup_type, "SETUP_SCORE_TOO_LOW", "Setup score below minimum threshold", movement.metrics)
+                reject(setup_type, SETUP_SCORE_TOO_LOW, "Setup score below minimum threshold", movement.metrics)
                 return
             setups.append(
                 RankedSetup(
@@ -378,7 +429,8 @@ class OpportunityScanner:
                     recommended_strategy=recommended_strategy,
                     reason=reason,
                     indicators=indicators_payload,
-                    reason_code="QUALIFIED_SETUP",
+                    reason_code=QUALIFIED_SETUP,
+                    reason_codes=[QUALIFIED_SETUP],
                     reason_text=reason,
                     movement_quality=movement.to_dict(),
                 )
@@ -388,7 +440,8 @@ class OpportunityScanner:
                     symbol=symbol,
                     setup_type=setup_type,
                     status="qualified",
-                    reason_code="QUALIFIED_SETUP",
+                    reason_code=QUALIFIED_SETUP,
+                    reason_codes=[QUALIFIED_SETUP],
                     reason_text=reason,
                     metrics=movement.metrics,
                 )
@@ -443,7 +496,10 @@ class OpportunityScanner:
                     recommended_strategy="bollinger_bounce",
                     reason=f"BB squeeze detected (width percentile: {(1 - pct_rank) * 100:.0f}%)",
                     indicators_payload={"bb_width": round(current_width, 4), "width_percentile": round((1 - pct_rank) * 100, 1)},
-                    extra_checks=[(tradability_metrics.bb_width_pct >= 0.80, "SETUP_RANGE_TOO_SMALL", "Bollinger width is too narrow")],
+                    extra_checks=[
+                        (tradability_metrics.bb_width_pct >= 0.80, SETUP_RANGE_TOO_SMALL, "Bollinger width is too narrow"),
+                        (tradability_metrics.close_std_pct_24h >= 0.20, SETUP_STRUCTURE_TOO_WEAK, "Compression is too flat to support expansion"),
+                    ],
                 )
 
         if len(sma_short) >= 2 and len(sma_long) >= 2:
@@ -465,9 +521,10 @@ class OpportunityScanner:
                         reason=reason,
                         indicators_payload={"sma_gap_pct": round(gap_pct, 3)},
                         extra_checks=[
-                            (abs(tradability_metrics.short_sma_slope_pct_3) >= 0.10, "SETUP_SLOPE_TOO_WEAK", "Short SMA slope is too weak"),
-                            (tradability_metrics.close_vs_close_5_pct >= 0.25, "SETUP_GAP_ONLY", "Cross is proximity-only without enough price movement"),
-                            (tradability_metrics.range_pct_20 >= 0.80, "SETUP_RANGE_TOO_SMALL", "Range floor not met for crossover setup"),
+                            (abs(tradability_metrics.short_sma_slope_pct_3) >= 0.15, SETUP_SLOPE_TOO_WEAK, "Short SMA slope is too weak"),
+                            (tradability_metrics.close_vs_close_5_pct >= 0.40, SETUP_GAP_ONLY, "Cross is proximity-only without enough price movement"),
+                            (tradability_metrics.range_pct_20 >= 1.00, SETUP_RANGE_TOO_SMALL, "Range floor not met for crossover setup"),
+                            (abs(tradability_metrics.ema_spread_pct) >= 0.10, SETUP_STRUCTURE_TOO_WEAK, "EMA spread is too compressed for a valid cross"),
                         ],
                     )
 
@@ -508,7 +565,10 @@ class OpportunityScanner:
                         "macd_signal": round(macd_signal[-1], 4),
                         "macd_hist": round(hist_val, 4),
                     },
-                    extra_checks=[(hist_pct >= 0.02, "SETUP_NO_ABSOLUTE_EXPANSION", "MACD histogram magnitude is too small")],
+                    extra_checks=[
+                        (hist_pct >= 0.03, SETUP_NO_ABSOLUTE_EXPANSION, "MACD histogram magnitude is too small"),
+                        (abs(tradability_metrics.directional_displacement_pct_10) >= 0.35, SETUP_NO_ABSOLUTE_EXPANSION, "Price displacement is too weak for MACD follow-through"),
+                    ],
                 )
 
         if len(macd_hist) >= 4:
@@ -524,6 +584,9 @@ class OpportunityScanner:
                     recommended_strategy="macd_momentum",
                     reason=f"MACD histogram rising for 3+ bars ({macd_hist[-1]:.4f})",
                     indicators_payload={"macd_hist": round(macd_hist[-1], 4)},
+                    extra_checks=[
+                        (abs(tradability_metrics.directional_displacement_pct_10) >= 0.35, SETUP_NO_ABSOLUTE_EXPANSION, "Momentum is rising without enough price displacement"),
+                    ],
                 )
             elif hist_shrinking and macd_hist[-1] < 0:
                 strength = min(abs(macd_hist[-1]) * 100, 1.0) * 0.6
@@ -535,6 +598,9 @@ class OpportunityScanner:
                     recommended_strategy="macd_momentum",
                     reason=f"MACD histogram falling for 3+ bars ({macd_hist[-1]:.4f})",
                     indicators_payload={"macd_hist": round(macd_hist[-1], 4)},
+                    extra_checks=[
+                        (abs(tradability_metrics.directional_displacement_pct_10) >= 0.35, SETUP_NO_ABSOLUTE_EXPANSION, "Momentum is falling without enough price displacement"),
+                    ],
                 )
 
         if latest_close and len(ema_12) >= 2 and len(ema_26) >= 2:
@@ -555,6 +621,10 @@ class OpportunityScanner:
                     recommended_strategy="sma_crossover",
                     reason=f"Bullish EMA stack (spread: {ema_spread:.2f}%, {'widening' if widening else 'steady'})",
                     indicators_payload={"ema_spread_pct": round(ema_spread, 3), "widening": widening},
+                    extra_checks=[
+                        (ema_spread >= 0.15, SETUP_STRUCTURE_TOO_WEAK, "EMA spread is too narrow"),
+                        (tradability_metrics.short_sma_slope_pct_3 >= 0.15, SETUP_SLOPE_TOO_WEAK, "Trend slope is too weak"),
+                    ],
                 )
             elif bearish_stack:
                 ema_spread = (ema_26[-1] - ema_12[-1]) / ema_26[-1] * 100
@@ -569,6 +639,10 @@ class OpportunityScanner:
                     recommended_strategy="sma_crossover",
                     reason=f"Bearish EMA stack (spread: {ema_spread:.2f}%)",
                     indicators_payload={"ema_spread_pct": round(ema_spread, 3)},
+                    extra_checks=[
+                        (ema_spread >= 0.15, SETUP_STRUCTURE_TOO_WEAK, "EMA spread is too narrow"),
+                        (abs(tradability_metrics.short_sma_slope_pct_3) >= 0.15, SETUP_SLOPE_TOO_WEAK, "Trend slope is too weak"),
+                    ],
                 )
 
         if latest_adx is not None and latest_adx > 25 and len(ema_12) >= 1 and len(ema_26) >= 1:
@@ -586,9 +660,9 @@ class OpportunityScanner:
                 reason=f"ADX strong trend at {latest_adx:.1f} ({'bullish' if trend_up else 'bearish'})",
                 indicators_payload={"adx": round(latest_adx, 2)},
                 extra_checks=[
-                    (abs(tradability_metrics.ema_spread_pct) >= 0.20, "SETUP_SLOPE_TOO_WEAK", "EMA spread is too small for a trend setup"),
-                    (abs(tradability_metrics.directional_displacement_pct_10) >= 0.50, "SETUP_NO_ABSOLUTE_EXPANSION", "Directional displacement is too small for ADX trend"),
-                    (tradability_metrics.range_pct_20 >= 1.00, "SETUP_RANGE_TOO_SMALL", "Trend setup needs at least 1.00% range"),
+                    (abs(tradability_metrics.ema_spread_pct) >= 0.20, SETUP_SLOPE_TOO_WEAK, "EMA spread is too small for a trend setup"),
+                    (abs(tradability_metrics.directional_displacement_pct_10) >= 0.50, SETUP_NO_ABSOLUTE_EXPANSION, "Directional displacement is too small for ADX trend"),
+                    (tradability_metrics.range_pct_20 >= 1.00, SETUP_RANGE_TOO_SMALL, "Trend setup needs at least 1.00% range"),
                 ],
             )
 
@@ -609,7 +683,7 @@ class OpportunityScanner:
                         reason=f"Price touching lower BB (%B: {pct_b:.2f})",
                         indicators_payload={"pct_b": round(pct_b, 3), "bb_width": round(bb_width, 4)},
                         require_volume=False,
-                        extra_checks=[(tradability_metrics.bb_width_pct >= 0.80, "SETUP_RANGE_TOO_SMALL", "Bollinger width is too narrow")],
+                        extra_checks=[(tradability_metrics.bb_width_pct >= 0.80, SETUP_RANGE_TOO_SMALL, "Bollinger width is too narrow")],
                     )
                 elif pct_b >= 0.95:
                     strength = max(0, (pct_b - 0.9) / 0.1) * 0.8
@@ -624,7 +698,7 @@ class OpportunityScanner:
                         reason=f"Price touching upper BB (%B: {pct_b:.2f})",
                         indicators_payload={"pct_b": round(pct_b, 3), "bb_width": round(bb_width, 4)},
                         require_volume=False,
-                        extra_checks=[(tradability_metrics.bb_width_pct >= 0.80, "SETUP_RANGE_TOO_SMALL", "Bollinger width is too narrow")],
+                        extra_checks=[(tradability_metrics.bb_width_pct >= 0.80, SETUP_RANGE_TOO_SMALL, "Bollinger width is too narrow")],
                     )
 
         rsi_div = indicators.get("rsi_divergence")

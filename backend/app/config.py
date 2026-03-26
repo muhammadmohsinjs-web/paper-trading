@@ -101,6 +101,29 @@ class Settings:
     universe_trend_clarity_weight: float = 0.20
     universe_liquidity_depth_weight: float = 0.15
     universe_relative_strength_weight: float = 0.10
+    stablecoin_base_denylist: list[str] = field(default_factory=lambda: [
+        "USDC", "USDT", "BUSD", "FDUSD", "TUSD", "USDP", "DAI", "USD1",
+        "USDE", "USDD", "PYUSD", "FRAX",
+    ])
+
+    # Trade quality thresholds
+    trade_quality_min_atr_pct: float = 0.25
+    trade_quality_min_range_pct_20: float = 1.00
+    trade_quality_min_range_pct_24h: float = 0.80
+    trade_quality_min_abs_change_pct_24h: float = 0.40
+    trade_quality_min_close_std_pct_24h: float = 0.20
+    trade_quality_min_market_quality_score: float = 0.55
+    trade_quality_min_move_vs_cost_multiple: float = 2.0
+    trade_quality_min_directional_score: float = 0.30
+    trade_quality_min_movement_quality_score: float = 0.55
+    trade_quality_min_composite_market_quality_score: float = 0.50
+    trade_quality_min_edge_strength: float = 0.60
+    trade_quality_min_reward_to_cost_ratio: float = 1.25
+    trade_quality_min_gross_reward_cost_multiple: float = 2.0
+    trade_quality_min_net_reward_pct: float = 0.35
+    trade_quality_min_net_rr: float = 1.35
+    trade_quality_min_stop_distance_pct: float = 0.40
+    trade_quality_min_take_profit_distance_pct: float = 0.80
 
     spot_fee_rate: float = 0.001
     bnb_discount_fee_rate: float = 0.00075
@@ -194,6 +217,27 @@ class Settings:
             universe_min_24h_volume_usdt=float(_get_value("UNIVERSE_MIN_24H_VOLUME_USDT", default=str(cls.universe_min_24h_volume_usdt))),
             universe_min_price=float(_get_value("UNIVERSE_MIN_PRICE", default=str(cls.universe_min_price))),
             universe_min_listing_age_days=int(_get_value("UNIVERSE_MIN_LISTING_AGE_DAYS", default=str(cls.universe_min_listing_age_days))),
+            stablecoin_base_denylist=_get_list("STABLECOIN_BASE_DENYLIST") or [
+                "USDC", "USDT", "BUSD", "FDUSD", "TUSD", "USDP", "DAI", "USD1",
+                "USDE", "USDD", "PYUSD", "FRAX",
+            ],
+            trade_quality_min_atr_pct=float(_get_value("TRADE_QUALITY_MIN_ATR_PCT", default=str(cls.trade_quality_min_atr_pct))),
+            trade_quality_min_range_pct_20=float(_get_value("TRADE_QUALITY_MIN_RANGE_PCT_20", default=str(cls.trade_quality_min_range_pct_20))),
+            trade_quality_min_range_pct_24h=float(_get_value("TRADE_QUALITY_MIN_RANGE_PCT_24H", default=str(cls.trade_quality_min_range_pct_24h))),
+            trade_quality_min_abs_change_pct_24h=float(_get_value("TRADE_QUALITY_MIN_ABS_CHANGE_PCT_24H", default=str(cls.trade_quality_min_abs_change_pct_24h))),
+            trade_quality_min_close_std_pct_24h=float(_get_value("TRADE_QUALITY_MIN_CLOSE_STD_PCT_24H", default=str(cls.trade_quality_min_close_std_pct_24h))),
+            trade_quality_min_market_quality_score=float(_get_value("TRADE_QUALITY_MIN_MARKET_QUALITY_SCORE", default=str(cls.trade_quality_min_market_quality_score))),
+            trade_quality_min_move_vs_cost_multiple=float(_get_value("TRADE_QUALITY_MIN_MOVE_VS_COST_MULTIPLE", default=str(cls.trade_quality_min_move_vs_cost_multiple))),
+            trade_quality_min_directional_score=float(_get_value("TRADE_QUALITY_MIN_DIRECTIONAL_SCORE", default=str(cls.trade_quality_min_directional_score))),
+            trade_quality_min_movement_quality_score=float(_get_value("TRADE_QUALITY_MIN_MOVEMENT_QUALITY_SCORE", default=str(cls.trade_quality_min_movement_quality_score))),
+            trade_quality_min_composite_market_quality_score=float(_get_value("TRADE_QUALITY_MIN_COMPOSITE_MARKET_QUALITY_SCORE", default=str(cls.trade_quality_min_composite_market_quality_score))),
+            trade_quality_min_edge_strength=float(_get_value("TRADE_QUALITY_MIN_EDGE_STRENGTH", default=str(cls.trade_quality_min_edge_strength))),
+            trade_quality_min_reward_to_cost_ratio=float(_get_value("TRADE_QUALITY_MIN_REWARD_TO_COST_RATIO", default=str(cls.trade_quality_min_reward_to_cost_ratio))),
+            trade_quality_min_gross_reward_cost_multiple=float(_get_value("TRADE_QUALITY_MIN_GROSS_REWARD_COST_MULTIPLE", default=str(cls.trade_quality_min_gross_reward_cost_multiple))),
+            trade_quality_min_net_reward_pct=float(_get_value("TRADE_QUALITY_MIN_NET_REWARD_PCT", default=str(cls.trade_quality_min_net_reward_pct))),
+            trade_quality_min_net_rr=float(_get_value("TRADE_QUALITY_MIN_NET_RR", default=str(cls.trade_quality_min_net_rr))),
+            trade_quality_min_stop_distance_pct=float(_get_value("TRADE_QUALITY_MIN_STOP_DISTANCE_PCT", default=str(cls.trade_quality_min_stop_distance_pct))),
+            trade_quality_min_take_profit_distance_pct=float(_get_value("TRADE_QUALITY_MIN_TAKE_PROFIT_DISTANCE_PCT", default=str(cls.trade_quality_min_take_profit_distance_pct))),
             spot_fee_rate=float(_get_value("SPOT_FEE_RATE", default=str(cls.spot_fee_rate))),
             bnb_discount_fee_rate=float(_get_value("BNB_DISCOUNT_FEE_RATE", default=str(cls.bnb_discount_fee_rate))),
             default_stop_loss_pct=float(_get_value("STOP_LOSS_PCT", default=str(cls.default_stop_loss_pct))),

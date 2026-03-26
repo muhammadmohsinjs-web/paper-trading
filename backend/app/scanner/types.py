@@ -60,6 +60,7 @@ class SetupAuditNote:
     setup_type: str
     status: str
     reason_code: str | None = None
+    reason_codes: list[str] = field(default_factory=list)
     reason_text: str = ""
     metrics: dict[str, Any] = field(default_factory=dict)
 
@@ -77,6 +78,7 @@ class RankedSetup:
     reason: str
     indicators: dict[str, Any] = field(default_factory=dict)
     reason_code: str | None = None
+    reason_codes: list[str] = field(default_factory=list)
     reason_text: str = ""
     movement_quality: dict[str, Any] = field(default_factory=dict)
 
@@ -94,6 +96,7 @@ class RankedSymbol:
     liquidity_usdt: float
     indicators: dict[str, Any] = field(default_factory=dict)
     reason_code: str | None = None
+    reason_codes: list[str] = field(default_factory=list)
     reason_text: str = ""
     movement_quality: dict[str, Any] = field(default_factory=dict)
 
