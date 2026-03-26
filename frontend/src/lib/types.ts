@@ -316,6 +316,7 @@ export type OpenAIUsageResponse = {
   filtered?: boolean;
   api_key_id?: string;
   project_id?: string;
+  lookup_error?: string;
   costs?: {
     total_usd: number;
     daily: { date: string; cost_usd: number }[];

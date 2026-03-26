@@ -40,11 +40,32 @@ export function formatDateTime(
     return "--";
   }
 
-  return new Intl.DateTimeFormat("en-US", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    ...options
-  }).format(date);
+  const hasExplicitParts = Boolean(
+    options &&
+      (
+        options.weekday ||
+        options.era ||
+        options.year ||
+        options.month ||
+        options.day ||
+        options.dayPeriod ||
+        options.hour ||
+        options.minute ||
+        options.second ||
+        options.fractionalSecondDigits ||
+        options.timeZoneName
+      )
+  );
+
+  const formatOptions = hasExplicitParts
+    ? options
+    : {
+        dateStyle: "medium" as const,
+        timeStyle: "short" as const,
+        ...options
+      };
+
+  return new Intl.DateTimeFormat("en-US", formatOptions).format(date);
 }
 
 export function cn(...values: Array<string | false | null | undefined>) {

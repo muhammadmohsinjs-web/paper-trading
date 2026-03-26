@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -126,40 +127,82 @@ async def _resolve_api_key_id(
     client: httpx.AsyncClient,
     admin_key: str,
     api_key: str,
-) -> tuple[str | None, str | None]:
+) -> tuple[str | None, str | None, str | None]:
     """Find the key_id and project_id for the configured OPENAI_API_KEY.
 
     Walks all projects and their keys, matching by the last 4 chars of the
     redacted value (OpenAI redacts the middle but exposes the suffix).
     """
     if not api_key:
-        return None, None
+        return None, None, None
 
     key_suffix = api_key[-4:]
 
-    resp = await client.get(
+    resp, error = await _safe_admin_get(
+        client,
         "https://api.openai.com/v1/organization/projects",
         params={"limit": 100},
         headers={"Authorization": f"Bearer {admin_key}"},
+        operation="list projects",
     )
+    if resp is None:
+        return None, None, error
     if resp.status_code != 200:
-        return None, None
+        return None, None, _http_status_error(resp)
 
+    last_error: str | None = None
     for project in resp.json().get("data", []):
         pid = project["id"]
-        keys_resp = await client.get(
+        keys_resp, error = await _safe_admin_get(
+            client,
             f"https://api.openai.com/v1/organization/projects/{pid}/api_keys",
             params={"limit": 100},
             headers={"Authorization": f"Bearer {admin_key}"},
+            operation=f"list api keys for project {pid}",
         )
+        if keys_resp is None:
+            last_error = error
+            continue
         if keys_resp.status_code != 200:
+            last_error = _http_status_error(keys_resp)
             continue
         for key in keys_resp.json().get("data", []):
             redacted = key.get("redacted_value", "")
             if redacted.endswith(key_suffix):
-                return key["id"], pid
+                return key["id"], pid, None
 
-    return None, None
+    return None, None, last_error
+
+
+def _http_status_error(response: httpx.Response) -> str:
+    return f"{response.status_code}: {response.text[:200]}"
+
+
+def _transport_error_message(exc: httpx.HTTPError) -> str:
+    if isinstance(exc, httpx.TimeoutException):
+        return f"request timed out ({exc.__class__.__name__})"
+
+    detail = str(exc).strip()
+    if detail:
+        return f"{exc.__class__.__name__}: {detail}"
+    return exc.__class__.__name__
+
+
+async def _safe_admin_get(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    params: dict,
+    headers: dict[str, str],
+    operation: str,
+) -> tuple[httpx.Response | None, str | None]:
+    try:
+        response = await client.get(url, params=params, headers=headers)
+    except httpx.HTTPError as exc:
+        logger.warning("openai admin api request failed operation=%s error=%s", operation, exc)
+        return None, _transport_error_message(exc)
+
+    return response, None
 
 
 @router.get("/openai-usage")
@@ -184,10 +227,11 @@ async def openai_usage(
     now = datetime.now(timezone.utc)
     start_time = int((now - timedelta(days=days)).timestamp())
     auth = {"Authorization": f"Bearer {admin_key}"}
+    timeout = httpx.Timeout(20.0, connect=10.0)
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         # Resolve which key_id and project_id belong to this app's API key
-        api_key_id, project_id = await _resolve_api_key_id(
+        api_key_id, project_id, lookup_error = await _resolve_api_key_id(
             client, admin_key, settings.openai_api_key,
         )
 
@@ -195,11 +239,6 @@ async def openai_usage(
         costs_params: dict = {"start_time": start_time, "bucket_width": "1d"}
         if project_id:
             costs_params["project_ids"] = [project_id]
-        costs_resp = await client.get(
-            "https://api.openai.com/v1/organization/costs",
-            params=costs_params,
-            headers=auth,
-        )
 
         # --- Usage (filter by api_key_id for exact key-level filtering) ---
         usage_params: dict = {
@@ -209,10 +248,21 @@ async def openai_usage(
         }
         if api_key_id:
             usage_params["api_key_ids"] = [api_key_id]
-        usage_resp = await client.get(
-            "https://api.openai.com/v1/organization/usage/completions",
-            params=usage_params,
-            headers=auth,
+        (costs_resp, costs_error), (usage_resp, usage_error) = await asyncio.gather(
+            _safe_admin_get(
+                client,
+                "https://api.openai.com/v1/organization/costs",
+                params=costs_params,
+                headers=auth,
+                operation="fetch costs",
+            ),
+            _safe_admin_get(
+                client,
+                "https://api.openai.com/v1/organization/usage/completions",
+                params=usage_params,
+                headers=auth,
+                operation="fetch usage",
+            ),
         )
 
     result: dict = {
@@ -222,8 +272,10 @@ async def openai_usage(
         "project_id": project_id,
         "filtered": bool(api_key_id or project_id),
     }
+    if lookup_error:
+        result["lookup_error"] = lookup_error
 
-    if costs_resp.status_code == 200:
+    if costs_resp is not None and costs_resp.status_code == 200:
         costs_data = costs_resp.json()
         buckets = costs_data.get("data", [])
         total_usd = 0.0
@@ -242,10 +294,14 @@ async def openai_usage(
             "total_usd": round(total_usd, 6),
             "daily": daily_costs,
         }
+    elif costs_resp is not None:
+        result["costs_error"] = _http_status_error(costs_resp)
+    elif costs_error:
+        result["costs_error"] = costs_error
     else:
-        result["costs_error"] = f"{costs_resp.status_code}: {costs_resp.text[:200]}"
+        result["costs_error"] = "request failed"
 
-    if usage_resp.status_code == 200:
+    if usage_resp is not None and usage_resp.status_code == 200:
         usage_data = usage_resp.json()
         buckets = usage_data.get("data", [])
         total_input = 0
@@ -272,7 +328,11 @@ async def openai_usage(
             "total_requests": total_requests,
             "by_model": model_breakdown,
         }
+    elif usage_resp is not None:
+        result["usage_error"] = _http_status_error(usage_resp)
+    elif usage_error:
+        result["usage_error"] = usage_error
     else:
-        result["usage_error"] = f"{usage_resp.status_code}: {usage_resp.text[:200]}"
+        result["usage_error"] = "request failed"
 
     return result

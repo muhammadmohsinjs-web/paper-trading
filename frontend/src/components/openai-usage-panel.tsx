@@ -25,7 +25,7 @@ export function OpenAIUsagePanel({ data }: Props) {
     );
   }
 
-  const hasErrors = data.costs_error || data.usage_error;
+  const hasErrors = data.lookup_error || data.costs_error || data.usage_error;
 
   return (
     <div className="panel overflow-hidden">
@@ -49,6 +49,7 @@ export function OpenAIUsagePanel({ data }: Props) {
 
       {hasErrors && (
         <div className="border-b border-red-400/20 bg-red-400/5 px-4 py-2 text-xs text-red-400">
+          {data.lookup_error && <p>API key lookup: {data.lookup_error}</p>}
           {data.costs_error && <p>Costs API: {data.costs_error}</p>}
           {data.usage_error && <p>Usage API: {data.usage_error}</p>}
         </div>
