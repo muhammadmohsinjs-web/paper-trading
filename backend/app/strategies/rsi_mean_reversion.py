@@ -1,14 +1,14 @@
-"""RSI Mean-Reversion strategy — divergence-first, deep oversold fallback.
+"""RSI Mean-Reversion strategy — divergence-first, oversold fallback.
 
 Primary signal: bullish RSI divergence (price makes lower low, RSI makes
 higher low). This indicates momentum exhaustion and is the highest-probability
 mean-reversion signal in crypto.
 
-Fallback: RSI drops below 20 (deep oversold) without divergence — still
-a valid entry but lower conviction.
-
-RSI 20-30 without divergence is intentionally skipped — it catches too many
-falling knives in trending markets.
+Tiered oversold entries without divergence:
+  - RSI < 20 (deep oversold) → medium conviction (0.3)
+  - RSI < 25 (oversold) → small conviction (0.2)
+  - RSI 25-35 with divergence → reduced conviction (0.3)
+  - RSI 25-35 without divergence → skip (falling knife territory)
 """
 
 from __future__ import annotations
@@ -52,11 +52,18 @@ class RSIMeanReversionStrategy(BaseStrategy):
 
         # BUY: Check for RSI divergence first (highest quality signal)
         divergence = indicators.get("rsi_divergence")
-        if divergence is not None and divergence.detected and divergence.divergence_type == "bullish":
+        has_divergence = (
+            divergence is not None
+            and divergence.detected
+            and divergence.divergence_type == "bullish"
+        )
+
+        if has_divergence and curr_rsi < 35:
+            qty = Decimal("0.5") if curr_rsi < 25 else Decimal("0.3")
             return TradeSignal(
                 action=TradeSide.BUY,
                 symbol=symbol,
-                quantity_pct=Decimal("0.5"),  # High conviction — divergence confirmed
+                quantity_pct=qty,
                 reason=(
                     f"RSI bullish divergence: price lower low "
                     f"({divergence.price_pivot_2:.2f} < {divergence.price_pivot_1:.2f}) "
@@ -65,14 +72,22 @@ class RSIMeanReversionStrategy(BaseStrategy):
                 ),
             )
 
-        # Fallback: deep oversold only (RSI < 20)
+        # Tiered oversold entries without divergence
         if curr_rsi < 20:
             return TradeSignal(
                 action=TradeSide.BUY,
                 symbol=symbol,
-                quantity_pct=Decimal("0.3"),  # Lower conviction — no divergence
+                quantity_pct=Decimal("0.3"),
                 reason=f"RSI deep oversold BUY: RSI={curr_rsi:.1f} < 20 (no divergence, prev={prev_rsi:.1f})",
             )
 
-        # RSI 20-30 without divergence: intentionally skip (falling knife territory)
+        if curr_rsi < 25:
+            return TradeSignal(
+                action=TradeSide.BUY,
+                symbol=symbol,
+                quantity_pct=Decimal("0.2"),  # Small position — oversold but no divergence
+                reason=f"RSI oversold BUY: RSI={curr_rsi:.1f} < 25 (no divergence, prev={prev_rsi:.1f})",
+            )
+
+        # RSI 25-35 without divergence: skip (falling knife territory)
         return None

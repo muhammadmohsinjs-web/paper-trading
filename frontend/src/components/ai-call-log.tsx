@@ -1,6 +1,7 @@
 "use client";
 
-import { formatCurrency, formatDateTime, formatNumber, formatPercent } from "@/lib/format";
+import { LocalDateTime } from "@/components/local-date-time";
+import { formatCurrency, formatNumber, formatPercent } from "@/lib/format";
 import { cn } from "@/lib/format";
 import type { StrategyWithStats } from "@/lib/types";
 
@@ -122,7 +123,9 @@ export function AICallLog({ strategy, executionMessage }: AICallLogProps) {
           <p className="text-xs uppercase tracking-[0.24em] text-gold/80">AI Call Log</p>
           <h3 className="mt-2 text-xl font-semibold text-sand">Latest Inference</h3>
         </div>
-        <p className="text-xs text-mist/45">Last updated {formatDateTime(strategy.ai_last_decision_at)}</p>
+        <p className="text-xs text-mist/45">
+          Last updated <LocalDateTime value={strategy.ai_last_decision_at} />
+        </p>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">

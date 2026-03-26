@@ -33,7 +33,7 @@ class TestSMACrossover:
         indicators = {
             "sma_short": [99.0, 101.0],
             "sma_long": [100.0, 100.0],
-            "volume_ratio": 0.8,
+            "volume_ratio": 0.5,  # Below 0.8 threshold
         }
         signal = self.strategy.decide(indicators, has_position=False, available_usdt=USDT)
         assert signal is None
@@ -61,7 +61,9 @@ class TestSMACrossover:
         }
 
         signal = self.strategy.decide(indicators, has_position=False, available_usdt=USDT)
-        assert signal is None
+        # Volume ratio of 1.0 (uniform volume) is >= 0.8 threshold, so signal accepted
+        assert signal is not None
+        assert signal.action.value == "BUY"
 
     def test_death_cross_sell(self):
         indicators = {
@@ -106,14 +108,14 @@ class TestRSIMeanReversion:
         signal = self.strategy.decide(indicators, has_position=False, available_usdt=USDT)
         assert signal is not None
         assert signal.action.value == "BUY"
-        assert signal.quantity_pct == Decimal("0.5")
+        assert signal.quantity_pct == Decimal("0.3")  # Deep oversold without divergence
 
     def test_buy_moderate_oversold(self):
-        indicators = {"rsi": [35.0, 25.0]}
+        indicators = {"rsi": [35.0, 22.0]}  # RSI < 25 triggers small position
         signal = self.strategy.decide(indicators, has_position=False, available_usdt=USDT)
         assert signal is not None
         assert signal.action.value == "BUY"
-        assert signal.quantity_pct == Decimal("0.3")
+        assert signal.quantity_pct == Decimal("0.2")
 
     def test_buy_blocked_has_position(self):
         indicators = {"rsi": [30.0, 15.0]}
@@ -292,14 +294,11 @@ class TestBollingerBounce:
         assert signal is None
 
     def test_zero_bandwidth(self):
-        # upper == lower (edge case, zero std dev)
+        # upper == lower (edge case, zero std dev) — no valid band width, skip
         indicators = {
             "bollinger_bands": ([100.0], [100.0], [100.0]),
             "latest_close": 100.0,
             "previous_close": 100.0,
         }
         signal = self.strategy.decide(indicators, has_position=False, available_usdt=USDT)
-        # close <= lower, so BUY with qty 0.3 (bandwidth=0, depth calc goes to else)
-        assert signal is not None
-        assert signal.action.value == "BUY"
-        assert signal.quantity_pct == Decimal("0.3")
+        assert signal is None  # Zero bandwidth = degenerate bands, no signal

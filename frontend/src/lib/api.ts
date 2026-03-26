@@ -9,6 +9,7 @@ import type {
   EquityPoint,
   LeaderboardEntry,
   ManualExecutionResponse,
+  ManualScanResponse,
   MarketPrice,
   OpenAIUsageResponse,
   Position,
@@ -205,4 +206,11 @@ export function getAILogStats() {
 
 export function getOpenAIUsage(days = 7) {
   return request<OpenAIUsageResponse>(`/ai-logs/openai-usage?days=${days}`);
+}
+
+export function runManualScan(interval = "1h", maxResults = 10) {
+  return request<ManualScanResponse>(
+    `/scanner/scan?interval=${interval}&max_results=${maxResults}`,
+    { method: "POST" }
+  );
 }

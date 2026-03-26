@@ -1,4 +1,4 @@
-"""Bollinger Bounce strategy — buy at lower band, sell at upper band."""
+"""Bollinger Bounce strategy — buy at or near lower band, sell at upper band."""
 
 from __future__ import annotations
 
@@ -41,28 +41,38 @@ class BollingerBounceStrategy(BaseStrategy):
 
         symbol = str(indicators.get("symbol") or "BTCUSDT")
 
-        # BUY: Price touches or crosses below lower band (oversold bounce)
-        if latest_close <= curr_lower and not has_position:
-            # Deeper below the band = stronger conviction
+        # BUY: Price at or near lower band (oversold bounce)
+        if not has_position:
             band_width = curr_upper - curr_lower
             if band_width > 0:
-                depth = (curr_lower - latest_close) / band_width
-                if depth > 0.1:  # Price well below lower band
-                    qty_pct = Decimal("0.5")
-                else:
-                    qty_pct = Decimal("0.3")
-            else:
-                qty_pct = Decimal("0.3")
+                # Proximity: how close price is to the lower band (0.0 = at band, 1.0 = at middle)
+                proximity = (latest_close - curr_lower) / band_width
 
-            return TradeSignal(
-                action=TradeSide.BUY,
-                symbol=symbol,
-                quantity_pct=qty_pct,
-                reason=(
-                    f"Bollinger bounce BUY: close({latest_close:.2f}) <= "
-                    f"lower({curr_lower:.2f}), middle={curr_middle:.2f}"
-                ),
-            )
+                if latest_close <= curr_lower:
+                    # At or below the band — strongest signal
+                    depth = (curr_lower - latest_close) / band_width
+                    qty_pct = Decimal("0.5") if depth > 0.1 else Decimal("0.3")
+                    return TradeSignal(
+                        action=TradeSide.BUY,
+                        symbol=symbol,
+                        quantity_pct=qty_pct,
+                        reason=(
+                            f"Bollinger bounce BUY: close({latest_close:.2f}) <= "
+                            f"lower({curr_lower:.2f}), middle={curr_middle:.2f}"
+                        ),
+                    )
+
+                if proximity <= 0.20:
+                    # Within 20% of lower band — weaker signal, smaller position
+                    return TradeSignal(
+                        action=TradeSide.BUY,
+                        symbol=symbol,
+                        quantity_pct=Decimal("0.2"),
+                        reason=(
+                            f"Bollinger proximity BUY: close({latest_close:.2f}) within "
+                            f"{proximity:.0%} of lower({curr_lower:.2f}), middle={curr_middle:.2f}"
+                        ),
+                    )
 
         # SELL: Price touches or crosses above upper band (overbought)
         if latest_close >= curr_upper and has_position:

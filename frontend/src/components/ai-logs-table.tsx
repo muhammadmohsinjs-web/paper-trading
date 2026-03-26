@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { LocalDateTime } from "@/components/local-date-time";
 import type { AILogEntry } from "@/lib/types";
 
 type Props = {
@@ -50,18 +51,6 @@ function ActionBadge({ action }: { action: string | null }) {
     hold: "text-amber-400",
   };
   return <span className={`font-medium uppercase ${colors[action] ?? "text-mist/60"}`}>{action}</span>;
-}
-
-function formatTime(iso: string) {
-  const d = new Date(iso);
-  return d.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
 }
 
 function buildHref(params: Record<string, string | undefined>) {
@@ -142,7 +131,19 @@ export function AILogsTable({ logs, total, page, limit, currentStatus, currentSt
                   onClick={() => setExpandedId(expandedId === log.id ? null : log.id)}
                   className="cursor-pointer border-b border-white/5 transition hover:bg-white/[0.03]"
                 >
-                  <td className="whitespace-nowrap px-4 py-3 text-mist/70">{formatTime(log.created_at)}</td>
+                  <td className="whitespace-nowrap px-4 py-3 text-mist/70">
+                    <LocalDateTime
+                      value={log.created_at}
+                      options={{
+                        month: "short",
+                        day: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        second: "2-digit",
+                        hour12: false,
+                      }}
+                    />
+                  </td>
                   <td className="px-4 py-3">
                     <Link
                       href={buildHref({ strategy_id: log.strategy_id, status: currentStatus })}

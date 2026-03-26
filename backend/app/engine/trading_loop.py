@@ -485,8 +485,8 @@ def _regime_entry_policy(
         return True, Decimal("0.5"), base_gate + 0.10, None
 
     if regime == MarketRegime.RANGING:
-        if strategy_type not in {"rsi_mean_reversion", "bollinger_bounce", "hybrid_composite"}:
-            return False, Decimal("1.0"), base_gate, "Ranging regime blocks this strategy"
+        if strategy_type in {"sma_crossover", "macd_momentum"}:
+            return True, Decimal("0.5"), base_gate + 0.05, None  # Allow with half size and slightly raised gate
         return True, Decimal("1.0"), base_gate, None
 
     if regime == MarketRegime.TRENDING_UP:
@@ -1350,8 +1350,8 @@ async def _run_hybrid_cycle(
             "decision_source": "mtf_confluence",
             "composite": composite_dict,
         }
-    live_decision.final_confidence = min(
-        live_decision.final_confidence + mtf.confidence_boost, 1.0
+    live_decision.final_confidence = max(
+        0.0, min(live_decision.final_confidence + mtf.confidence_boost, 1.0)
     )
 
     live_decision = await _apply_ai_validation(
@@ -1727,8 +1727,8 @@ async def _run_rule_based_cycle(
             "strategy_id": strategy_id,
             "decision_source": "mtf_confluence",
         }
-    live_decision.final_confidence = min(
-        live_decision.final_confidence + mtf.confidence_boost, 1.0
+    live_decision.final_confidence = max(
+        0.0, min(live_decision.final_confidence + mtf.confidence_boost, 1.0)
     )
 
     live_decision = await _apply_ai_validation(

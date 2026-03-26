@@ -32,7 +32,7 @@ def test_ema_vote_detects_bullish_acceleration():
 def test_volume_vote_applies_dampening_on_dry_volume():
     vote, dampening = volume_vote(0.4, 101.0, 100.0)
     assert vote == 0.0
-    assert dampening == 0.5
+    assert dampening == 0.7
 
 
 def test_compute_ai_vote_returns_none_without_complete_inputs():
@@ -161,7 +161,7 @@ def test_dampening_with_low_volume():
         "previous_close": 100.0,
     }
     result = compute_composite_score(indicators)
-    assert result.dampening_multiplier == 0.5
+    assert result.dampening_multiplier == 0.7
 
 
 def test_ai_vote_with_complete_inputs():

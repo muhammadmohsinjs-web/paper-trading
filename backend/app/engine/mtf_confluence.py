@@ -1,8 +1,9 @@
 """Multi-timeframe confluence filter.
 
 Checks whether the higher timeframe (4h) trend aligns with a proposed
-entry on the primary timeframe (1h/5m). Rejects BUY entries when the
-4h trend is bearish, and provides a confidence boost when fully aligned.
+entry on the primary timeframe (1h/5m). Applies a confidence penalty
+when the 4h trend is bearish, and provides a confidence boost when
+fully aligned. Strong downtrends (RSI < 35) still hard-block entries.
 """
 
 from __future__ import annotations
@@ -36,9 +37,10 @@ def check_confluence(
     """Check if higher timeframe supports the proposed trade direction.
 
     For BUY entries:
-    - HTF trend "up" → aligned=True, confidence_boost=0.10
+    - HTF trend "up" → aligned=True, confidence_boost=+0.10
     - HTF trend "neutral" → aligned=True, confidence_boost=0.0
-    - HTF trend "down" → aligned=False (blocks entry)
+    - HTF trend "down" (mild) → aligned=True, confidence_boost=-0.15
+    - HTF trend "down" (strong, RSI<35) → aligned=False (hard block)
 
     For SELL entries: always aligned (we always want to exit).
     """
@@ -102,13 +104,25 @@ def check_confluence(
 
     # Alignment check
     if htf_trend == "down":
+        # Strong downtrend (RSI < 35): hard block — high probability of further decline
+        if latest_rsi < 35:
+            return MTFResult(
+                htf_trend=htf_trend,
+                aligned=False,
+                confidence_boost=0.0,
+                reason=(
+                    f"4h strong downtrend (SMA20={latest_sma_20:.2f} < SMA50={latest_sma_50:.2f}, "
+                    f"RSI={latest_rsi:.1f} < 35) — BUY blocked"
+                ),
+            )
+        # Mild downtrend: allow with confidence penalty
         return MTFResult(
             htf_trend=htf_trend,
-            aligned=False,
-            confidence_boost=0.0,
+            aligned=True,
+            confidence_boost=-0.15,
             reason=(
-                f"4h trend is bearish (SMA20={latest_sma_20:.2f} < SMA50={latest_sma_50:.2f}, "
-                f"RSI={latest_rsi:.1f}) — BUY blocked"
+                f"4h mild bearish (SMA20={latest_sma_20:.2f} < SMA50={latest_sma_50:.2f}, "
+                f"RSI={latest_rsi:.1f}) — confidence reduced"
             ),
         )
 

@@ -36,8 +36,8 @@ class SMACrossoverStrategy(BaseStrategy):
         # Golden cross: short crosses above long → BUY (with volume confirmation)
         if prev_short <= prev_long and curr_short > curr_long and not has_position:
             volume_ratio = latest_scalar(indicators.get("volume_ratio"))
-            if volume_ratio is not None and volume_ratio < 1.2:
-                return None  # Reject crossover without above-average volume
+            if volume_ratio is not None and volume_ratio < 0.8:
+                return None  # Reject crossover with unusually low volume
             return TradeSignal(
                 action=TradeSide.BUY,
                 symbol=symbol,

@@ -1,4 +1,5 @@
-import { formatCurrency, formatDateTime, formatPercent } from "@/lib/format";
+import { LocalDateTime } from "@/components/local-date-time";
+import { formatCurrency, formatPercent } from "@/lib/format";
 import type { StrategyWithStats, TradeSummary } from "@/lib/types";
 import { StatusPill } from "@/components/status-pill";
 
@@ -214,7 +215,7 @@ export function WalletSummary({ strategy, summary }: WalletSummaryProps) {
             Detailed AI findings appear in the call log below.
           </div>
           <div className="text-xs text-mist/45">
-            Last updated {formatDateTime(strategy.ai_last_decision_at)}
+            Last updated <LocalDateTime value={strategy.ai_last_decision_at} />
           </div>
         </div>
       </div>

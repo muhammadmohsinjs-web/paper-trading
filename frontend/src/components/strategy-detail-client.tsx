@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { LocalDateTime } from "@/components/local-date-time";
 import { LivePrice } from "@/components/live-price";
 import { PriceChart } from "@/components/price-chart";
 import { OpenPositions } from "@/components/open-positions";
@@ -10,7 +11,6 @@ import { WalletSummary } from "@/components/wallet-summary";
 import { AICallLog } from "@/components/ai-call-log";
 import { useLiveFeed } from "@/hooks/use-live-feed";
 import { executeStrategy, aiPreview, type AIPreviewResponse } from "@/lib/api";
-import { formatDateTime } from "@/lib/format";
 import type {
   Candle,
   EquityPoint,
@@ -156,7 +156,9 @@ export function StrategyDetailClient(props: StrategyDetailClientProps) {
             </div>
 
             <div className="mt-5 flex flex-wrap gap-3 text-xs uppercase tracking-[0.16em] text-mist/55">
-              <span>Last decision {formatDateTime(strategy.ai_last_decision_at)}</span>
+              <span>
+                Last decision <LocalDateTime value={strategy.ai_last_decision_at} />
+              </span>
               <span>Provider {strategy.ai_last_provider || strategy.ai_provider || "--"}</span>
               <span>Selection {strategy.selection_date ?? "--"}</span>
             </div>

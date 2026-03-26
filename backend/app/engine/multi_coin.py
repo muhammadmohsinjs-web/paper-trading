@@ -92,6 +92,9 @@ async def get_daily_picks(
     return list(result.scalars().all())
 
 
+PICK_REFRESH_HOURS = 4  # Re-scan every 4 hours instead of once per day
+
+
 async def ensure_daily_picks(
     session: AsyncSession,
     strategy: Strategy,
@@ -101,10 +104,22 @@ async def ensure_daily_picks(
     force_refresh: bool = False,
 ) -> list[DailyPick]:
     chosen_date = selection_date or resolve_selection_date(strategy)
+    now = datetime.now(timezone.utc)
+
     if not force_refresh:
         existing = await get_daily_picks(session, strategy, selection_date=chosen_date)
         if existing:
-            return existing
+            # Check if picks are stale (older than PICK_REFRESH_HOURS)
+            age_hours = (now - existing[0].selected_at).total_seconds() / 3600
+            if age_hours < PICK_REFRESH_HOURS:
+                return existing
+            # Picks are stale — re-scan for fresh opportunities
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(
+                "daily picks are %.1fh old (threshold=%dh), refreshing for strategy=%s",
+                age_hours, PICK_REFRESH_HOURS, strategy.id,
+            )
 
     scanner = OpportunityScanner(symbols=resolve_scan_universe(strategy))
     ranked_symbols = scanner.rank_symbols(
@@ -119,7 +134,6 @@ async def ensure_daily_picks(
         )
     )
 
-    now = datetime.now(timezone.utc)
     created: list[DailyPick] = []
     for idx, candidate in enumerate(ranked_symbols, start=1):
         item = DailyPick(

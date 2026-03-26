@@ -1,4 +1,5 @@
-import { formatCurrency, formatDateTime, formatNumber } from "@/lib/format";
+import { LocalDateTime } from "@/components/local-date-time";
+import { formatCurrency, formatNumber } from "@/lib/format";
 import type { Position } from "@/lib/types";
 
 export function OpenPositions({ positions }: { positions: Position[] }) {
@@ -41,7 +42,9 @@ export function OpenPositions({ positions }: { positions: Position[] }) {
                   >
                     {formatCurrency(position.unrealized_pnl)}
                   </td>
-                  <td className="px-5 py-4 text-mist/60">{formatDateTime(position.opened_at)}</td>
+                  <td className="px-5 py-4 text-mist/60">
+                    <LocalDateTime value={position.opened_at} />
+                  </td>
                 </tr>
               ))}
             </tbody>

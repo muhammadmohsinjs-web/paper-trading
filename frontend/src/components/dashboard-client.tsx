@@ -6,6 +6,7 @@ import { LivePrice } from "@/components/live-price";
 import { useLiveFeed } from "@/hooks/use-live-feed";
 import { formatCurrency, formatNumber } from "@/lib/format";
 import type { DashboardResponse, EngineStatus, MarketPrice, SignalData } from "@/lib/types";
+import { MarketScanner } from "@/components/market-scanner";
 import { SignalMeter } from "@/components/signal-meter";
 import { StrategyCard } from "@/components/strategy-card";
 import { CreateStrategyDialog } from "@/components/create-strategy-dialog";
@@ -354,6 +355,8 @@ export function DashboardClient({
           </div>
         </div>
       </section>
+
+      <MarketScanner />
 
       <section className="min-w-0 space-y-4">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">

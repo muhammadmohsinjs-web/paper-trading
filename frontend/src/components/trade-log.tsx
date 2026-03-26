@@ -1,7 +1,8 @@
 "use client";
 
 import { Fragment, useState } from "react";
-import { formatCurrency, formatDateTime, formatNumber } from "@/lib/format";
+import { LocalDateTime } from "@/components/local-date-time";
+import { formatCurrency, formatNumber } from "@/lib/format";
 import type { Trade } from "@/lib/types";
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -152,7 +153,9 @@ export function TradeLog({ trades }: { trades: Trade[] }) {
                       className={`border-t border-white/6 ${hasDetails ? "cursor-pointer hover:bg-white/[0.03]" : ""}`}
                       onClick={() => hasDetails && setExpandedId(isExpanded ? null : trade.id)}
                     >
-                      <td className="px-5 py-4 text-mist/60">{formatDateTime(trade.executed_at)}</td>
+                      <td className="px-5 py-4 text-mist/60">
+                        <LocalDateTime value={trade.executed_at} />
+                      </td>
                       <td className={`px-5 py-4 font-medium ${trade.side === "BUY" ? "text-rise" : "text-fall"}`}>
                         {trade.side}
                       </td>

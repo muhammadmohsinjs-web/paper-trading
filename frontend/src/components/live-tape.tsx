@@ -2,9 +2,9 @@
 
 import { useMemo } from "react";
 
+import { LocalDateTime } from "@/components/local-date-time";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { wsBaseUrl } from "@/lib/env";
-import { formatDateTime } from "@/lib/format";
 import { StatusPill } from "@/components/status-pill";
 
 export function LiveTape() {
@@ -33,7 +33,9 @@ export function LiveTape() {
       </div>
       <div className="mt-4 rounded-[20px] border border-white/8 bg-black/20 p-4 text-sm text-mist/70">
         <div>{summary}</div>
-        <div className="mt-2 text-xs text-mist/45">{formatDateTime(new Date().toISOString())}</div>
+        <div className="mt-2 text-xs text-mist/45">
+          <LocalDateTime value={new Date().toISOString()} />
+        </div>
       </div>
     </div>
   );

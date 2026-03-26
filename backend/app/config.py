@@ -14,6 +14,9 @@ DEFAULT_SCAN_UNIVERSE = [
     "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "DOTUSDT", "MATICUSDT",
     "LINKUSDT", "LTCUSDT", "UNIUSDT", "ATOMUSDT", "NEARUSDT",
     "APTUSDT", "OPUSDT", "ARBUSDT", "SUIUSDT", "SEIUSDT",
+    "INJUSDT", "TIAUSDT", "FETUSDT", "RNDRUSDT", "WIFUSDT",
+    "JUPUSDT", "STXUSDT", "IMXUSDT", "RUNEUSDT", "ARUSDT",
+    "PENDLEUSDT", "ONDOUSDT", "FILUSDT", "ENAUSDT", "WLDUSDT",
 ]
 
 
@@ -79,8 +82,8 @@ class Settings:
     default_balance_usdt: float = 1000.0
     trading_interval_seconds: int = 3600
     default_candle_interval: str = "1h"
-    multi_coin_top_pick_count: int = 5
-    multi_coin_max_concurrent_positions: int = 2
+    multi_coin_top_pick_count: int = 8
+    multi_coin_max_concurrent_positions: int = 4
     multi_coin_selection_hour_utc: int = 0
     multi_coin_liquidity_floor_usdt: float = 1_000_000.0
     spot_fee_rate: float = 0.001

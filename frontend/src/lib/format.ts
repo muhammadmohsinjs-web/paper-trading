@@ -27,14 +27,24 @@ export function formatPercent(value: number | null | undefined, digits = 2) {
   return `${value.toFixed(digits)}%`;
 }
 
-export function formatDateTime(value: string | null | undefined) {
+export function formatDateTime(
+  value: string | null | undefined,
+  options?: Intl.DateTimeFormatOptions
+) {
   if (!value) {
     return "--";
   }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "--";
+  }
+
   return new Intl.DateTimeFormat("en-US", {
     dateStyle: "medium",
-    timeStyle: "short"
-  }).format(new Date(value));
+    timeStyle: "short",
+    ...options
+  }).format(date);
 }
 
 export function cn(...values: Array<string | false | null | undefined>) {

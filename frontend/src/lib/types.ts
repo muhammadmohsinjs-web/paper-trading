@@ -330,6 +330,37 @@ export type OpenAIUsageResponse = {
   usage_error?: string;
 };
 
+export type ScannerOpportunity = {
+  symbol: string;
+  score: number;
+  setup_type: string;
+  signal: string;
+  regime: string;
+  recommended_strategy: string;
+  reason: string;
+  indicators: Record<string, unknown>;
+};
+
+export type RankedSymbol = {
+  symbol: string;
+  score: number;
+  regime: string;
+  setup_type: string;
+  recommended_strategy: string;
+  reason: string;
+  liquidity_usdt: number;
+  indicators: Record<string, unknown>;
+};
+
+export type ManualScanResponse = {
+  scanned_at: string;
+  symbols_scanned: number;
+  regime: string;
+  universe_size: number;
+  ranked_symbols: RankedSymbol[];
+  opportunities: ScannerOpportunity[];
+};
+
 export type LiveEvent = {
   type?: string;
   event?: string;
