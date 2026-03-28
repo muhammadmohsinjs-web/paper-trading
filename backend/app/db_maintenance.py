@@ -22,7 +22,6 @@ RUNTIME_TABLES = (
     "positions",
     "price_cache",
     "snapshots",
-    "strategy_cycle_locks",
     "symbol_evaluation_logs",
     "symbol_ownership",
     "trades",
@@ -88,8 +87,6 @@ async def reset_runtime_data(session: AsyncSession) -> dict[str, int]:
         await session.execute(delete(PriceCache))
     if "snapshots" in existing_tables:
         await session.execute(delete(Snapshot))
-    if "strategy_cycle_locks" in existing_tables:
-        await session.execute(text("DELETE FROM strategy_cycle_locks"))
     if "symbol_evaluation_logs" in existing_tables:
         await session.execute(text("DELETE FROM symbol_evaluation_logs"))
     if "symbol_ownership" in existing_tables:

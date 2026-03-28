@@ -322,7 +322,7 @@ async def _run_migrations(connection) -> None:
     # ── Cleanup orphan rows ───────────────────────────────────────────
     orphan_tables = (
         "wallets", "positions", "trades", "snapshots",
-        "daily_picks", "ai_call_logs", "symbol_evaluation_logs", "strategy_cycle_locks", "symbol_ownership",
+        "daily_picks", "ai_call_logs", "symbol_evaluation_logs", "symbol_ownership",
     )
     for table_name in orphan_tables:
         result = await connection.execute(text(f"PRAGMA table_info({table_name})"))

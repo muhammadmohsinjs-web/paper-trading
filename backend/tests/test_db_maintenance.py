@@ -119,25 +119,6 @@ async def test_reset_runtime_data_keeps_strategies_and_rebuilds_wallets(db_sessi
             ),
         ]
     )
-    await db_session.execute(
-        text(
-            """
-            CREATE TABLE strategy_cycle_locks (
-                strategy_id VARCHAR(36) PRIMARY KEY,
-                owner_id VARCHAR(64) NOT NULL,
-                acquired_at DATETIME NOT NULL
-            )
-            """
-        )
-    )
-    await db_session.execute(
-        text(
-            """
-            INSERT INTO strategy_cycle_locks (strategy_id, owner_id, acquired_at)
-            VALUES ('strategy-one', 'worker-1', CURRENT_TIMESTAMP)
-            """
-        )
-    )
     await db_session.commit()
 
     summary = await reset_runtime_data(db_session)
@@ -150,7 +131,6 @@ async def test_reset_runtime_data_keeps_strategies_and_rebuilds_wallets(db_sessi
     assert summary["snapshots"] == 1
     assert summary["ai_call_logs"] == 1
     assert summary["price_cache"] == 1
-    assert summary["strategy_cycle_locks"] == 1
     assert summary["wallets_recreated"] == 2
 
     strategies = list(
@@ -195,6 +175,3 @@ async def test_reset_runtime_data_keeps_strategies_and_rebuilds_wallets(db_sessi
     assert (await db_session.execute(select(Snapshot))).scalars().all() == []
     assert (await db_session.execute(select(AICallLog))).scalars().all() == []
     assert (await db_session.execute(select(PriceCache))).scalars().all() == []
-    assert (
-        await db_session.execute(text("SELECT COUNT(*) FROM strategy_cycle_locks"))
-    ).scalar_one() == 0

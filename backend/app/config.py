@@ -60,6 +60,25 @@ def _get_list(*names: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _resolve_database_url(value: str) -> str:
+    prefixes = ("sqlite:///", "sqlite+aiosqlite:///")
+
+    for prefix in prefixes:
+        if not value.startswith(prefix):
+            continue
+
+        raw_path = value[len(prefix):]
+        if not raw_path or raw_path == ":memory:" or raw_path.startswith("/"):
+            return value
+
+        path, sep, query = raw_path.partition("?")
+        resolved = (BASE_DIR / path).resolve()
+        suffix = f"?{query}" if sep else ""
+        return f"{prefix}{resolved}{suffix}"
+
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     app_name: str = "Paper Trading Backend"
@@ -187,10 +206,12 @@ class Settings:
             api_prefix=_get_value(f"{prefix}API_PREFIX", default=cls.api_prefix),
             log_level=_get_value(f"{prefix}LOG_LEVEL", "LOG_LEVEL", default=cls.log_level),
             log_use_colors=_get_bool(f"{prefix}LOG_USE_COLORS", cls.log_use_colors),
-            database_url=_get_value(
-                f"{prefix}DATABASE_URL",
-                "DATABASE_URL",
-                default=cls.database_url,
+            database_url=_resolve_database_url(
+                _get_value(
+                    f"{prefix}DATABASE_URL",
+                    "DATABASE_URL",
+                    default=cls.database_url,
+                )
             ),
             database_echo=_get_bool(f"{prefix}DATABASE_ECHO", cls.database_echo),
             default_quote_asset=_get_value(

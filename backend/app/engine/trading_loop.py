@@ -84,11 +84,6 @@ _regime_classifier = RegimeClassifier()
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
-_CYCLE_LOCK_TTL = timedelta(minutes=10)
-_cycle_lock_table_ready = False
-_cycle_lock_table_guard = asyncio.Lock()
-
-
 def _as_aware(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -96,94 +91,6 @@ def _as_aware(value: datetime | None) -> datetime | None:
         return value.replace(tzinfo=timezone.utc)
     return value
 
-
-async def _ensure_cycle_lock_table() -> None:
-    global _cycle_lock_table_ready
-
-    if _cycle_lock_table_ready:
-        return
-
-    async with _cycle_lock_table_guard:
-        if _cycle_lock_table_ready:
-            return
-
-        async with SessionLocal() as session:
-            await execute_with_write_lock(
-                session,
-                text(
-                    """
-                    CREATE TABLE IF NOT EXISTS strategy_cycle_locks (
-                        strategy_id VARCHAR(36) PRIMARY KEY,
-                        owner_id VARCHAR(36) NOT NULL,
-                        acquired_at TEXT NOT NULL
-                    )
-                    """
-                )
-            )
-            await commit_with_write_lock(session)
-        _cycle_lock_table_ready = True
-
-
-async def _acquire_cycle_db_lock(strategy_id: str) -> str | None:
-    await _ensure_cycle_lock_table()
-
-    owner_id = str(uuid4())
-    now = datetime.now(timezone.utc)
-    stale_before = now - _CYCLE_LOCK_TTL
-
-    async with SessionLocal() as session:
-        await execute_with_write_lock(
-            session,
-            text(
-                """
-                INSERT INTO strategy_cycle_locks (strategy_id, owner_id, acquired_at)
-                VALUES (:strategy_id, :owner_id, :acquired_at)
-                ON CONFLICT(strategy_id) DO UPDATE SET
-                    owner_id = excluded.owner_id,
-                    acquired_at = excluded.acquired_at
-                WHERE strategy_cycle_locks.acquired_at < :stale_before
-                """
-            ),
-            {
-                "strategy_id": strategy_id,
-                "owner_id": owner_id,
-                "acquired_at": now.isoformat(),
-                "stale_before": stale_before.isoformat(),
-            },
-        )
-        await commit_with_write_lock(session)
-
-        current_owner = (
-            await session.execute(
-                text(
-                    """
-                    SELECT owner_id
-                    FROM strategy_cycle_locks
-                    WHERE strategy_id = :strategy_id
-                    """
-                ),
-                {"strategy_id": strategy_id},
-            )
-        ).scalar_one_or_none()
-    return owner_id if current_owner == owner_id else None
-
-
-async def _release_cycle_db_lock(strategy_id: str, owner_id: str) -> None:
-    await _ensure_cycle_lock_table()
-
-    async with SessionLocal() as session:
-        await execute_with_write_lock(
-            session,
-            text(
-                """
-                DELETE FROM strategy_cycle_locks
-                WHERE strategy_id = :strategy_id
-                  AND owner_id = :owner_id
-                """
-            ),
-            {"strategy_id": strategy_id, "owner_id": owner_id},
-        )
-        await commit_with_write_lock(session)
 
 
 def _strategy_last_ai_at(strategy: Any) -> datetime | None:
@@ -626,11 +533,20 @@ def _regime_entry_policy(
     regime: MarketRegime,
     base_gate: float,
 ) -> tuple[bool, Decimal, float, str | None]:
-    if regime in {MarketRegime.CRASH, MarketRegime.TRENDING_DOWN}:
+    if regime == MarketRegime.CRASH:
+        # CRASH: only allow reversal strategies with very small size and high gate
+        if strategy_type in {"rsi_mean_reversion", "bollinger_bounce"}:
+            return True, Decimal("0.2"), base_gate + 0.20, None
+        return False, Decimal("1.0"), base_gate, f"{regime.value} blocks new long entries"
+
+    if regime == MarketRegime.TRENDING_DOWN:
+        # Allow reversal/mean-reversion strategies with reduced size and raised gate
+        if strategy_type in {"rsi_mean_reversion", "bollinger_bounce", "macd_momentum"}:
+            return True, Decimal("0.3"), base_gate + 0.15, None
         return False, Decimal("1.0"), base_gate, f"{regime.value} blocks new long entries"
 
     if regime == MarketRegime.HIGH_VOLATILITY:
-        if strategy_type not in {"hybrid_composite", "macd_momentum"}:
+        if strategy_type not in {"hybrid_composite", "macd_momentum", "bollinger_bounce"}:
             return False, Decimal("1.0"), base_gate + 0.10, "High volatility blocks this strategy"
         return True, Decimal("0.5"), base_gate + 0.10, None
 
@@ -640,8 +556,9 @@ def _regime_entry_policy(
         return True, Decimal("1.0"), base_gate, None
 
     if regime == MarketRegime.TRENDING_UP:
-        if strategy_type not in {"sma_crossover", "macd_momentum", "hybrid_composite"}:
-            return False, Decimal("1.0"), base_gate, "Trending-up regime blocks this strategy"
+        # All strategies can trade in uptrends; pullback strategies use reduced size
+        if strategy_type in {"rsi_mean_reversion", "bollinger_bounce"}:
+            return True, Decimal("0.5"), base_gate + 0.05, None
         return True, Decimal("1.0"), base_gate, None
 
     return True, Decimal("1.0"), base_gate, None
@@ -1089,21 +1006,7 @@ async def run_single_cycle(
         }
 
     async with lock:
-        owner_id = await _acquire_cycle_db_lock(strategy_id)
-        if owner_id is None:
-            logger.debug("database cycle lock busy strategy_id=%s, skipping", strategy_id)
-            return {
-                "status": "skipped",
-                "reason": "Cycle already in progress in another worker",
-                "symbol": symbol,
-                "strategy_id": strategy_id,
-                "decision_source": "database_concurrency_guard",
-            }
-
-        try:
-            return await _run_single_cycle_locked(strategy_id, symbol, interval, force)
-        finally:
-            await _release_cycle_db_lock(strategy_id, owner_id)
+        return await _run_single_cycle_locked(strategy_id, symbol, interval, force)
 
 
 async def _run_single_cycle_locked(
@@ -1549,6 +1452,12 @@ async def _run_hybrid_cycle(
                     "composite": composite_dict,
                 }
 
+    logger.info(
+        "hybrid_decision strategy_id=%s symbol=%s status=%s reason=%s raw_confidence=%s composite_score=%s",
+        strategy_id, symbol, decision.status, decision.reason,
+        decision.raw_confidence,
+        decision.composite_result.composite_score if decision.composite_result else None,
+    )
     if decision.status != "candidate" or decision.composite_result is None or decision.raw_confidence is None:
         if decision.composite_result is not None:
             _log_stage(
@@ -1647,6 +1556,11 @@ async def _run_hybrid_cycle(
         regime_result.regime,
         base_gate,
     )
+    logger.info(
+        "regime_entry_policy strategy_id=%s symbol=%s regime=%s strategy_type=%s allowed=%s size_mult=%s gate=%.3f reason=%s",
+        strategy_id, symbol, regime_result.regime.value, strategy_type,
+        allowed, size_multiplier, min_confidence, regime_reason,
+    )
     if not allowed:
         return {
             "status": "skipped",
@@ -1659,6 +1573,10 @@ async def _run_hybrid_cycle(
 
     # Multi-timeframe confluence check
     mtf = check_confluence(symbol, "BUY", interval)
+    logger.info(
+        "mtf_confluence strategy_id=%s symbol=%s aligned=%s trend=%s boost=%.3f reason=%s",
+        strategy_id, symbol, mtf.aligned, mtf.htf_trend, mtf.confidence_boost, mtf.reason,
+    )
     if not mtf.aligned:
         return {
             "status": "skipped",
@@ -2106,6 +2024,11 @@ async def _run_rule_based_cycle(
         }
 
     signal = strategy_impl.decide(indicators, has_position, wallet.available_usdt)
+    logger.info(
+        "rule_entry decide result strategy_id=%s symbol=%s strategy_type=%s signal=%s",
+        strategy_id, symbol, strategy_type,
+        f"{signal.action.value} qty={signal.quantity_pct}" if signal else "None",
+    )
     if signal is None or signal.action.value != "BUY":
         return {
             "status": "hold",
@@ -2199,6 +2122,11 @@ async def _run_rule_based_cycle(
         regime_result.regime,
         base_gate,
     )
+    logger.info(
+        "regime_entry_policy strategy_id=%s symbol=%s regime=%s strategy_type=%s allowed=%s size_mult=%s gate=%.3f reason=%s",
+        strategy_id, symbol, regime_result.regime.value, strategy_type,
+        allowed, size_multiplier, min_confidence, regime_reason,
+    )
     if not allowed:
         return {
             "status": "skipped",
@@ -2211,6 +2139,10 @@ async def _run_rule_based_cycle(
 
     # Multi-timeframe confluence check
     mtf = check_confluence(symbol, "BUY", interval)
+    logger.info(
+        "mtf_confluence strategy_id=%s symbol=%s aligned=%s trend=%s boost=%.3f reason=%s",
+        strategy_id, symbol, mtf.aligned, mtf.htf_trend, mtf.confidence_boost, mtf.reason,
+    )
     if not mtf.aligned:
         return {
             "status": "skipped",
@@ -2252,6 +2184,10 @@ async def _run_rule_based_cycle(
         reason_text=economic_viability.reason_text,
         metrics_json=economic_viability.to_dict(),
         context_json={"strategy_type": strategy_type},
+    )
+    logger.info(
+        "economic_viability strategy_id=%s symbol=%s passed=%s reason=%s",
+        strategy_id, symbol, economic_viability.passed, economic_viability.reason_text,
     )
     if not economic_viability.passed:
         return {
