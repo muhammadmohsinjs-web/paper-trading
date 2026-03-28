@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -15,7 +16,112 @@ from app.models import Base  # noqa: F401
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
-_sqlite_write_lock = asyncio.Lock()
+_sqlite_write_lock: asyncio.Lock | None = None
+_sqlite_write_lock_loop: asyncio.AbstractEventLoop | None = None
+_SQLITE_WRITE_LOCK_HELD_KEY = "_sqlite_write_lock_held"
+_SQLITE_WRITE_PREFIXES = {
+    "ALTER",
+    "ANALYZE",
+    "ATTACH",
+    "CREATE",
+    "DELETE",
+    "DETACH",
+    "DROP",
+    "INSERT",
+    "PRAGMA",
+    "REINDEX",
+    "REPLACE",
+    "UPDATE",
+    "VACUUM",
+}
+
+
+def _sqlite_enabled() -> bool:
+    return engine.url.get_backend_name() == "sqlite"
+
+
+def _get_sqlite_write_lock() -> asyncio.Lock:
+    global _sqlite_write_lock, _sqlite_write_lock_loop
+
+    loop = asyncio.get_running_loop()
+    if _sqlite_write_lock is None or _sqlite_write_lock_loop is not loop:
+        _sqlite_write_lock = asyncio.Lock()
+        _sqlite_write_lock_loop = loop
+
+    return _sqlite_write_lock
+
+
+def _statement_needs_write_lock(statement: Any) -> bool:
+    if getattr(statement, "is_insert", False):
+        return True
+    if getattr(statement, "is_update", False):
+        return True
+    if getattr(statement, "is_delete", False):
+        return True
+
+    text_value = getattr(statement, "text", None)
+    if not isinstance(text_value, str):
+        return False
+
+    match = re.match(r"^\s*([A-Za-z]+)", text_value)
+    if match is None:
+        return False
+
+    prefix = match.group(1).upper()
+    if prefix != "PRAGMA":
+        return prefix in _SQLITE_WRITE_PREFIXES
+
+    return "=" in text_value
+
+
+async def _acquire_sqlite_write_lease(session: AsyncSession) -> None:
+    if not _sqlite_enabled():
+        return
+    if session.info.get(_SQLITE_WRITE_LOCK_HELD_KEY):
+        return
+
+    await _get_sqlite_write_lock().acquire()
+    session.info[_SQLITE_WRITE_LOCK_HELD_KEY] = True
+
+
+async def _release_sqlite_write_lease(session: AsyncSession) -> None:
+    if not _sqlite_enabled():
+        return
+    if not session.info.pop(_SQLITE_WRITE_LOCK_HELD_KEY, False):
+        return
+
+    _get_sqlite_write_lock().release()
+
+
+class SQLiteLockedAsyncSession(AsyncSession):
+    async def execute(self, statement: Any, params: Any = None, /, **kwargs: Any):
+        if _statement_needs_write_lock(statement):
+            await _acquire_sqlite_write_lease(self)
+        return await super().execute(statement, params, **kwargs)
+
+    async def flush(self, objects: Any = None) -> None:
+        if self.new or self.dirty or self.deleted:
+            await _acquire_sqlite_write_lease(self)
+        await super().flush(objects=objects)
+
+    async def commit(self) -> None:
+        await _acquire_sqlite_write_lease(self)
+        try:
+            await super().commit()
+        finally:
+            await _release_sqlite_write_lease(self)
+
+    async def rollback(self) -> None:
+        try:
+            await super().rollback()
+        finally:
+            await _release_sqlite_write_lease(self)
+
+    async def close(self) -> None:
+        try:
+            await super().close()
+        finally:
+            await _release_sqlite_write_lease(self)
 
 engine = create_async_engine(
     settings.database_url,
@@ -40,7 +146,7 @@ def _set_sqlite_pragmas(dbapi_connection, _connection_record) -> None:
 
 SessionLocal = async_sessionmaker(
     bind=engine,
-    class_=AsyncSession,
+    class_=SQLiteLockedAsyncSession,
     expire_on_commit=False,
 )
 
@@ -53,11 +159,11 @@ async def get_db_session() -> AsyncIterator[AsyncSession]:
 @asynccontextmanager
 async def sqlite_write_guard() -> AsyncIterator[None]:
     """Serialize SQLite writes within this process to avoid lock contention."""
-    if engine.url.get_backend_name() != "sqlite":
+    if not _sqlite_enabled():
         yield
         return
 
-    async with _sqlite_write_lock:
+    async with _get_sqlite_write_lock():
         yield
 
 
@@ -66,20 +172,23 @@ async def execute_with_write_lock(
     statement: Any,
     params: dict[str, Any] | None = None,
 ):
-    async with sqlite_write_guard():
-        if params is None:
-            return await session.execute(statement)
-        return await session.execute(statement, params)
+    await _acquire_sqlite_write_lease(session)
+    if params is None:
+        return await session.execute(statement)
+    return await session.execute(statement, params)
 
 
 async def flush_with_write_lock(session: AsyncSession) -> None:
-    async with sqlite_write_guard():
-        await session.flush()
+    await _acquire_sqlite_write_lease(session)
+    await session.flush()
 
 
 async def commit_with_write_lock(session: AsyncSession) -> None:
-    async with sqlite_write_guard():
+    await _acquire_sqlite_write_lease(session)
+    try:
         await session.commit()
+    finally:
+        await _release_sqlite_write_lease(session)
 
 
 async def _run_migrations(connection) -> None:
