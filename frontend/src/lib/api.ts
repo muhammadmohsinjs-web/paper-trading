@@ -14,6 +14,10 @@ import type {
   MarketPrice,
   OpenAIUsageResponse,
   Position,
+  ReportDetail,
+  ReportMeta,
+  ReviewLedgerResponse,
+  ReviewSummary,
   SignalData,
   StrategyWithStats,
   Trade,
@@ -231,6 +235,48 @@ export function getAILogStats() {
 
 export function getOpenAIUsage(days = 7) {
   return request<OpenAIUsageResponse>(`/ai-logs/openai-usage?days=${days}`);
+}
+
+// ── Review API ────────────────────────────────────────────────────────
+
+export function getReviewSummary(params?: { strategy_id?: string; days?: number }) {
+  const q = new URLSearchParams();
+  if (params?.strategy_id) q.set("strategy_id", params.strategy_id);
+  if (params?.days) q.set("days", String(params.days));
+  return request<ReviewSummary>(`/review/summary${q.size ? `?${q}` : ""}`);
+}
+
+export function getReviewLedger(params?: {
+  strategy_id?: string;
+  outcome_bucket?: string;
+  root_cause?: string;
+  date_from?: string;
+  date_to?: string;
+  limit?: number;
+  offset?: number;
+}) {
+  const q = new URLSearchParams();
+  if (params?.strategy_id) q.set("strategy_id", params.strategy_id);
+  if (params?.outcome_bucket) q.set("outcome_bucket", params.outcome_bucket);
+  if (params?.root_cause) q.set("root_cause", params.root_cause);
+  if (params?.date_from) q.set("date_from", params.date_from);
+  if (params?.date_to) q.set("date_to", params.date_to);
+  if (params?.limit) q.set("limit", String(params.limit));
+  if (params?.offset) q.set("offset", String(params.offset));
+  return request<ReviewLedgerResponse>(`/review/ledger${q.size ? `?${q}` : ""}`);
+}
+
+export function listReports() {
+  return request<{ reports: ReportMeta[] }>("/review/reports");
+}
+
+export function getReport(type: "daily" | "weekly", label: string) {
+  return request<ReportDetail>(`/review/reports/${type}/${label}`);
+}
+
+export function triggerDailyReport(date?: string) {
+  const q = date ? `?target_date=${date}` : "";
+  return request<{ status: string }>(`/review/reports/generate/daily${q}`, { method: "POST" });
 }
 
 export function runManualScan(interval = "1h", maxResults = 10) {

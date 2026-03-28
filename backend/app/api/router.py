@@ -7,6 +7,7 @@ from app.api.backtest import router as backtest_router
 from app.api.dashboard import router as dashboard_router
 from app.api.engine import router as engine_router
 from app.api.market import router as market_router
+from app.api.review import router as review_router
 from app.api.scanner import router as scanner_router
 from app.api.strategies import router as strategies_router
 from app.api.trade_logs import router as trade_logs_router
@@ -30,4 +31,5 @@ router.include_router(dashboard_router)
 router.include_router(market_router)
 router.include_router(scanner_router)
 router.include_router(engine_router)
+router.include_router(review_router)
 router.include_router(ws_router)

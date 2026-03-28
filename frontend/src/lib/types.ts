@@ -444,6 +444,131 @@ export type ManualScanResponse = {
   candidate_evaluations?: CandidateEvaluation[];
 };
 
+// ── Review system types ───────────────────────────────────────────────
+
+export type OutcomeBucket =
+  | "good_trade"
+  | "bad_trade"
+  | "good_skip"
+  | "missed_good_trade"
+  | "open"
+  | "insufficient_data"
+  | "unclassified";
+
+export type RootCause =
+  | "algorithm_failure"
+  | "execution_failure"
+  | "strategy_mismatch"
+  | "market_randomness"
+  | "none";
+
+export type LedgerEntry = {
+  id: string;
+  strategy_id: string;
+  cycle_id: string;
+  cycle_ts: string | null;
+  symbol: string;
+  interval: string | null;
+  in_universe: boolean;
+  tradability_pass: boolean | null;
+  data_sufficient: boolean | null;
+  setup_detected: boolean | null;
+  setup_type: string | null;
+  setup_family: string | null;
+  liquidity_pass: boolean | null;
+  final_gate_pass: boolean;
+  rejection_stage: string | null;
+  rejection_reason_code: string | null;
+  rejection_reason_text: string | null;
+  daily_pick_rank: number | null;
+  scanner_score: number | null;
+  regime_at_decision: string | null;
+  universe_size: number | null;
+  rank_among_qualified: number | null;
+  ai_called: boolean;
+  ai_action: string | null;
+  ai_confidence: number | null;
+  ai_status: string | null;
+  trade_opened: boolean;
+  entry_price: number | null;
+  slippage_pct: number | null;
+  position_size_usdt: number | null;
+  exposure_pct: number | null;
+  composite_score: number | null;
+  entry_confidence: number | null;
+  confidence_bucket: string | null;
+  decision_source: string | null;
+  no_execute_reason: string | null;
+  trade_closed: boolean;
+  realized_pnl_pct: number | null;
+  realized_pnl_usdt: number | null;
+  exit_reason: string | null;
+  hold_duration_hours: number | null;
+  position_still_open: boolean;
+  outcome_bucket: OutcomeBucket | null;
+  root_cause: RootCause | null;
+  root_cause_confidence: "high" | "medium" | "low" | null;
+  created_at: string | null;
+  forward_outcome?: {
+    fwd_ret_1: number | null;
+    fwd_ret_4: number | null;
+    fwd_ret_12: number | null;
+    fwd_ret_24: number | null;
+    fwd_max_favorable_pct: number | null;
+    fwd_max_adverse_pct: number | null;
+    fwd_data_available: boolean;
+    computed_at: string | null;
+  };
+};
+
+export type ReviewLedgerResponse = {
+  total: number;
+  offset: number;
+  items: LedgerEntry[];
+};
+
+export type ReviewSummary = {
+  period_days: number;
+  total_symbols_evaluated: number;
+  outcome_buckets: Record<string, number>;
+  root_causes: Record<string, number>;
+  trades_opened: number;
+  trades_closed: number;
+  avg_pnl_pct: number | null;
+  win_rate: number | null;
+};
+
+export type ReportMeta = {
+  report_type: string;
+  subtype: "daily" | "weekly";
+  label: string;
+  period_start: string;
+  period_end: string;
+  generated_at: string;
+  cycles_covered: number;
+  trades_opened: number;
+  trades_closed: number;
+  missed_good_trades: number;
+  bad_trades: number;
+  good_trades: number;
+  good_skips: number;
+  confidence_score: number;
+  root_cause_counts: {
+    algorithm_failure: number;
+    execution_failure: number;
+    strategy_mismatch: number;
+    market_randomness: number;
+  };
+  report_path: string;
+};
+
+export type ReportDetail = {
+  label: string;
+  type: string;
+  meta: ReportMeta;
+  content: string;
+};
+
 export type LiveEvent = {
   type?: string;
   event?: string;

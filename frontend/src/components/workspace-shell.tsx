@@ -23,6 +23,9 @@ const navIcons: Record<string, React.ReactNode> = {
   "/scan-audit": (
     <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="8" cy="8" r="5" stroke="currentColor" strokeWidth="1.4"/><path d="M12 12l4 4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
   ),
+  "/review": (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M3 5h12M3 9h8M3 13h5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><circle cx="14" cy="13" r="2.5" stroke="currentColor" strokeWidth="1.4"/><path d="M15.8 15.8l1.7 1.7" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+  ),
 };
 
 const nav = [
@@ -30,7 +33,8 @@ const nav = [
   { href: "/leaderboard", label: "Leaderboard" },
   { href: "/compare", label: "Compare" },
   { href: "/logs", label: "AI Logs" },
-  { href: "/scan-audit", label: "Scan Audit" }
+  { href: "/scan-audit", label: "Scan Audit" },
+  { href: "/review", label: "Review" },
 ];
 
 const routeMeta: Record<string, { title: string }> = {
@@ -38,7 +42,8 @@ const routeMeta: Record<string, { title: string }> = {
   "/leaderboard": { title: "Leaderboard" },
   "/compare": { title: "Compare" },
   "/logs": { title: "AI Logs" },
-  "/scan-audit": { title: "Scan Audit" }
+  "/scan-audit": { title: "Scan Audit" },
+  "/review": { title: "Review" },
 };
 
 type WorkspaceShellProps = {

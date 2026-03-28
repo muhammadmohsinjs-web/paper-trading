@@ -16,6 +16,7 @@ from app.logging_utils import configure_logging
 from app.market.binance_rest import backfill
 from app.market.binance_ws import BinanceWSClient
 from app.scanner.universe_selector import UniverseSelector
+from app.review.scheduler import start_review_scheduler, stop_review_scheduler
 from app.strategies.manager import StrategyManager
 
 logger = logging.getLogger(__name__)
@@ -137,6 +138,7 @@ async def lifespan(_: FastAPI):
     try:
         await init_database()
         logger.info("database ready")
+        start_review_scheduler()
         _bootstrap_task = asyncio.create_task(
             _bootstrap_runtime(settings, manager),
             name="paper-trading-runtime-bootstrap",
@@ -174,6 +176,7 @@ async def lifespan(_: FastAPI):
             manager.stop_all(),
             count=len(active_strategies),
         )
+        await _timed_shutdown_step("review_scheduler", stop_review_scheduler())
         await _timed_shutdown_step("database", dispose_database())
         total_elapsed_ms = (monotonic() - shutdown_started_at) * 1000
         logger.info(
