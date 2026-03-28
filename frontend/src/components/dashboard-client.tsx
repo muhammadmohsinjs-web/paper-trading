@@ -244,7 +244,7 @@ export function DashboardClient({
               <thead>
                 <tr>
                   <th>Name</th>
-                  <th>Mode</th>
+                  <th>Targets</th>
                   <th>Equity</th>
                   <th>P&amp;L</th>
                   <th>Win Rate</th>

@@ -17,6 +17,13 @@ export function StrategyRow({ strategy }: StrategyRowProps) {
   const combinedPnl = strategy.total_pnl + (strategy.has_open_position ? (strategy.unrealized_pnl ?? 0) : 0);
   const executionMode = strategy.execution_mode ?? "single_symbol";
   const primarySymbol = strategy.primary_symbol ?? "BTCUSDT";
+  const intendedSymbols = strategy.daily_picks?.map((pick) => pick.symbol).filter(Boolean) ?? [];
+  const targetLabel =
+    executionMode === "multi_coin_shared_wallet"
+      ? intendedSymbols.length
+        ? intendedSymbols.join(", ")
+        : strategy.focus_symbol ?? "Pending picks"
+      : primarySymbol;
 
   async function handleToggle(event: React.MouseEvent<HTMLButtonElement>) {
     event.preventDefault();
@@ -41,7 +48,7 @@ export function StrategyRow({ strategy }: StrategyRowProps) {
           {strategy.name}
         </Link>
       </td>
-      <td>{executionMode === "multi_coin_shared_wallet" ? "Shared wallet" : primarySymbol}</td>
+      <td>{targetLabel}</td>
       <td className="font-medium text-slate-900">{formatCurrency(strategy.total_equity)}</td>
       <td className={combinedPnl >= 0 ? "text-emerald-700" : "text-red-700"}>
         {formatCurrency(combinedPnl)}

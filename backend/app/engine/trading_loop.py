@@ -2532,13 +2532,9 @@ async def strategy_loop(strategy_id: str, interval_seconds: int = 3600) -> None:
     interval_seconds = max(interval_seconds, 60)
     cycle = 0
 
-    from app.strategies.manager import StrategyManager
-
     while True:
         try:
-            lock = StrategyManager.get_instance().get_lock(strategy_id)
-            async with lock:
-                result = await run_single_cycle(strategy_id)
+            result = await run_single_cycle(strategy_id)
             cycle += 1
 
             executed_count = 1 if result.get("status") == "executed" else int(
