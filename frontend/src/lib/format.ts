@@ -71,3 +71,8 @@ export function formatDateTime(
 export function cn(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
 }
+
+export function getCoinIconUrl(symbol: string): string {
+  const coin = symbol.replace("USDT", "").toLowerCase();
+  return `https://cdn.jsdelivr.net/gh/atomiclabs/cryptocurrency-icons@latest/32/color/${coin}.png`;
+}

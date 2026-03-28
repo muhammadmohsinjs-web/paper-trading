@@ -52,6 +52,8 @@ class UniverseSnapshot:
     demoted: list[str] = field(default_factory=list)  # Removed
     scores: list[ActivityScore] = field(default_factory=list)
     candidate_evaluations: list[CandidateInfo] = field(default_factory=list)
+    total_usdt_pairs: int = 0
+    tradability_failed_count: int = 0
 
 
 @dataclass
@@ -85,6 +87,15 @@ class RankedSetup:
     market_quality_score: float = 0.0
     reward_to_cost_ratio: float = 0.0
     volatility_quality_score: float = 0.5
+    # Family-aware metadata (additive)
+    family: str = ""
+    entry_eligible: bool = True
+    symbol_quality_score: float = 0.0
+    execution_quality_score: float = 0.0
+    room_to_move_score: float = 0.0
+    conflict_penalty: float = 0.0
+    freshness_score: float = 1.0
+    detailed_regime: str = ""
 
 
 @dataclass
@@ -103,6 +114,13 @@ class RankedSymbol:
     reason_codes: list[str] = field(default_factory=list)
     reason_text: str = ""
     movement_quality: dict[str, Any] = field(default_factory=dict)
+    # Family-aware metadata (additive)
+    family: str = ""
+    entry_eligible: bool = True
+    net_quality_score: float = 0.0
+    contradiction_penalty: float = 0.0
+    exhaustion_penalty: float = 0.0
+    detailed_regime: str = ""
 
 
 @dataclass

@@ -4,7 +4,7 @@ import { Fragment, useState } from "react";
 import Link from "next/link";
 import { LocalDateTime } from "@/components/local-date-time";
 import type { AILogEntry } from "@/lib/types";
-import { badgeClassName, buttonClassName } from "@/components/ui";
+import { badgeClassName, buttonClassName, CoinIcon } from "@/components/ui";
 
 type Props = {
   logs: AILogEntry[];
@@ -208,7 +208,10 @@ export function AILogsTable({ logs, total, page, limit, currentStatus, currentSt
                           ) : null}
                           <div>
                             <span className="text-xs text-slate-500">Symbol: </span>
-                            <span className="text-sm text-slate-600">{log.symbol}</span>
+                            <span className="inline-flex items-center gap-1.5 text-sm text-slate-600">
+                              <CoinIcon symbol={log.symbol} size={16} />
+                              {log.symbol}
+                            </span>
                           </div>
                         </div>
                       </div>

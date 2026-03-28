@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.regime.types import MarketRegime
+from app.regime.types import DetailedRegime, MarketRegime
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,71 @@ REGIME_AFFINITY: dict[MarketRegime, dict[str, float]] = {
         "bollinger_bounce": 0.10,
         "hybrid_composite": 0.05,
         "hybrid_ai_composite": 0.05,
+    },
+}
+
+# Detailed regime affinity — higher resolution than coarse REGIME_AFFINITY.
+# Strategy scorer prefers this when detailed_regime is available.
+_S = {
+    "sma_crossover", "macd_momentum", "rsi_mean_reversion",
+    "bollinger_bounce", "hybrid_composite", "hybrid_ai_composite",
+}
+
+DETAILED_REGIME_AFFINITY: dict[DetailedRegime, dict[str, float]] = {
+    DetailedRegime.CLEAN_TREND_UP: {
+        "sma_crossover": 0.90, "macd_momentum": 0.95,
+        "rsi_mean_reversion": 0.20, "bollinger_bounce": 0.30,
+        "hybrid_composite": 0.80, "hybrid_ai_composite": 0.80,
+    },
+    DetailedRegime.CLEAN_TREND_DOWN: {
+        "sma_crossover": 0.75, "macd_momentum": 0.85,
+        "rsi_mean_reversion": 0.40, "bollinger_bounce": 0.35,
+        "hybrid_composite": 0.70, "hybrid_ai_composite": 0.70,
+    },
+    DetailedRegime.EXHAUSTED_TREND_UP: {
+        "sma_crossover": 0.40, "macd_momentum": 0.35,
+        "rsi_mean_reversion": 0.70, "bollinger_bounce": 0.65,
+        "hybrid_composite": 0.55, "hybrid_ai_composite": 0.55,
+    },
+    DetailedRegime.EXHAUSTED_TREND_DOWN: {
+        "sma_crossover": 0.30, "macd_momentum": 0.30,
+        "rsi_mean_reversion": 0.75, "bollinger_bounce": 0.60,
+        "hybrid_composite": 0.50, "hybrid_ai_composite": 0.50,
+    },
+    DetailedRegime.VOLATILE_TREND_UP: {
+        "sma_crossover": 0.55, "macd_momentum": 0.70,
+        "rsi_mean_reversion": 0.35, "bollinger_bounce": 0.50,
+        "hybrid_composite": 0.60, "hybrid_ai_composite": 0.60,
+    },
+    DetailedRegime.VOLATILE_TREND_DOWN: {
+        "sma_crossover": 0.40, "macd_momentum": 0.55,
+        "rsi_mean_reversion": 0.45, "bollinger_bounce": 0.50,
+        "hybrid_composite": 0.50, "hybrid_ai_composite": 0.50,
+    },
+    DetailedRegime.CLEAN_RANGE: {
+        "sma_crossover": 0.20, "macd_momentum": 0.25,
+        "rsi_mean_reversion": 0.95, "bollinger_bounce": 0.90,
+        "hybrid_composite": 0.70, "hybrid_ai_composite": 0.70,
+    },
+    DetailedRegime.CHAOTIC_RANGE: {
+        "sma_crossover": 0.10, "macd_momentum": 0.15,
+        "rsi_mean_reversion": 0.50, "bollinger_bounce": 0.55,
+        "hybrid_composite": 0.40, "hybrid_ai_composite": 0.40,
+    },
+    DetailedRegime.BREAKOUT_EXPANSION: {
+        "sma_crossover": 0.70, "macd_momentum": 0.90,
+        "rsi_mean_reversion": 0.15, "bollinger_bounce": 0.25,
+        "hybrid_composite": 0.75, "hybrid_ai_composite": 0.75,
+    },
+    DetailedRegime.POST_SPIKE_INSTABILITY: {
+        "sma_crossover": 0.10, "macd_momentum": 0.15,
+        "rsi_mean_reversion": 0.45, "bollinger_bounce": 0.40,
+        "hybrid_composite": 0.30, "hybrid_ai_composite": 0.30,
+    },
+    DetailedRegime.CRASH: {
+        "sma_crossover": 0.0, "macd_momentum": 0.0,
+        "rsi_mean_reversion": 0.10, "bollinger_bounce": 0.10,
+        "hybrid_composite": 0.05, "hybrid_ai_composite": 0.05,
     },
 }
 

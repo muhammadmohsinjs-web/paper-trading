@@ -43,6 +43,7 @@ class UniverseSelector:
         # Stage 1 cache
         self._candidate_pool: list[CandidateInfo] = []
         self._candidate_pool_updated_at: float = 0.0
+        self._total_usdt_pairs: int = 0
 
         # Stage 2 cache
         self._active_universe: list[ActivityScore] = []
@@ -178,6 +179,7 @@ class UniverseSelector:
 
         self._candidate_pool = candidates
         self._candidate_pool_updated_at = time.monotonic()
+        self._total_usdt_pairs = len(valid_symbols)
         logger.info(
             "universe_selector: candidate pool refreshed — %d symbols passed hard filters (from %d USDT pairs)",
             len(candidates), len(valid_symbols),
@@ -336,6 +338,8 @@ class UniverseSelector:
         self._previous_active_symbols = selected_symbols
         self._active_universe_updated_at = time.monotonic()
 
+        tradability_failed = sum(1 for c in candidate_evaluations if not c.tradability_passed)
+
         self._last_snapshot = UniverseSnapshot(
             timestamp=datetime.now(timezone.utc).isoformat(),
             candidate_pool_size=len(self._candidate_pool),
@@ -345,6 +349,8 @@ class UniverseSelector:
             demoted=sorted(removed_symbols),
             scores=selected,
             candidate_evaluations=candidate_evaluations,
+            total_usdt_pairs=self._total_usdt_pairs,
+            tradability_failed_count=tradability_failed,
         )
 
         logger.info(

@@ -479,6 +479,18 @@ async def ensure_coordinated_picks(
     for strategy_id, candidates in assignments.items():
         for idx, candidate in enumerate(candidates, start=1):
             conflict_resolution = _resolve_conflict_resolution(candidate, claim_counts)
+            # Resolve scanner context for revalidation
+            _anchor_price = None
+            _store = DataStore.get_instance()
+            _latest_candles = _store.get_candles(candidate.symbol, interval or settings.default_candle_interval, 1)
+            if _latest_candles:
+                _anchor_price = float(_latest_candles[-1].close)
+            # Look up family/regime from scanner results
+            _sym_setups = scanner_results.get(candidate.symbol, [])
+            _best_entry = next(
+                (s for s in sorted(_sym_setups, key=lambda x: x.score, reverse=True) if s.entry_eligible),
+                None,
+            )
             item = DailyPick(
                 strategy_id=strategy_id,
                 selection_date=chosen_date,
@@ -494,6 +506,12 @@ async def ensure_coordinated_picks(
                 conflict_resolution=conflict_resolution,
                 setup_fit_score=float(candidate.setup_fit_score),
                 regime_fit_score=float(candidate.regime_fit_score),
+                scanner_anchor_price=_anchor_price,
+                scanner_signal_ts=now,
+                scanner_family=_best_entry.family if _best_entry else None,
+                scanner_detailed_regime=_best_entry.detailed_regime if _best_entry else None,
+                scanner_drift_limit_pct=3.0,
+                scanner_net_quality_score=float(candidate.setup_fit_score),
             )
             session.add(item)
             created_by_strategy.setdefault(strategy_id, []).append(item)

@@ -56,6 +56,29 @@ async def run_manual_scan(
 
     scan_result = scanner.scan(interval=interval, max_results=max_results)
 
+    # Build filtration funnel stats
+    selector = UniverseSelector.get_instance()
+    snapshot = selector.get_last_snapshot()
+    rank_stats = scanner.get_rank_funnel_stats()
+    total_symbols = len(scanner.symbols)
+
+    funnel = {
+        "total_usdt_pairs": snapshot.total_usdt_pairs if snapshot else 0,
+        "after_hard_filters": snapshot.candidate_pool_size if snapshot else total_symbols,
+        "after_tradability": (snapshot.candidate_pool_size - snapshot.tradability_failed_count) if snapshot else 0,
+        "active_universe": total_symbols,
+        "with_data": total_symbols - rank_stats["no_data"],
+        "after_setup_detection": total_symbols - rank_stats["no_data"] - rank_stats["tradability_rejected"] - rank_stats["no_setup"],
+        "after_liquidity_floor": total_symbols - rank_stats["no_data"] - rank_stats["tradability_rejected"] - rank_stats["no_setup"] - rank_stats["low_liquidity"],
+        "final_ranked": len(ranked),
+    }
+
+    # Collect per-symbol audit data for the detail page
+    audit_rows = scanner.get_last_rank_audit()
+    candidate_evaluations = (
+        [asdict(c) for c in snapshot.candidate_evaluations] if snapshot else []
+    )
+
     return {
         "scanned_at": scan_result.scanned_at,
         "symbols_scanned": scan_result.symbols_scanned,
@@ -64,6 +87,9 @@ async def run_manual_scan(
         "dynamic_universe_enabled": settings.dynamic_universe_enabled,
         "ranked_symbols": [asdict(s) for s in ranked],
         "opportunities": [asdict(s) for s in scan_result.opportunities],
+        "funnel": funnel,
+        "audit_rows": audit_rows,
+        "candidate_evaluations": candidate_evaluations,
     }
 
 

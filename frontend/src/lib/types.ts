@@ -399,6 +399,39 @@ export type RankedSymbol = {
   indicators: Record<string, unknown>;
 };
 
+export type FunnelStats = {
+  total_usdt_pairs: number;
+  after_hard_filters: number;
+  after_tradability: number;
+  active_universe: number;
+  with_data: number;
+  after_setup_detection: number;
+  after_liquidity_floor: number;
+  final_ranked: number;
+};
+
+export type ScanAuditRow = {
+  symbol: string;
+  status: string;
+  reason_code: string | null;
+  reason_text: string;
+  setup_type: string | null;
+  movement_quality: Record<string, unknown>;
+  score: number;
+};
+
+export type CandidateEvaluation = {
+  symbol: string;
+  price: number;
+  volume_24h_usdt: number;
+  price_change_pct_24h: number;
+  tradability_passed: boolean;
+  reason_codes: string[];
+  reason_text: string;
+  metrics: Record<string, unknown>;
+  market_quality_score: number;
+};
+
 export type ManualScanResponse = {
   scanned_at: string;
   symbols_scanned: number;
@@ -406,6 +439,9 @@ export type ManualScanResponse = {
   universe_size: number;
   ranked_symbols: RankedSymbol[];
   opportunities: ScannerOpportunity[];
+  funnel?: FunnelStats;
+  audit_rows?: ScanAuditRow[];
+  candidate_evaluations?: CandidateEvaluation[];
 };
 
 export type LiveEvent = {

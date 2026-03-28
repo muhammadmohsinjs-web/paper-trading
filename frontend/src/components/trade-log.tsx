@@ -4,7 +4,7 @@ import { Fragment, useState } from "react";
 import { LocalDateTime } from "@/components/local-date-time";
 import { formatCurrency, formatNumber } from "@/lib/format";
 import type { Trade } from "@/lib/types";
-import { badgeClassName } from "@/components/ui";
+import { badgeClassName, CoinIcon } from "@/components/ui";
 
 const SOURCE_LABELS: Record<string, string> = {
   rule: "Rule",
@@ -158,7 +158,12 @@ export function TradeLog({ trades }: { trades: Trade[] }) {
                       <td className={`font-medium ${trade.side === "BUY" ? "text-emerald-700" : "text-red-700"}`}>
                         {trade.side}
                       </td>
-                      <td className="font-medium text-slate-900">{trade.symbol}</td>
+                      <td className="font-medium text-slate-900">
+                        <span className="flex items-center gap-2">
+                          <CoinIcon symbol={trade.symbol} size={18} />
+                          {trade.symbol}
+                        </span>
+                      </td>
                       <td>
                         {trade.decision_source ? (
                           <span className={badgeClassName(sourceTone(trade.decision_source))}>

@@ -1,6 +1,7 @@
 import { LocalDateTime } from "@/components/local-date-time";
 import { formatCurrency, formatNumber } from "@/lib/format";
 import type { Position } from "@/lib/types";
+import { CoinIcon } from "@/components/ui";
 
 export function OpenPositions({ positions }: { positions: Position[] }) {
   return (
@@ -28,7 +29,12 @@ export function OpenPositions({ positions }: { positions: Position[] }) {
             <tbody>
               {positions.map((position) => (
                 <tr key={position.id}>
-                  <td className="font-medium text-slate-900">{position.symbol}</td>
+                  <td className="font-medium text-slate-900">
+                    <span className="flex items-center gap-2">
+                      <CoinIcon symbol={position.symbol} size={18} />
+                      {position.symbol}
+                    </span>
+                  </td>
                   <td>{formatNumber(position.quantity, 6)}</td>
                   <td>{formatCurrency(position.entry_price)}</td>
                   <td>{formatCurrency(position.current_price)}</td>

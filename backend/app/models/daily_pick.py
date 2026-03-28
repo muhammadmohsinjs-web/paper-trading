@@ -41,4 +41,12 @@ class DailyPick(UUIDPrimaryKeyMixin, Base):
     setup_fit_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     regime_fit_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
+    # Scanner context for freshness/revalidation
+    scanner_anchor_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    scanner_signal_ts: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    scanner_family: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    scanner_detailed_regime: Mapped[Optional[str]] = mapped_column(String(48), nullable=True)
+    scanner_drift_limit_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    scanner_net_quality_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
     strategy = relationship("Strategy", back_populates="daily_picks")

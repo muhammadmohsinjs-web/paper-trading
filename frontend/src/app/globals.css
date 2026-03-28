@@ -109,20 +109,20 @@ h4 {
   z-index: 40;
   display: flex;
   height: 100vh;
-  width: 220px;
+  width: 232px;
   flex-direction: column;
   justify-content: space-between;
   gap: 20px;
   border-right: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.96);
-  padding: 20px 16px 16px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(247,248,250,0.96) 100%);
+  padding: 20px 14px 16px;
   transition:
     width 180ms ease,
     transform 180ms ease;
 }
 
 .app-rail[data-collapsed="true"] {
-  width: 84px;
+  width: 72px;
 }
 
 .app-rail-header,
@@ -137,6 +137,14 @@ h4 {
   min-width: 0;
   align-items: center;
   gap: 12px;
+  border-radius: 10px;
+  padding: 4px;
+  margin: -4px;
+  transition: background 180ms ease;
+}
+
+.app-brandmark:hover {
+  background: var(--surface-subtle);
 }
 
 .app-brandmark-icon {
@@ -146,26 +154,57 @@ h4 {
   align-items: center;
   justify-content: center;
   border-radius: 10px;
-  background: var(--accent-soft);
-  color: var(--accent);
+  background: linear-gradient(135deg, #3e63dd 0%, #5b7cf7 100%);
+  color: #ffffff;
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.08em;
+  box-shadow: 0 2px 8px rgba(62, 99, 221, 0.25);
+  flex-shrink: 0;
+}
+
+.app-collapse-btn {
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  width: 28px;
+  border-radius: 8px;
+  border: none;
+  background: none;
+  color: var(--text-soft);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background 180ms ease,
+    color 180ms ease;
+}
+
+.app-collapse-btn:hover {
+  background: var(--surface-subtle);
+  color: var(--text);
+}
+
+.app-rail-divider {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border) 20%, var(--border) 80%, transparent);
+  margin: 4px 0;
 }
 
 .app-nav {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 2px;
 }
 
 .app-nav-link {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 12px;
-  border-radius: 12px;
-  padding: 9px 10px;
+  gap: 10px;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 13.5px;
+  font-weight: 500;
   color: var(--text-muted);
   transition:
     background 180ms ease,
@@ -178,17 +217,30 @@ h4 {
   color: var(--text);
 }
 
+.app-nav-link:hover .app-nav-icon {
+  color: var(--text);
+}
+
 .app-nav-link-active {
   background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.app-nav-link-active .app-nav-icon {
   color: var(--accent);
 }
 
 .app-nav-icon {
   display: inline-flex;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
   color: var(--text-soft);
+  flex-shrink: 0;
+  transition: color 180ms ease;
 }
 
 .app-main-wrap {
@@ -220,7 +272,7 @@ h4 {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 32px;
+  gap: 24px;
 }
 
 .page-head {
@@ -271,7 +323,7 @@ h4 {
 }
 
 .data-table th {
-  padding: 12px 16px;
+  padding: 10px 16px;
   text-align: left;
   font-size: 11px;
   font-weight: 600;
@@ -281,14 +333,18 @@ h4 {
 }
 
 .data-table td {
-  padding: 14px 16px;
+  padding: 12px 16px;
   border-top: 1px solid var(--border);
-  vertical-align: top;
+  vertical-align: middle;
   color: var(--text-muted);
 }
 
+.data-table tbody tr {
+  transition: background 120ms ease;
+}
+
 .data-table tbody tr:hover {
-  background: rgba(238, 242, 246, 0.55);
+  background: rgba(238, 242, 255, 0.45);
 }
 
 @keyframes pricePulseUp {

@@ -2,9 +2,9 @@
 
 import { useState, useCallback } from "react";
 import { runManualScan } from "@/lib/api";
-import { formatCurrency, formatNumber } from "@/lib/format";
-import type { ManualScanResponse, RankedSymbol } from "@/lib/types";
-import { MetricStrip, buttonClassName } from "@/components/ui";
+import { cn, formatCurrency, formatNumber } from "@/lib/format";
+import type { FunnelStats, ManualScanResponse, RankedSymbol } from "@/lib/types";
+import { MetricStrip, CoinIcon, buttonClassName } from "@/components/ui";
 
 const SETUP_LABELS: Record<string, { label: string; color: string }> = {
   rsi_oversold: { label: "RSI Oversold", color: "text-emerald-700" },
@@ -49,7 +49,10 @@ function SymbolRow({ item, rank }: { item: RankedSymbol; rank: number }) {
   return (
     <div className="grid grid-cols-[2rem_5.5rem_1fr_6rem_7rem_5rem] items-center gap-3 border-b border-slate-200 px-4 py-3 text-sm last:border-b-0">
       <span className="text-xs tabular-nums text-slate-500">#{rank}</span>
-      <span className="font-medium text-slate-900">{item.symbol.replace("USDT", "")}</span>
+      <span className="flex items-center gap-2 font-medium text-slate-900">
+        <CoinIcon symbol={item.symbol} />
+        {item.symbol.replace("USDT", "")}
+      </span>
       <div className="min-w-0">
         <span className={`text-xs font-medium uppercase tracking-wider ${meta.color}`}>
           {meta.label}
@@ -74,6 +77,59 @@ function SymbolRow({ item, rank }: { item: RankedSymbol; rank: number }) {
       </div>
       <div className="flex justify-end">
         <ScoreBar score={item.score} />
+      </div>
+    </div>
+  );
+}
+
+function FiltrationFunnel({ funnel }: { funnel: FunnelStats }) {
+  const stages = [
+    { label: "USDT pairs discovered", count: funnel.total_usdt_pairs },
+    { label: "After hard filters", count: funnel.after_hard_filters },
+    { label: "After tradability", count: funnel.after_tradability },
+    { label: "Active universe", count: funnel.active_universe, accent: true },
+    { label: "With sufficient data", count: funnel.with_data },
+    { label: "Setup detected", count: funnel.after_setup_detection },
+    { label: "Passed liquidity floor", count: funnel.after_liquidity_floor },
+    { label: "Final ranked", count: funnel.final_ranked, success: true },
+  ];
+
+  const maxCount = stages[0].count || 1;
+
+  return (
+    <div className="table-shell">
+      <div className="border-b border-slate-200 bg-slate-50 px-4 py-2 text-[11px] font-medium uppercase tracking-[0.12em] text-slate-500">
+        Filtration funnel
+      </div>
+      <div className="divide-y divide-slate-100">
+        {stages.map((stage) => {
+          const pct = Math.max((stage.count / maxCount) * 100, 2);
+          const dropped = stages[0].count - stage.count;
+          return (
+            <div key={stage.label} className="flex items-center gap-4 px-4 py-2">
+              <span className="w-40 shrink-0 text-xs text-slate-600">{stage.label}</span>
+              <div className="flex-1">
+                <div
+                  className={cn(
+                    "h-3.5 rounded",
+                    stage.success ? "bg-emerald-500" : stage.accent ? "bg-blue-500" : "bg-slate-300"
+                  )}
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+              <span className="w-12 text-right text-sm font-medium tabular-nums text-slate-900">
+                {formatNumber(stage.count, 0)}
+              </span>
+              {dropped > 0 && !stage.success && !stage.accent ? (
+                <span className="w-16 text-right text-[11px] tabular-nums text-slate-400">
+                  -{formatNumber(dropped, 0)}
+                </span>
+              ) : (
+                <span className="w-16" />
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -148,6 +204,8 @@ export function MarketScanner() {
               }
             ]}
           />
+
+          {scanResult.funnel ? <FiltrationFunnel funnel={scanResult.funnel} /> : null}
 
           {scanResult.ranked_symbols.length > 0 ? (
             <div className="table-shell">

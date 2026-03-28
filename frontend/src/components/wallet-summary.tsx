@@ -1,5 +1,6 @@
 import { formatCurrency, formatPercent } from "@/lib/format";
 import type { StrategyWithStats, TradeSummary } from "@/lib/types";
+import { CoinIcon } from "@/components/ui";
 
 type WalletSummaryProps = {
   strategy: StrategyWithStats;
@@ -108,15 +109,29 @@ export function WalletSummary({ strategy, summary }: WalletSummaryProps) {
       </div>
 
       {dailyPicks.length ? (
-        <p className="text-sm text-slate-500">
-          Picks {dailyPicks.map((pick) => `#${pick.rank} ${pick.symbol}`).join(" · ")}
-        </p>
+        <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
+          <span>Picks</span>
+          {dailyPicks.map((pick, i) => (
+            <span key={pick.symbol} className="inline-flex items-center gap-1">
+              <CoinIcon symbol={pick.symbol} size={16} />
+              #{pick.rank} {pick.symbol}
+              {i < dailyPicks.length - 1 ? "·" : ""}
+            </span>
+          ))}
+        </div>
       ) : null}
 
       {exposureBySymbol.length ? (
-        <p className="text-sm text-slate-500">
-          Exposure {exposureBySymbol.map(([symbol, value]) => `${symbol} ${formatCurrency(value)}`).join(" · ")}
-        </p>
+        <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
+          <span>Exposure</span>
+          {exposureBySymbol.map(([symbol, value], i) => (
+            <span key={symbol} className="inline-flex items-center gap-1">
+              <CoinIcon symbol={symbol} size={16} />
+              {symbol} {formatCurrency(value)}
+              {i < exposureBySymbol.length - 1 ? "·" : ""}
+            </span>
+          ))}
+        </div>
       ) : null}
     </section>
   );

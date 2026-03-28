@@ -11,6 +11,9 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.api.ws import ConnectionManager
 from app.database import commit_with_write_lock
 from app.engine.executor import ExecutionResult
@@ -137,6 +140,7 @@ async def handle_post_trade(
     if is_sell:
         update_strategy_streak(strategy, result.trade.pnl)
         accumulate_wallet_losses(wallet, result.trade.pnl)
+        await _record_scanner_perf_stats(session, strategy_id, symbol, result)
 
         # Track stop-loss exits for re-entry cooldown
         is_stop_loss = (
@@ -202,3 +206,78 @@ async def handle_post_trade(
         position=refreshed_position,
         available_usdt=wallet.available_usdt,
     )
+
+
+async def _record_scanner_perf_stats(
+    session: Any,
+    strategy_id: str,
+    symbol: str,
+    result: ExecutionResult,
+) -> None:
+    """Upsert scanner perf stats after a closed trade."""
+    try:
+        from app.models.position import Position
+        from app.models.scanner_perf_stats import ScannerPerfStats
+
+        # Look up the position to get scanner context
+        pos = (
+            await session.execute(
+                select(Position).where(
+                    Position.strategy_id == strategy_id,
+                    Position.symbol == symbol,
+                )
+            )
+        ).scalars().first()
+
+        if pos is None:
+            return
+        family = getattr(pos, "entry_scanner_family", None)
+        regime = getattr(pos, "entry_scanner_regime", None)
+        if not family or not regime:
+            return  # no scanner context on this position
+
+        side = pos.side.value if hasattr(pos.side, "value") else str(pos.side)
+        pnl = result.trade.pnl
+        is_win = pnl is not None and pnl > 0
+
+        # Check for existing row
+        existing = (
+            await session.execute(
+                select(ScannerPerfStats).where(
+                    ScannerPerfStats.symbol == symbol,
+                    ScannerPerfStats.setup_family == family,
+                    ScannerPerfStats.detailed_regime == regime,
+                    ScannerPerfStats.side == side,
+                )
+            )
+        ).scalars().first()
+
+        now = datetime.now(timezone.utc)
+        pnl_pct = float(pnl / pos.entry_price * 100) if pnl is not None and pos.entry_price else 0.0
+        hold_hours = (now - pos.opened_at).total_seconds() / 3600 if pos.opened_at else 0.0
+
+        if existing:
+            n = existing.total_trades
+            existing.total_trades = n + 1
+            existing.wins = existing.wins + (1 if is_win else 0)
+            existing.losses = existing.losses + (0 if is_win else 1)
+            existing.avg_pnl_pct = (existing.avg_pnl_pct * n + pnl_pct) / (n + 1)
+            existing.avg_hold_hours = (existing.avg_hold_hours * n + hold_hours) / (n + 1)
+            existing.last_updated = now
+        else:
+            from uuid import uuid4
+            session.add(ScannerPerfStats(
+                id=str(uuid4()),
+                symbol=symbol,
+                setup_family=family,
+                detailed_regime=regime,
+                side=side,
+                total_trades=1,
+                wins=1 if is_win else 0,
+                losses=0 if is_win else 1,
+                avg_pnl_pct=pnl_pct,
+                avg_hold_hours=hold_hours,
+                last_updated=now,
+            ))
+    except Exception:
+        logger.warning("Failed to record scanner perf stats for %s", symbol, exc_info=True)

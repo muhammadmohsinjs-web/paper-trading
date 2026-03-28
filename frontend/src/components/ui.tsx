@@ -1,4 +1,4 @@
-import { cn } from "@/lib/format";
+import { cn, getCoinIconUrl } from "@/lib/format";
 
 type SurfaceProps = React.ComponentPropsWithoutRef<"section"> & {
   tone?: "default" | "subtle";
@@ -150,21 +150,27 @@ export function MetricRow({ label, value, detail, tone = "default" }: MetricRowP
 
 export function MetricStrip({ items, className }: MetricStripProps) {
   return (
-    <div className={cn("flex flex-wrap items-baseline gap-x-8 gap-y-2", className)}>
+    <div className={cn("grid grid-cols-2 gap-3 sm:grid-cols-4", className)}>
       {items.map((item) => (
-        <div key={item.label}>
-          <span className="text-[11px] uppercase tracking-wider text-slate-400">{item.label}</span>
-          <span
+        <div
+          key={item.label}
+          className="rounded-xl border border-slate-200/60 bg-white px-4 py-3.5 space-y-1"
+        >
+          <p className="text-[11px] font-medium uppercase tracking-[0.1em] text-slate-400">
+            {item.label}
+          </p>
+          <p
             className={cn(
-              "ml-2 text-sm font-medium text-slate-900",
-              item.tone === "success" && "text-emerald-700",
-              item.tone === "danger" && "text-red-700",
-              item.tone === "warning" && "text-amber-700",
-              item.tone === "accent" && "text-blue-700"
+              "text-lg font-semibold tabular-nums tracking-[-0.02em]",
+              (!item.tone || item.tone === "default") && "text-slate-900",
+              item.tone === "success" && "text-emerald-600",
+              item.tone === "danger" && "text-red-600",
+              item.tone === "warning" && "text-amber-600",
+              item.tone === "accent" && "text-blue-600"
             )}
           >
             {item.value}
-          </span>
+          </p>
         </div>
       ))}
     </div>
@@ -173,4 +179,19 @@ export function MetricStrip({ items, className }: MetricStripProps) {
 
 export function StatusBadge({ tone = "neutral", children, className }: StatusBadgeProps) {
   return <span className={badgeClassName(tone, className)}>{children}</span>;
+}
+
+export function CoinIcon({ symbol, size = 20 }: { symbol: string; size?: number }) {
+  return (
+    <img
+      src={getCoinIconUrl(symbol)}
+      alt=""
+      width={size}
+      height={size}
+      className="shrink-0 rounded-full"
+      onError={(e) => {
+        (e.currentTarget as HTMLImageElement).style.display = "none";
+      }}
+    />
+  );
 }

@@ -69,5 +69,12 @@ class Position(UUIDPrimaryKeyMixin, Base):
     tp2_hit: Mapped[Optional[bool]] = mapped_column(
         nullable=True, default=False,
     )
+    # Scanner context for performance memory linkage
+    entry_scanner_family: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True, default=None,
+    )
+    entry_scanner_regime: Mapped[Optional[str]] = mapped_column(
+        String(48), nullable=True, default=None,
+    )
 
     strategy = relationship("Strategy", back_populates="positions")

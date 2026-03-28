@@ -13,7 +13,7 @@ import { WalletSummary } from "@/components/wallet-summary";
 import { AICallLog } from "@/components/ai-call-log";
 import { useLiveFeed } from "@/hooks/use-live-feed";
 import { executeStrategy, aiPreview, type AIPreviewResponse } from "@/lib/api";
-import { MetricStrip, PageHeader, Surface, buttonClassName } from "@/components/ui";
+import { MetricStrip, PageHeader, Surface, CoinIcon, buttonClassName } from "@/components/ui";
 import { STRATEGY_TYPE_META } from "@/lib/types";
 import type {
   Candle,
@@ -200,7 +200,18 @@ export function StrategyDetailClient(props: StrategyDetailClientProps) {
           ]}
         />
         <p className="text-sm leading-6 text-slate-600">{statusLine || "No recent execution status available."}</p>
-        {exposureLine ? <p className="text-sm text-slate-500">Exposure {exposureLine}</p> : null}
+        {Object.keys(openExposureBySymbol).length ? (
+          <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
+            <span>Exposure</span>
+            {Object.entries(openExposureBySymbol).map(([symbol, value], i, arr) => (
+              <span key={symbol} className="inline-flex items-center gap-1">
+                <CoinIcon symbol={symbol} size={16} />
+                {symbol} {value.toFixed(2)}
+                {i < arr.length - 1 ? "·" : ""}
+              </span>
+            ))}
+          </div>
+        ) : null}
       </section>
 
       {aiResult ? (

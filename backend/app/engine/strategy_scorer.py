@@ -207,9 +207,9 @@ def evaluate_universe_for_strategy(
     effective_max = max_pick_count if max_pick_count is not None else profile.max_pick_count
 
     for symbol, setups in scanner_results.items():
-        eligible = list(setups)
+        eligible = [s for s in setups if s.entry_eligible]
         if profile.allowed_setups is not None:
-            eligible = [setup for setup in setups if setup.setup_type in profile.allowed_setups]
+            eligible = [setup for setup in eligible if setup.setup_type in profile.allowed_setups]
         if not eligible:
             rejections.append(
                 StrategyRejection(
@@ -218,7 +218,7 @@ def evaluate_universe_for_strategy(
                     strategy_type=strategy_type,
                     symbol=symbol,
                     reason_code=SETUP_TYPE_MISMATCH,
-                    reason_text="No setup matched this strategy profile",
+                    reason_text="No entry-eligible setup matched this strategy profile",
                 )
             )
             continue
@@ -245,8 +245,14 @@ def evaluate_universe_for_strategy(
         perf_memory_score = 0.5
         vol_quality_score = _clamp01(best_setup.volatility_quality_score)
         expected_rr_score = _clamp01(best_setup.reward_to_cost_ratio / 3.0)
+
+        # Blend family quality into setup fit when available
+        setup_fit_base = best_setup.score
+        if best_setup.symbol_quality_score > 0:
+            setup_fit_base = best_setup.score * 0.6 + best_setup.symbol_quality_score * 0.25 + best_setup.execution_quality_score * 0.15
+
         final_score = (
-            best_setup.score * profile.weights.setup_fit
+            setup_fit_base * profile.weights.setup_fit
             + regime_fit * profile.weights.regime_fit
             + liquidity_score * profile.weights.liquidity
             + perf_memory_score * profile.weights.perf_memory
@@ -263,7 +269,7 @@ def evaluate_universe_for_strategy(
                 setup_type=best_setup.setup_type,
                 recommended_strategy=normalize_strategy_type(best_setup.recommended_strategy),
                 assignment_reason=best_setup.reason,
-                setup_fit_score=round(best_setup.score, 4),
+                setup_fit_score=round(setup_fit_base, 4),
                 regime_fit_score=round(regime_fit, 4),
                 liquidity_score=round(liquidity_score, 4),
                 perf_memory_score=round(perf_memory_score, 4),
@@ -281,24 +287,63 @@ def evaluate_universe_for_strategy(
     return StrategyScoringResult(candidates=selected, rejections=rejections)
 
 
+# Static behavior-cluster map for common pairs.
+# Symbols in the same cluster receive a crowding penalty when co-selected.
+BEHAVIOR_CLUSTER: dict[str, str] = {
+    "BTCUSDT": "btc",
+    "ETHUSDT": "eth_l1",
+    "SOLUSDT": "alt_l1",
+    "BNBUSDT": "exchange",
+    "ADAUSDT": "alt_l1",
+    "DOTUSDT": "alt_l1",
+    "AVAXUSDT": "alt_l1",
+    "MATICUSDT": "alt_l1",
+    "LINKUSDT": "oracle",
+    "ATOMUSDT": "cosmos",
+    "NEARUSDT": "alt_l1",
+    "APTUSDT": "alt_l1",
+    "ARBUSDT": "eth_l2",
+    "OPUSDT": "eth_l2",
+    "SUIUSDT": "alt_l1",
+    "DOGEUSDT": "meme",
+    "SHIBUSDT": "meme",
+    "PEPEUSDT": "meme",
+}
+
+_CLUSTER_CROWDING_FACTORS = [1.0, 0.85, 0.70, 0.55]  # 1st, 2nd, 3rd, 4th in same cluster
+
+
 def _apply_correlation_penalty(
     candidates: list[StrategyCandidate],
     max_pick_count: int,
 ) -> list[StrategyCandidate]:
     selected: list[StrategyCandidate] = []
     remaining = candidates[:]
+    cluster_counts: dict[str, int] = {}
+
     while remaining and len(selected) < max_pick_count:
         best_idx = 0
         best_score = -1.0
         for idx, candidate in enumerate(remaining):
             adjusted_score = candidate.final_score
+            # Correlation penalty
             if selected:
                 max_corr = max(get_correlation(candidate.symbol, chosen.symbol) for chosen in selected)
                 adjusted_score *= max(0.25, 1.0 - (0.35 * max_corr))
+            # Behavior-cluster crowding penalty
+            cluster = BEHAVIOR_CLUSTER.get(candidate.symbol)
+            if cluster and cluster in cluster_counts:
+                count = cluster_counts[cluster]
+                factor = _CLUSTER_CROWDING_FACTORS[min(count, len(_CLUSTER_CROWDING_FACTORS) - 1)]
+                adjusted_score *= factor
             if adjusted_score > best_score:
                 best_score = adjusted_score
                 best_idx = idx
         chosen = remaining.pop(best_idx)
+        # Track cluster
+        cluster = BEHAVIOR_CLUSTER.get(chosen.symbol)
+        if cluster:
+            cluster_counts[cluster] = cluster_counts.get(cluster, 0) + 1
         if best_score != chosen.final_score:
             chosen = StrategyCandidate(
                 **{

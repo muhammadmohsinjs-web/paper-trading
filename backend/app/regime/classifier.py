@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy as np
 
-from app.regime.types import MarketRegime, RegimeResult, RegimeTransition
+from app.regime.types import DetailedRegime, MarketRegime, RegimeResult, RegimeTransition
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,11 @@ class RegimeClassifier:
         transition = RegimeTransition.detect(previous, result.regime)
         self._previous_regimes[symbol] = result.regime
         return result, transition
+
+    def classify_full(self, indicators: dict[str, Any]) -> RegimeResult:
+        """Classify with both coarse and detailed regime. Backward-compatible."""
+        base = self.classify(indicators)
+        return self._enrich_with_detailed(base, indicators)
 
     def classify(self, indicators: dict[str, Any]) -> RegimeResult:
         """Classify market regime from computed indicators.
@@ -185,3 +190,132 @@ class RegimeClassifier:
         if bb_width is None or bb_width_avg is None or bb_width_avg == 0:
             return False
         return bb_width > bb_width_avg * BB_WIDTH_HIGH_VOL_MULTIPLIER
+
+    # ── Detailed regime enrichment ────────────────────────────────────
+
+    def _enrich_with_detailed(
+        self,
+        base: RegimeResult,
+        indicators: dict[str, Any],
+    ) -> RegimeResult:
+        """Add detailed_regime, direction, exhaustion_score, volatility_z_score."""
+        rsi_values = indicators.get("rsi", [])
+        latest_rsi = float(rsi_values[-1]) if rsi_values else 50.0
+
+        bb = indicators.get("bollinger_bands", ([], [], []))
+        bb_upper, bb_middle, bb_lower = bb if len(bb) == 3 else ([], [], [])
+        vol_z = 0.0
+        if bb_upper and bb_middle and bb_lower and bb_middle[-1] != 0:
+            bb_width = (bb_upper[-1] - bb_lower[-1]) / bb_middle[-1]
+            if len(bb_upper) >= 20:
+                widths = [
+                    (bb_upper[i] - bb_lower[i]) / bb_middle[i]
+                    for i in range(max(0, len(bb_upper) - 20), len(bb_upper))
+                    if bb_middle[i] != 0
+                ]
+                if widths:
+                    avg = float(np.mean(widths))
+                    std = float(np.std(widths)) if len(widths) > 1 else 1e-9
+                    vol_z = (bb_width - avg) / max(std, 1e-9)
+
+        volume_ratio_values = indicators.get("volume_ratio", [])
+        latest_volume_ratio = float(volume_ratio_values[-1]) if volume_ratio_values else 1.0
+
+        adx_values = indicators.get("adx", [])
+        latest_adx = float(adx_values[-1]) if adx_values else 0.0
+
+        sma_short = indicators.get("sma_short", [])
+        sma_slope = 0.0
+        if len(sma_short) >= SMA_SLOPE_PERIODS:
+            recent = sma_short[-SMA_SLOPE_PERIODS:]
+            if recent[0] != 0:
+                sma_slope = (recent[-1] - recent[0]) / recent[0] * 100
+
+        exhaustion = self._compute_exhaustion(latest_rsi, sma_slope, base.regime)
+        direction = "up" if sma_slope > 0 else ("down" if sma_slope < 0 else "neutral")
+        detailed = self._classify_detailed(
+            base.regime, latest_adx, latest_rsi, vol_z, latest_volume_ratio, sma_slope, exhaustion,
+        )
+
+        return RegimeResult(
+            regime=base.regime,
+            confidence=base.confidence,
+            metrics=base.metrics,
+            reasoning=base.reasoning,
+            detailed_regime=detailed,
+            direction=direction,
+            exhaustion_score=round(exhaustion, 4),
+            volatility_z_score=round(vol_z, 4),
+        )
+
+    @staticmethod
+    def _compute_exhaustion(rsi: float, sma_slope: float, regime: MarketRegime) -> float:
+        """0.0 = fresh trend, 1.0 = fully exhausted."""
+        score = 0.0
+        if regime == MarketRegime.TRENDING_UP:
+            if rsi > 75:
+                score += 0.5 * min((rsi - 75) / 15, 1.0)
+            if rsi > 65:
+                score += 0.2
+            if abs(sma_slope) < 0.3:
+                score += 0.3  # slope fading
+        elif regime == MarketRegime.TRENDING_DOWN:
+            if rsi < 25:
+                score += 0.5 * min((25 - rsi) / 15, 1.0)
+            if rsi < 35:
+                score += 0.2
+            if abs(sma_slope) < 0.3:
+                score += 0.3
+        return min(score, 1.0)
+
+    @staticmethod
+    def _classify_detailed(
+        coarse: MarketRegime,
+        adx: float,
+        rsi: float,
+        vol_z: float,
+        volume_ratio: float,
+        sma_slope: float,
+        exhaustion: float,
+    ) -> DetailedRegime:
+        if coarse == MarketRegime.CRASH:
+            return DetailedRegime.CRASH
+
+        # Post-spike: recent crash-level vol but regime recovering
+        if vol_z > 2.5 and volume_ratio > 2.0 and coarse != MarketRegime.CRASH:
+            return DetailedRegime.POST_SPIKE_INSTABILITY
+
+        # Breakout expansion: strong directional move with volume confirmation
+        if (
+            coarse in (MarketRegime.TRENDING_UP, MarketRegime.RANGING)
+            and volume_ratio > 1.8
+            and adx > ADX_TREND_THRESHOLD
+            and vol_z > 1.0
+            and sma_slope > 0.5
+        ):
+            return DetailedRegime.BREAKOUT_EXPANSION
+
+        if coarse == MarketRegime.TRENDING_UP:
+            if exhaustion >= 0.6:
+                return DetailedRegime.EXHAUSTED_TREND_UP
+            if vol_z > 1.5:
+                return DetailedRegime.VOLATILE_TREND_UP
+            return DetailedRegime.CLEAN_TREND_UP
+
+        if coarse == MarketRegime.TRENDING_DOWN:
+            if exhaustion >= 0.6:
+                return DetailedRegime.EXHAUSTED_TREND_DOWN
+            if vol_z > 1.5:
+                return DetailedRegime.VOLATILE_TREND_DOWN
+            return DetailedRegime.CLEAN_TREND_DOWN
+
+        if coarse == MarketRegime.HIGH_VOLATILITY:
+            if adx >= ADX_TREND_THRESHOLD:
+                direction_up = sma_slope > 0
+                return DetailedRegime.VOLATILE_TREND_UP if direction_up else DetailedRegime.VOLATILE_TREND_DOWN
+            return DetailedRegime.CHAOTIC_RANGE
+
+        # RANGING
+        if vol_z > 1.5 or (volume_ratio > 2.0 and adx < ADX_WEAK_THRESHOLD):
+            return DetailedRegime.CHAOTIC_RANGE
+        return DetailedRegime.CLEAN_RANGE

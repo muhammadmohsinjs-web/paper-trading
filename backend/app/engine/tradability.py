@@ -16,6 +16,7 @@ from app.engine.reason_codes import (
     CLOSE_STD_TOO_LOW,
     DENYLIST_STABLE_BASE,
     ENTRY_BLOCKED_RETAINED_SYMBOL,
+    EXECUTION_HOSTILE,
     LIQUIDITY_TOO_LOW,
     MARKET_QUALITY_TOO_LOW,
     MOVE_BELOW_COST,
@@ -24,6 +25,7 @@ from app.engine.reason_codes import (
     SETUP_NO_ABSOLUTE_EXPANSION,
     SETUP_RANGE_TOO_SMALL,
     SETUP_VOLUME_UNCONFIRMED,
+    STRUCTURALLY_DEAD,
 )
 from app.engine.slippage import estimate_slippage_rate
 from app.engine.trade_quality import resolve_trade_quality_thresholds
@@ -101,12 +103,18 @@ def infer_base_asset(symbol: str, quote_asset: str = "USDT") -> str:
     return normalized
 
 
+_STABLE_LIKE_PATTERNS = re.compile(
+    r"USD|DAI|TUSD|PAX|FDUSD|PYUSD|GUSD|FRAX|LUSD|CRVUSD|EURC|EURT|GHO",
+    re.IGNORECASE,
+)
+
+
 def is_stablecoin_like_base(base_asset: str, denylist: list[str] | None = None) -> bool:
     normalized = (base_asset or "").upper()
     blocked = {item.upper() for item in (denylist or SETTINGS.stablecoin_base_denylist)}
     if normalized in blocked:
         return True
-    return re.search(r"USD", normalized) is not None
+    return _STABLE_LIKE_PATTERNS.search(normalized) is not None
 
 
 def is_stablecoin_symbol(
@@ -324,6 +332,14 @@ def evaluate_symbol_tradability(
         low_vol_flags += 1
     if low_vol_flags >= 2:
         reason_codes.append(NEAR_PEG_PROFILE)
+
+    # Structurally dead: extremely low range AND ATR
+    if metrics.range_pct_20 < 0.30 and metrics.atr_pct_14 < 0.15:
+        reason_codes.append(STRUCTURALLY_DEAD)
+
+    # Execution hostile: very noisy but reward doesn't compensate
+    if metrics.close_std_pct_24h > 5.0 and metrics.reward_to_cost_ratio < 1.5:
+        reason_codes.append(EXECUTION_HOSTILE)
 
     liquidity_floor = max(
         float(SETTINGS.universe_min_24h_volume_usdt),

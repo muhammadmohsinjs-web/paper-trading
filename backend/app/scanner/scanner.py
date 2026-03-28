@@ -27,8 +27,13 @@ from app.engine.tradability import (
 from app.market.data_store import DataStore
 from app.market.indicators import compute_indicators
 from app.regime.classifier import RegimeClassifier
-from app.regime.types import MarketRegime
+from app.regime.types import DetailedRegime, MarketRegime, RegimeResult
 from app.risk.portfolio import get_correlation
+from app.scanner.families import (
+    SETUP_TO_FAMILY,
+    resolve_family,
+    validate_setup_family,
+)
 from app.scanner.relative_strength import get_relative_strength
 from app.scanner.types import RankedSetup, RankedSymbol, ScanResult, SetupAuditNote
 from app.scanner.universe_selector import UniverseSelector
@@ -107,7 +112,7 @@ class OpportunityScanner:
             if not tradability.passed:
                 symbols_no_setup.append(symbol)
                 continue
-            regime_result = self.regime_classifier.classify(indicators)
+            regime_result = self.regime_classifier.classify_full(indicators)
             if symbol == "BTCUSDT":
                 overall_regime = regime_result.regime.value
 
@@ -119,6 +124,7 @@ class OpportunityScanner:
                 highs=highs,
                 lows=lows,
                 volumes=volumes,
+                regime_result=regime_result,
             )
             if not setups:
                 symbols_no_setup.append(symbol)
@@ -210,7 +216,7 @@ class OpportunityScanner:
                     "score": 0.0,
                 })
                 continue
-            regime_result = self.regime_classifier.classify(indicators)
+            regime_result = self.regime_classifier.classify_full(indicators)
             setups, audits = self._detect_setups(
                 symbol,
                 indicators,
@@ -219,6 +225,7 @@ class OpportunityScanner:
                 highs=highs,
                 lows=lows,
                 volumes=volumes,
+                regime_result=regime_result,
             )
             if not setups:
                 skipped_setup.append(symbol)
@@ -235,7 +242,21 @@ class OpportunityScanner:
                 continue
 
             liquidity_usdt = self._estimate_liquidity_usdt(candles)
-            best_setup = max(setups, key=lambda setup: setup.score)
+            # Filter to entry-eligible setups for ranking (long-only engine)
+            eligible_setups = [s for s in setups if s.entry_eligible]
+            if not eligible_setups:
+                skipped_setup.append(symbol)
+                audit_rows.append({
+                    "symbol": symbol,
+                    "status": "rejected",
+                    "reason_code": NO_QUALIFYING_SETUP,
+                    "reason_text": "No entry-eligible (long) setups found",
+                    "setup_type": setups[0].setup_type if setups else None,
+                    "movement_quality": setups[0].movement_quality if setups else {},
+                    "score": setups[0].score if setups else 0.0,
+                })
+                continue
+            best_setup = max(eligible_setups, key=lambda setup: setup.score)
             if liquidity_usdt < min_liquidity:
                 skipped_liquidity.append(f"{symbol}(${liquidity_usdt:,.0f})")
                 audit_rows.append({
@@ -249,9 +270,27 @@ class OpportunityScanner:
                 })
                 continue
 
+            # Contradiction penalty: bullish + bearish eligible families present
+            has_buy = any(s.signal == "BUY" for s in setups)
+            has_sell = any(s.signal == "SELL" for s in setups)
+            contradiction_penalty = 0.10 if (has_buy and has_sell) else 0.0
+
+            # Exhaustion penalty from regime
+            exhaustion_penalty = 0.08 if regime_result.exhaustion_score >= 0.5 else 0.0
+
+            # Net quality score: weighted blend of family quality metrics
             regime_affinity = REGIME_AFFINITY.get(regime_result.regime, {}).get(best_setup.recommended_strategy, 0.5)
             liquidity_score = min(liquidity_usdt / max(min_liquidity * 4.0, 1.0), 1.0)
-            final_score = best_setup.score * 0.75 + regime_affinity * 0.15 + liquidity_score * 0.10
+            net_quality = (
+                best_setup.room_to_move_score * 0.25
+                + best_setup.execution_quality_score * 0.20
+                + best_setup.freshness_score * 0.15
+                + best_setup.symbol_quality_score * 0.15
+                + best_setup.score * 0.15
+                + regime_affinity * 0.10
+            ) - contradiction_penalty - exhaustion_penalty
+
+            final_score = max(0.0, net_quality * 0.70 + best_setup.score * 0.20 + liquidity_score * 0.10)
             candidates.append(
                 RankedSymbol(
                     symbol=symbol,
@@ -266,6 +305,12 @@ class OpportunityScanner:
                     reason_codes=best_setup.reason_codes,
                     reason_text=best_setup.reason_text or best_setup.reason,
                     movement_quality=best_setup.movement_quality,
+                    family=best_setup.family,
+                    entry_eligible=True,
+                    net_quality_score=round(net_quality, 4),
+                    contradiction_penalty=round(contradiction_penalty, 4),
+                    exhaustion_penalty=round(exhaustion_penalty, 4),
+                    detailed_regime=best_setup.detailed_regime,
                 )
             )
             audit_rows.append({
@@ -276,6 +321,8 @@ class OpportunityScanner:
                 "setup_type": best_setup.setup_type,
                 "movement_quality": best_setup.movement_quality,
                 "score": best_setup.score,
+                "family": best_setup.family,
+                "net_quality_score": round(net_quality, 4),
             })
 
         if skipped_data:
@@ -322,11 +369,37 @@ class OpportunityScanner:
                     reason_codes=selected_candidate.reason_codes,
                     reason_text=selected_candidate.reason_text,
                     movement_quality=selected_candidate.movement_quality,
+                    family=selected_candidate.family,
+                    entry_eligible=selected_candidate.entry_eligible,
+                    net_quality_score=selected_candidate.net_quality_score,
+                    contradiction_penalty=selected_candidate.contradiction_penalty,
+                    exhaustion_penalty=selected_candidate.exhaustion_penalty,
+                    detailed_regime=selected_candidate.detailed_regime,
                 )
             )
 
         self._last_rank_audit = audit_rows
         return selected
+
+    def get_last_rank_audit(self) -> list[dict[str, Any]]:
+        """Return the raw audit rows from the last rank_symbols call."""
+        return self._last_rank_audit
+
+    def get_rank_funnel_stats(self) -> dict[str, int]:
+        """Derive funnel breakdown from the last rank_symbols audit."""
+        stats = {"no_data": 0, "tradability_rejected": 0, "no_setup": 0, "low_liquidity": 0, "qualified": 0}
+        for row in self._last_rank_audit:
+            if row["status"] == "qualified":
+                stats["qualified"] += 1
+            elif row.get("reason_code") == MARKET_DATA_INSUFFICIENT:
+                stats["no_data"] += 1
+            elif row.get("reason_code") == LIQUIDITY_TOO_LOW:
+                stats["low_liquidity"] += 1
+            elif row.get("reason_code") == NO_QUALIFYING_SETUP:
+                stats["no_setup"] += 1
+            else:
+                stats["tradability_rejected"] += 1
+        return stats
 
     def scan_all_setups_for_universe(
         self,
@@ -379,7 +452,7 @@ class OpportunityScanner:
                 all_results[symbol] = []
                 continue
 
-            regime_result = self.regime_classifier.classify(indicators)
+            regime_result = self.regime_classifier.classify_full(indicators)
             self._last_regime_cache[symbol] = regime_result.regime
             setups, audits = self._detect_setups(
                 symbol,
@@ -389,6 +462,7 @@ class OpportunityScanner:
                 highs=highs,
                 lows=lows,
                 volumes=volumes,
+                regime_result=regime_result,
             )
             setups.sort(key=lambda item: item.score, reverse=True)
             all_results[symbol] = setups
@@ -423,6 +497,7 @@ class OpportunityScanner:
         highs: list[float] | None = None,
         lows: list[float] | None = None,
         volumes: list[float] | None = None,
+        regime_result: RegimeResult | None = None,
     ) -> tuple[list[RankedSetup], list[SetupAuditNote]]:
         setups: list[RankedSetup] = []
         audits: list[SetupAuditNote] = []
@@ -486,6 +561,9 @@ class OpportunityScanner:
                 )
             )
 
+        _detailed_regime = regime_result.detailed_regime if regime_result else None
+        _exhaustion = regime_result.exhaustion_score if regime_result else 0.0
+
         def qualify(
             *,
             setup_type: str,
@@ -509,6 +587,31 @@ class OpportunityScanner:
             if score < MIN_SETUP_SCORE:
                 reject(setup_type, SETUP_SCORE_TOO_LOW, "Setup score below minimum threshold", movement.metrics)
                 return
+
+            # Family validation (additive — does not block if family unknown)
+            family_str = ""
+            entry_eligible = True
+            sym_quality = 0.0
+            exec_quality = 0.0
+            room_score = 0.0
+            fv = validate_setup_family(
+                setup_type=setup_type,
+                signal=signal,
+                indicators=indicators,
+                tradability_metrics=tradability_metrics,
+                detailed_regime=_detailed_regime,
+                exhaustion_score=_exhaustion,
+            )
+            if fv is not None:
+                family_str = fv.family.value
+                entry_eligible = fv.entry_eligible
+                sym_quality = fv.symbol_quality_score
+                exec_quality = fv.execution_quality_score
+                room_score = fv.room_to_move_score
+                if not fv.passed:
+                    reject(setup_type, "FAMILY_VALIDATION_FAILED", fv.rejection_reason or "Family validation failed", movement.metrics)
+                    return
+
             setups.append(
                 RankedSetup(
                     symbol=symbol,
@@ -527,6 +630,12 @@ class OpportunityScanner:
                     market_quality_score=round(tradability_metrics.market_quality_score, 4),
                     reward_to_cost_ratio=round(tradability_metrics.reward_to_cost_ratio, 4),
                     volatility_quality_score=round(volatility_quality_score, 4),
+                    family=family_str,
+                    entry_eligible=entry_eligible,
+                    symbol_quality_score=sym_quality,
+                    execution_quality_score=exec_quality,
+                    room_to_move_score=room_score,
+                    detailed_regime=_detailed_regime.value if _detailed_regime else "",
                 )
             )
             audits.append(

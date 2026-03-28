@@ -411,10 +411,45 @@ async def _run_migrations(connection) -> None:
         "conflict_resolution": "VARCHAR(32)",
         "setup_fit_score": "FLOAT",
         "regime_fit_score": "FLOAT",
+        "scanner_anchor_price": "FLOAT",
+        "scanner_signal_ts": "DATETIME",
+        "scanner_family": "VARCHAR(32)",
+        "scanner_detailed_regime": "VARCHAR(48)",
+        "scanner_drift_limit_pct": "FLOAT",
+        "scanner_net_quality_score": "FLOAT",
     }
     for name, definition in daily_pick_columns.items():
         if name not in existing_daily_pick_cols:
             await connection.execute(text(f"ALTER TABLE daily_picks ADD COLUMN {name} {definition}"))
+
+    # ── positions table: scanner context columns ──────────────────────
+    result = await connection.execute(text("PRAGMA table_info(positions)"))
+    existing_pos_cols_2 = {row[1] for row in result}
+    pos_scanner_cols = {
+        "entry_scanner_family": "VARCHAR(32)",
+        "entry_scanner_regime": "VARCHAR(48)",
+    }
+    for name, definition in pos_scanner_cols.items():
+        if name not in existing_pos_cols_2:
+            await connection.execute(text(f"ALTER TABLE positions ADD COLUMN {name} {definition}"))
+
+    # ── scanner_perf_stats table ──────────────────────────────────────
+    await connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS scanner_perf_stats (
+            id VARCHAR(36) PRIMARY KEY,
+            symbol VARCHAR(24) NOT NULL,
+            setup_family VARCHAR(32) NOT NULL,
+            detailed_regime VARCHAR(48) NOT NULL,
+            side VARCHAR(8) NOT NULL,
+            total_trades INTEGER NOT NULL DEFAULT 0,
+            wins INTEGER NOT NULL DEFAULT 0,
+            losses INTEGER NOT NULL DEFAULT 0,
+            avg_pnl_pct FLOAT NOT NULL DEFAULT 0.0,
+            avg_hold_hours FLOAT NOT NULL DEFAULT 0.0,
+            last_updated DATETIME NOT NULL,
+            UNIQUE(symbol, setup_family, detailed_regime, side)
+        )
+    """))
 
 
 async def init_database() -> None:

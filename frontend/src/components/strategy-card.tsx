@@ -6,6 +6,7 @@ import { useState } from "react";
 import { formatCurrency, formatPercent } from "@/lib/format";
 import { toggleStrategy } from "@/lib/api";
 import type { StrategyWithStats } from "@/lib/types";
+import { CoinIcon } from "@/components/ui";
 
 type StrategyRowProps = {
   strategy: StrategyWithStats;
@@ -48,7 +49,19 @@ export function StrategyRow({ strategy }: StrategyRowProps) {
           {strategy.name}
         </Link>
       </td>
-      <td>{targetLabel}</td>
+      <td>
+        <span className="flex flex-wrap items-center gap-1.5">
+          {executionMode === "multi_coin_shared_wallet" && intendedSymbols.length
+            ? intendedSymbols.map((sym, i) => (
+                <span key={sym} className="inline-flex items-center gap-1">
+                  <CoinIcon symbol={sym} size={16} />
+                  <span>{sym.replace("USDT", "")}</span>
+                  {i < intendedSymbols.length - 1 ? "," : ""}
+                </span>
+              ))
+            : <><CoinIcon symbol={targetLabel} size={16} />{targetLabel}</>}
+        </span>
+      </td>
       <td className="font-medium text-slate-900">{formatCurrency(strategy.total_equity)}</td>
       <td className={combinedPnl >= 0 ? "text-emerald-700" : "text-red-700"}>
         {formatCurrency(combinedPnl)}

@@ -10,7 +10,7 @@ import { useLiveFeed } from "@/hooks/use-live-feed";
 import { backendBaseUrl } from "@/lib/env";
 import { formatCurrency, formatNumber } from "@/lib/format";
 import type { DashboardResponse, EngineStatus, MarketPrice } from "@/lib/types";
-import { MetricStrip, PageHeader, Surface, buttonClassName } from "@/components/ui";
+import { MetricStrip, PageHeader, CoinIcon, buttonClassName } from "@/components/ui";
 
 type DashboardClientProps = {
   dashboard: DashboardResponse;
@@ -101,15 +101,17 @@ export function DashboardClient({
   return (
     <div className="page-stage rise-in">
       {backendError ? (
-        <Surface className="border-red-200 bg-red-50 p-5">
-          <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-red-700">
-            Backend unavailable
-          </p>
-          <p className="mt-3 text-sm leading-6 text-slate-700">
-            The dashboard is showing fallback data because the frontend could not reach the backend API.
-            Check that the FastAPI server is running at `{backendBaseUrl}`. Latest error: {backendError}
-          </p>
-        </Surface>
+        <div className="flex items-start gap-3 rounded-xl border border-red-200/80 bg-red-50/60 p-4">
+          <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-red-100 text-red-600">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 3.5v3M6 8.5h.005" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+          </span>
+          <div>
+            <p className="text-sm font-medium text-red-800">Backend unavailable</p>
+            <p className="mt-1 text-sm leading-6 text-red-700/80">
+              Showing fallback data. Check that the server is running at <code className="rounded bg-red-100 px-1 py-0.5 text-xs">{backendBaseUrl}</code>
+            </p>
+          </div>
+        </div>
       ) : null}
 
       <PageHeader
@@ -134,46 +136,67 @@ export function DashboardClient({
         ]}
       />
 
-      <section className="grid gap-8 border-t border-slate-200 pt-6 xl:grid-cols-[minmax(0,1fr)_18rem]">
-        <div className="min-w-0 space-y-4">
-          <div className="space-y-2">
-            <h2 className="text-lg font-semibold text-slate-900">Execution context</h2>
-            <p className="text-sm leading-7 text-slate-600">{runningLoopDetail}</p>
+      <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
+        <div className="rounded-xl border border-slate-200/60 bg-white p-5 space-y-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1">
+              <h2 className="text-base font-semibold text-slate-900">Execution context</h2>
+              <p className="text-sm leading-6 text-slate-500">{runningLoopDetail}</p>
+            </div>
+            <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${
+              live.connected
+                ? "bg-emerald-50 text-emerald-700"
+                : "bg-slate-100 text-slate-500"
+            }`}>
+              <span className={`h-1.5 w-1.5 rounded-full ${live.connected ? "bg-emerald-500" : "bg-slate-400"}`} />
+              {live.connected ? "Live" : "Snapshot"}
+            </span>
           </div>
-          <p className="text-sm text-slate-500">
-            Feed {live.connected ? "WebSocket live" : "Snapshot"} · Focus{" "}
-            {focusSymbols.length ? focusSymbols.join(" · ") : "not established yet"}
-          </p>
+
+          {focusSymbols.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 pt-4">
+              <span className="text-[11px] font-medium uppercase tracking-[0.1em] text-slate-400">Focus</span>
+              {focusSymbols.map((sym) => (
+                <span
+                  key={sym}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700"
+                >
+                  <CoinIcon symbol={sym} size={14} />
+                  {sym.replace("USDT", "")}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
 
-        <div className="min-w-0 space-y-4 xl:border-l xl:border-slate-200 xl:pl-6">
+        <div className="rounded-xl border border-slate-200/60 bg-gradient-to-br from-slate-900 to-slate-800 p-5 space-y-4 text-white">
           <div>
             <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-slate-400">
               Market anchor
             </p>
-            <div className="mt-2 text-3xl font-semibold tracking-[-0.04em] text-slate-900">
-              <LivePrice price={latestPrice} className="text-slate-900" />
+            <div className="mt-2 text-3xl font-semibold tracking-[-0.04em]">
+              <LivePrice price={latestPrice} className="text-white" />
             </div>
           </div>
 
-          <dl className="space-y-3 text-sm text-slate-600">
+          <dl className="space-y-2.5 text-sm border-t border-white/10 pt-4">
             <div className="flex items-center justify-between gap-4">
-              <dt>Tracked symbols</dt>
-              <dd className="font-medium text-slate-900">{focusSymbols.length || 1}</dd>
+              <dt className="text-slate-400">Tracked symbols</dt>
+              <dd className="font-medium">{focusSymbols.length || 1}</dd>
             </div>
             <div className="flex items-center justify-between gap-4">
-              <dt>Strategy count</dt>
-              <dd className="font-medium text-slate-900">{formatNumber(dashboard.total_strategies, 0)}</dd>
+              <dt className="text-slate-400">Strategy count</dt>
+              <dd className="font-medium">{formatNumber(dashboard.total_strategies, 0)}</dd>
             </div>
             <div className="flex items-center justify-between gap-4">
-              <dt>AI spend</dt>
-              <dd className="font-medium text-slate-900">
+              <dt className="text-slate-400">AI spend</dt>
+              <dd className="font-medium">
                 {formatCurrency(dashboard.ai_total_cost_usdt)}
               </dd>
             </div>
             <div className="flex items-center justify-between gap-4">
-              <dt>Selection state</dt>
-              <dd className="font-medium text-slate-900">
+              <dt className="text-slate-400">Selection state</dt>
+              <dd className="font-medium">
                 {consensusPicks.length ? "Ready" : "Pending"}
               </dd>
             </div>
@@ -181,35 +204,46 @@ export function DashboardClient({
         </div>
       </section>
 
-      <section className="grid gap-10 xl:grid-cols-[0.82fr,1.18fr]">
-        <div className="min-w-0 space-y-4">
-          <div className="space-y-2">
-            <h2 className="text-lg font-semibold text-slate-900">Consensus watchlist</h2>
-            <p className="text-sm leading-6 text-slate-600">
-              Symbols appearing most often across persisted strategy watchlists.
+      <section className="grid gap-4 xl:grid-cols-[0.82fr,1.18fr]">
+        <div className="rounded-xl border border-slate-200/60 bg-white p-5 space-y-4">
+          <div className="space-y-1">
+            <h2 className="text-base font-semibold text-slate-900">Consensus watchlist</h2>
+            <p className="text-sm leading-6 text-slate-500">
+              Top symbols across strategy watchlists.
             </p>
           </div>
 
-          <div className="divide-y divide-slate-200 border-y border-slate-200">
+          <div className="space-y-2">
             {consensusPicks.length ? (
-              consensusPicks.map((pick) => (
-                <div key={pick.symbol} className="flex items-center justify-between gap-4 py-4">
-                  <div>
-                    <p className="font-medium text-slate-900">{pick.symbol}</p>
-                    <p className="text-sm text-slate-500">
-                      Listed in {pick.count} strategy{pick.count === 1 ? "" : "ies"}
-                    </p>
+              consensusPicks.map((pick, i) => (
+                <div
+                  key={pick.symbol}
+                  className="flex items-center justify-between gap-4 rounded-lg bg-slate-50/80 px-3.5 py-3"
+                >
+                  <div className="flex items-center gap-3">
+                    <span className="flex h-6 w-6 items-center justify-center rounded-md bg-slate-200/60 text-[11px] font-semibold text-slate-500">
+                      {i + 1}
+                    </span>
+                    <CoinIcon symbol={pick.symbol} />
+                    <div>
+                      <p className="text-sm font-medium text-slate-900">{pick.symbol.replace("USDT", "")}</p>
+                      <p className="text-[11px] text-slate-400">
+                        {pick.count} {pick.count === 1 ? "strategy" : "strategies"}
+                      </p>
+                    </div>
                   </div>
-                  <p className="text-sm text-slate-500">Best rank #{pick.bestRank}</p>
+                  <span className="rounded-md bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-600">
+                    Rank #{pick.bestRank}
+                  </span>
                 </div>
               ))
             ) : (
-              <div className="py-6 text-sm text-slate-500">
+              <div className="rounded-lg bg-slate-50/80 px-4 py-6 text-center text-sm text-slate-400">
                 {dashboard.strategies.some(
                   (strategy) => strategy.execution_mode === "multi_coin_shared_wallet"
                 )
-                  ? "Persisted daily picks will appear here after the selector runs."
-                  : "No shared-wallet strategy is live in the current database yet."}
+                  ? "Picks will appear after the selector runs."
+                  : "No shared-wallet strategy is live yet."}
               </div>
             )}
           </div>
@@ -219,20 +253,21 @@ export function DashboardClient({
       </section>
 
       <section className="space-y-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="space-y-1">
-            <h2 className="text-lg font-semibold text-slate-900">Strategies</h2>
-            <p className="text-sm text-slate-600">
-              Active desks, wallet state, and live operating status in one table.
+            <h2 className="text-base font-semibold text-slate-900">Strategies</h2>
+            <p className="text-sm text-slate-500">
+              Active desks, wallet state, and live status.
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-4 text-sm">
+          <div className="flex flex-wrap items-center gap-3 text-sm">
             {compareTargets.length === 2 ? (
               <Link
                 href={`/compare?a=${compareTargets[0]}&b=${compareTargets[1]}`}
-                className="text-slate-500 transition hover:text-slate-900"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-900"
               >
-                Compare leading strategies
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M5 2v10M9 2v10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/><path d="M2 5.5h5M7 8.5h5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>
+                Compare
               </Link>
             ) : null}
           </div>
@@ -260,8 +295,9 @@ export function DashboardClient({
             </table>
           </div>
         ) : (
-          <div className="border-t border-slate-200 py-6 text-sm text-slate-500">
-            No strategies yet. Create one to start building a shared-wallet desk.
+          <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/50 py-10 text-center">
+            <p className="text-sm text-slate-400">No strategies yet.</p>
+            <p className="mt-1 text-xs text-slate-400">Create one to start building a trading desk.</p>
           </div>
         )}
       </section>
