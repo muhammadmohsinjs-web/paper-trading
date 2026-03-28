@@ -2495,6 +2495,8 @@ async def strategy_loop(strategy_id: str, interval_seconds: int = 3600) -> None:
             # Snapshot every cycle
             await take_equity_snapshot(strategy_id)
 
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.exception("strategy loop crashed strategy_id=%s", strategy_id)
 

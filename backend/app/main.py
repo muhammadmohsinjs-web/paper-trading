@@ -43,10 +43,19 @@ async def _stop_ws_clients(clients: list[BinanceWSClient]) -> None:
     await _await_shutdown_group([client.stop() for client in clients], label="websocket client stop")
 
 
+_SHUTDOWN_STEP_TIMEOUT = 8.0  # seconds per shutdown step before forcing ahead
+
+
 async def _timed_shutdown_step(name: str, awaitable: Awaitable[Any], **details: Any) -> Any:
     start = monotonic()
     try:
-        return await awaitable
+        return await asyncio.wait_for(asyncio.shield(asyncio.ensure_future(awaitable)), timeout=_SHUTDOWN_STEP_TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.warning("shutdown step timed out step=%s timeout=%.1fs — forcing ahead", name, _SHUTDOWN_STEP_TIMEOUT)
+        return None
+    except asyncio.CancelledError:
+        logger.warning("shutdown step cancelled step=%s", name)
+        return None
     finally:
         elapsed_ms = (monotonic() - start) * 1000
         payload = " ".join(f"{key}={value}" for key, value in details.items())
