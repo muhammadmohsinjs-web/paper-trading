@@ -25,6 +25,7 @@ from app.database import (
     commit_with_write_lock,
     execute_with_write_lock,
 )
+from app.review.fact_builder import build_cycle_ledger
 from app.engine.ai_runtime import (
     AIValidationResult,
     AIUsage,
@@ -1055,6 +1056,9 @@ async def _run_single_cycle_locked(
                 cycle_id,
             )
             await commit_with_write_lock(session)
+            asyncio.ensure_future(
+                _run_fact_builder(strategy_id, cycle_id, resolved_interval)
+            )
             return result_payload
 
         resolved_symbol = str(symbol or resolve_primary_symbol(strategy)).upper()
@@ -1070,7 +1074,33 @@ async def _run_single_cycle_locked(
             entry_allowed=True,
         )
         await commit_with_write_lock(session)
+        asyncio.ensure_future(
+            _run_fact_builder(strategy_id, cycle_id, resolved_interval)
+        )
         return result_payload
+
+async def _run_fact_builder(
+    strategy_id: str,
+    cycle_id: str,
+    interval: str,
+) -> None:
+    """Build review ledger rows for the completed cycle. Runs as a background task."""
+    try:
+        async with SessionLocal() as session:
+            await build_cycle_ledger(
+                session,
+                strategy_id=strategy_id,
+                cycle_id=cycle_id,
+                interval=interval,
+            )
+            await commit_with_write_lock(session)
+    except Exception:
+        logger.exception(
+            "fact_builder failed for strategy_id=%s cycle_id=%s",
+            strategy_id,
+            cycle_id,
+        )
+
 
 async def _run_loaded_symbol_cycle(
     session: Any,

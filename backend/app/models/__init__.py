@@ -5,6 +5,7 @@ from app.models.base import Base
 from app.models.daily_pick import DailyPick
 from app.models.position import Position
 from app.models.price_cache import PriceCache
+from app.models.review_ledger import ReviewForwardOutcome, ReviewLedger
 from app.models.snapshot import Snapshot
 from app.models.strategy import Strategy
 from app.models.symbol_ownership import SymbolOwnership
@@ -18,6 +19,8 @@ __all__ = [
     "DailyPick",
     "Position",
     "PriceCache",
+    "ReviewForwardOutcome",
+    "ReviewLedger",
     "Snapshot",
     "Strategy",
     "SymbolOwnership",

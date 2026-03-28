@@ -10,3 +10,7 @@ cd backend
 ```
 
 The backend will be available at `http://127.0.0.1:8000`.
+
+VM Server: cd/opt/paper-trading
+sudo systemctl restart paper-trading.service
+sudo systemctl status paper-trading.service --no-pager -l
