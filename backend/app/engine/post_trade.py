@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
 from app.api.ws import ConnectionManager
+from app.database import commit_with_write_lock
 from app.engine.executor import ExecutionResult
 from app.engine.position_sizer import streak_multiplier_for_losses
 from app.engine.wallet_manager import get_position
@@ -136,6 +138,16 @@ async def handle_post_trade(
         update_strategy_streak(strategy, result.trade.pnl)
         accumulate_wallet_losses(wallet, result.trade.pnl)
 
+        # Track stop-loss exits for re-entry cooldown
+        is_stop_loss = (
+            "stop-loss" in (reason or "").lower()
+            or "stop_loss" in (reason or "").lower()
+            or (exit_decision is not None and getattr(exit_decision, "exit_type", None) == "stop_loss")
+        )
+        if is_stop_loss:
+            strategy.last_stop_loss_symbol = symbol
+            strategy.last_stop_loss_at = datetime.now(timezone.utc)
+
         # Handle exit-specific position updates
         if exit_decision is not None:
             refreshed_position = await get_position(session, strategy_id, symbol)
@@ -161,7 +173,7 @@ async def handle_post_trade(
                     refreshed_position.entry_price * (1 - sl_pct)
                 ).quantize(Decimal("0.00000001"))
 
-    await session.commit()
+    await commit_with_write_lock(session)
 
     # Refresh position after commit
     refreshed_position = await get_position(session, strategy_id, symbol)
@@ -170,7 +182,7 @@ async def handle_post_trade(
     new_equity = compute_equity(wallet, refreshed_position, market_price)
     if new_equity > wallet.peak_equity_usdt:
         wallet.peak_equity_usdt = new_equity
-        await session.commit()
+        await commit_with_write_lock(session)
 
     # Broadcast events
     await broadcast_trade_event(

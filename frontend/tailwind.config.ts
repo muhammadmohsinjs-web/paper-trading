@@ -9,21 +9,19 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        ink: "#101312",
-        mist: "#dbe6df",
-        sand: "#f0ebde",
-        panel: "#17201d",
-        line: "#2a3934",
-        rise: "#b8ff67",
-        fall: "#ff7b5a",
-        gold: "#f3c96b"
+        panel: "#F3F5F7",
+        line: "#E3E8EF",
+        rise: "#1F8F5F",
+        fall: "#C4554A",
+        gold: "#9A6B16",
+        accent: "#3E63DD"
       },
       boxShadow: {
-        bloom: "0 24px 80px rgba(0, 0, 0, 0.28)"
+        bloom: "0 8px 24px rgba(16, 24, 40, 0.06)"
       },
       backgroundImage: {
         grain:
-          "radial-gradient(circle at 15% 15%, rgba(243, 201, 107, 0.08), transparent 28%), radial-gradient(circle at 85% 10%, rgba(184, 255, 103, 0.08), transparent 20%), linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0))"
+          "radial-gradient(circle at 0% 0%, rgba(62, 99, 221, 0.06), transparent 24%), linear-gradient(180deg, rgba(255,255,255,0.65), rgba(255,255,255,0.35))"
       }
     }
   },

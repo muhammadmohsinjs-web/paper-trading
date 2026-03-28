@@ -5,20 +5,42 @@ function normalizeUrl(value) {
   return value?.trim().replace(/\/$/, "");
 }
 
-function resolveApiTarget(value) {
+function normalizeApiTarget(value) {
   const normalized = value?.trim().toLowerCase();
-  if (normalized === "local") {
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (normalized === "local" || normalized === "development" || normalized === "dev") {
     return "local";
   }
-  if (normalized === "prod") {
+
+  if (normalized === "prod" || normalized === "production") {
     return "prod";
   }
+
+  return undefined;
+}
+
+function resolveApiTarget(...values) {
+  for (const value of values) {
+    const resolved = normalizeApiTarget(value);
+    if (resolved) {
+      return resolved;
+    }
+  }
+
   return process.env.NODE_ENV === "development" ? "local" : "prod";
 }
 
 const configuredApiBaseUrl = normalizeUrl(process.env.NEXT_PUBLIC_API_BASE_URL);
 const configuredBackendBaseUrl = normalizeUrl(process.env.NEXT_PUBLIC_BACKEND_BASE_URL);
-const apiTarget = resolveApiTarget(process.env.NEXT_PUBLIC_API_TARGET);
+const apiTarget = resolveApiTarget(
+  process.env.NEXT_PUBLIC_ENV,
+  process.env.NEXT_PUBLIC_APP_ENV,
+  process.env.NEXT_PUBLIC_API_TARGET
+);
 const targetBackendBaseUrl =
   apiTarget === "local"
     ? normalizeUrl(process.env.NEXT_PUBLIC_LOCAL_BACKEND_BASE_URL) ?? DEFAULT_LOCAL_BACKEND_BASE_URL

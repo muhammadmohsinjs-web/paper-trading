@@ -3,6 +3,7 @@ import { StrategyDetailClient } from "@/components/strategy-detail-client";
 import {
   getCandles,
   getEquityCurve,
+  getIndicatorSeries,
   getPositions,
   getStrategy,
   getTradeSummary,
@@ -17,12 +18,29 @@ export default async function StrategyDetailPage({ params }: StrategyDetailPageP
   try {
     const strategy = await getStrategy(params.id);
     const chartSymbol = strategy.focus_symbol || strategy.primary_symbol || "BTCUSDT";
-    const [positions, trades, summary, equity, candleResponse] = await Promise.all([
+    const chartInterval = strategy.candle_interval || "1h";
+    const rawConfig = strategy.config_json ?? {};
+    const indicatorConfig = {
+      sma_short: typeof rawConfig.sma_short === "number" ? rawConfig.sma_short : undefined,
+      sma_long: typeof rawConfig.sma_long === "number" ? rawConfig.sma_long : undefined,
+      rsi_period: typeof rawConfig.rsi_period === "number" ? rawConfig.rsi_period : undefined,
+      volume_ma_period:
+        typeof rawConfig.volume_ma_period === "number" ? rawConfig.volume_ma_period : undefined
+    };
+    const chartLimit = Math.max(
+      160,
+      (indicatorConfig.sma_long ?? 50) + 60,
+      (indicatorConfig.volume_ma_period ?? 20) + 60,
+      (indicatorConfig.rsi_period ?? 14) + 60
+    );
+
+    const [positions, trades, summary, equity, candleResponse, indicators] = await Promise.all([
       getPositions(params.id),
       getTrades(params.id, 80),
       getTradeSummary(params.id),
       getEquityCurve(params.id, 160),
-      getCandles(chartSymbol, "5m", 160)
+      getCandles(chartSymbol, chartInterval, chartLimit),
+      getIndicatorSeries(chartSymbol, chartInterval, chartLimit, indicatorConfig)
     ]);
 
     return (
@@ -34,6 +52,8 @@ export default async function StrategyDetailPage({ params }: StrategyDetailPageP
         equity={equity}
         candles={candleResponse.candles}
         chartSymbol={chartSymbol}
+        chartInterval={chartInterval}
+        indicators={indicators}
       />
     );
   } catch {

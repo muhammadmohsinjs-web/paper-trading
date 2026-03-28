@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any
 
 from sqlalchemy import event, text
 from sqlalchemy.exc import OperationalError
@@ -12,6 +15,7 @@ from app.models import Base  # noqa: F401
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+_sqlite_write_lock = asyncio.Lock()
 
 engine = create_async_engine(
     settings.database_url,
@@ -25,7 +29,7 @@ def _set_sqlite_pragmas(dbapi_connection, _connection_record) -> None:
     if engine.url.get_backend_name() != "sqlite":
         return
     cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA busy_timeout=5000")
+    cursor.execute("PRAGMA busy_timeout=30000")
     try:
         cursor.execute("PRAGMA journal_mode=WAL")
     except Exception:
@@ -44,6 +48,38 @@ SessionLocal = async_sessionmaker(
 async def get_db_session() -> AsyncIterator[AsyncSession]:
     async with SessionLocal() as session:
         yield session
+
+
+@asynccontextmanager
+async def sqlite_write_guard() -> AsyncIterator[None]:
+    """Serialize SQLite writes within this process to avoid lock contention."""
+    if engine.url.get_backend_name() != "sqlite":
+        yield
+        return
+
+    async with _sqlite_write_lock:
+        yield
+
+
+async def execute_with_write_lock(
+    session: AsyncSession,
+    statement: Any,
+    params: dict[str, Any] | None = None,
+):
+    async with sqlite_write_guard():
+        if params is None:
+            return await session.execute(statement)
+        return await session.execute(statement, params)
+
+
+async def flush_with_write_lock(session: AsyncSession) -> None:
+    async with sqlite_write_guard():
+        await session.flush()
+
+
+async def commit_with_write_lock(session: AsyncSession) -> None:
+    async with sqlite_write_guard():
+        await session.commit()
 
 
 async def _run_migrations(connection) -> None:
@@ -94,7 +130,11 @@ async def _run_migrations(connection) -> None:
         "selection_hour_utc": "INTEGER NOT NULL DEFAULT 0",
         "max_concurrent_positions": "INTEGER NOT NULL DEFAULT 2",
     }
-    for col_map in (ai_columns, risk_strategy_columns, multicoin_columns):
+    cooldown_columns = {
+        "last_stop_loss_symbol": "VARCHAR(24)",
+        "last_stop_loss_at": "DATETIME",
+    }
+    for col_map in (ai_columns, risk_strategy_columns, multicoin_columns, cooldown_columns):
         for name, definition in col_map.items():
             if name not in existing_strategy_cols:
                 await connection.execute(text(f"ALTER TABLE strategies ADD COLUMN {name} {definition}"))

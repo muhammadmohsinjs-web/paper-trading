@@ -18,10 +18,13 @@ from app.models.wallet import Wallet
 
 RUNTIME_TABLES = (
     "ai_call_logs",
+    "daily_picks",
     "positions",
     "price_cache",
     "snapshots",
     "strategy_cycle_locks",
+    "symbol_evaluation_logs",
+    "symbol_ownership",
     "trades",
     "wallets",
 )
@@ -59,6 +62,8 @@ def _reset_strategy_runtime_fields(strategy: Strategy) -> None:
     strategy.consecutive_losses = 0
     strategy.max_consecutive_losses = 0
     strategy.streak_size_multiplier = Decimal("1.0")
+    strategy.last_stop_loss_symbol = None
+    strategy.last_stop_loss_at = None
 
 
 async def reset_runtime_data(session: AsyncSession) -> dict[str, int]:
@@ -75,6 +80,8 @@ async def reset_runtime_data(session: AsyncSession) -> dict[str, int]:
 
     if "ai_call_logs" in existing_tables:
         await session.execute(delete(AICallLog))
+    if "daily_picks" in existing_tables:
+        await session.execute(text("DELETE FROM daily_picks"))
     if "positions" in existing_tables:
         await session.execute(delete(Position))
     if "price_cache" in existing_tables:
@@ -83,6 +90,10 @@ async def reset_runtime_data(session: AsyncSession) -> dict[str, int]:
         await session.execute(delete(Snapshot))
     if "strategy_cycle_locks" in existing_tables:
         await session.execute(text("DELETE FROM strategy_cycle_locks"))
+    if "symbol_evaluation_logs" in existing_tables:
+        await session.execute(text("DELETE FROM symbol_evaluation_logs"))
+    if "symbol_ownership" in existing_tables:
+        await session.execute(text("DELETE FROM symbol_ownership"))
     if "trades" in existing_tables:
         await session.execute(delete(Trade))
     if "wallets" in existing_tables:
@@ -94,11 +105,15 @@ async def reset_runtime_data(session: AsyncSession) -> dict[str, int]:
 
     for strategy in strategies:
         _reset_strategy_runtime_fields(strategy)
-        initial_balance = _strategy_initial_balance(strategy, settings.default_balance_usdt)
+
+    if settings.shared_wallet_enabled:
+        # Single shared wallet for all strategies
+        initial_balance = Decimal(str(settings.default_balance_usdt))
+        first_strategy_id = strategies[0].id if strategies else "shared"
         session.add(
             Wallet(
                 id=str(uuid4()),
-                strategy_id=strategy.id,
+                strategy_id=first_strategy_id,
                 initial_balance_usdt=initial_balance,
                 available_usdt=initial_balance,
                 peak_equity_usdt=initial_balance,
@@ -108,7 +123,25 @@ async def reset_runtime_data(session: AsyncSession) -> dict[str, int]:
                 weekly_loss_reset_date=week_start,
             )
         )
-        wallets_recreated += 1
+        wallets_recreated = 1
+    else:
+        # Per-strategy wallets (legacy)
+        for strategy in strategies:
+            initial_balance = _strategy_initial_balance(strategy, settings.default_balance_usdt)
+            session.add(
+                Wallet(
+                    id=str(uuid4()),
+                    strategy_id=strategy.id,
+                    initial_balance_usdt=initial_balance,
+                    available_usdt=initial_balance,
+                    peak_equity_usdt=initial_balance,
+                    daily_loss_usdt=Decimal("0"),
+                    daily_loss_reset_date=now.date(),
+                    weekly_loss_usdt=Decimal("0"),
+                    weekly_loss_reset_date=week_start,
+                )
+            )
+            wallets_recreated += 1
 
     await session.flush()
     summary["wallets_recreated"] = wallets_recreated

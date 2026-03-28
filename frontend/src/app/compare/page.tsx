@@ -1,4 +1,5 @@
 import { ComparisonBoard } from "@/components/comparison-board";
+import { MetricStrip, PageHeader } from "@/components/ui";
 import { getEquityCurve, getStrategies } from "@/lib/api";
 
 type ComparePageProps = {
@@ -9,7 +10,7 @@ export default async function ComparePage({ searchParams }: ComparePageProps) {
   const strategies = await getStrategies();
   if (strategies.length < 2) {
     return (
-      <div className="panel p-6 text-sm text-mist/65">
+      <div className="text-sm text-slate-600">
         At least two strategies are required before comparison becomes useful.
       </div>
     );
@@ -30,13 +31,18 @@ export default async function ComparePage({ searchParams }: ComparePageProps) {
 
   return (
     <div className="space-y-6">
-      <section className="panel p-6">
-        <p className="text-xs uppercase tracking-[0.28em] text-gold">Comparison</p>
-        <h2 className="mt-2 text-3xl font-semibold text-sand">Side-by-Side Strategy Review</h2>
-        <p className="mt-2 text-sm text-mist/65">
-          Evaluate equity curves and operating metrics for two isolated strategy wallets.
-        </p>
-      </section>
+      <PageHeader
+        title="Side-by-side strategy review"
+        description="Evaluate equity curves and operating metrics for two isolated strategy wallets."
+      />
+
+      <MetricStrip
+        items={[
+          { label: "Left desk", value: left.name },
+          { label: "Right desk", value: right.name },
+          { label: "Compared strategies", value: "2" }
+        ]}
+      />
 
       <ComparisonBoard left={left} right={right} leftEquity={leftEquity} rightEquity={rightEquity} />
     </div>

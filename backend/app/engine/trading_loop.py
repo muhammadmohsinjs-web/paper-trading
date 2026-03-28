@@ -20,7 +20,11 @@ from sqlalchemy import select, text
 
 from app.api.ws import ConnectionManager
 from app.config import default_ai_model_for_provider, get_settings, normalize_ai_provider
-from app.database import SessionLocal
+from app.database import (
+    SessionLocal,
+    commit_with_write_lock,
+    execute_with_write_lock,
+)
 from app.engine.ai_runtime import (
     AIValidationResult,
     AIUsage,
@@ -104,7 +108,8 @@ async def _ensure_cycle_lock_table() -> None:
             return
 
         async with SessionLocal() as session:
-            await session.execute(
+            await execute_with_write_lock(
+                session,
                 text(
                     """
                     CREATE TABLE IF NOT EXISTS strategy_cycle_locks (
@@ -115,7 +120,7 @@ async def _ensure_cycle_lock_table() -> None:
                     """
                 )
             )
-            await session.commit()
+            await commit_with_write_lock(session)
         _cycle_lock_table_ready = True
 
 
@@ -127,7 +132,8 @@ async def _acquire_cycle_db_lock(strategy_id: str) -> str | None:
     stale_before = now - _CYCLE_LOCK_TTL
 
     async with SessionLocal() as session:
-        await session.execute(
+        await execute_with_write_lock(
+            session,
             text(
                 """
                 INSERT INTO strategy_cycle_locks (strategy_id, owner_id, acquired_at)
@@ -145,7 +151,7 @@ async def _acquire_cycle_db_lock(strategy_id: str) -> str | None:
                 "stale_before": stale_before.isoformat(),
             },
         )
-        await session.commit()
+        await commit_with_write_lock(session)
 
         current_owner = (
             await session.execute(
@@ -166,7 +172,8 @@ async def _release_cycle_db_lock(strategy_id: str, owner_id: str) -> None:
     await _ensure_cycle_lock_table()
 
     async with SessionLocal() as session:
-        await session.execute(
+        await execute_with_write_lock(
+            session,
             text(
                 """
                 DELETE FROM strategy_cycle_locks
@@ -176,7 +183,7 @@ async def _release_cycle_db_lock(strategy_id: str, owner_id: str) -> None:
             ),
             {"strategy_id": strategy_id, "owner_id": owner_id},
         )
-        await session.commit()
+        await commit_with_write_lock(session)
 
 
 def _strategy_last_ai_at(strategy: Any) -> datetime | None:
@@ -203,11 +210,7 @@ def _normalize_ai_counters(strategy: Strategy) -> dict[str, Any]:
         "ai_strategy_key": normalize_ai_strategy_key(
             strategy.ai_strategy_key or config.get("ai_strategy_key") or config.get("strategy_type"),
         ),
-        "ai_model": str(
-            strategy.ai_model
-            or config.get("ai_model")
-            or default_ai_model_for_provider(ai_provider, settings)
-        ),
+        "ai_model": str(default_ai_model_for_provider(ai_provider, settings)),
         "ai_cooldown_seconds": max(cooldown_seconds, settings.ai_min_cooldown_seconds),
         "ai_max_tokens": int(strategy.ai_max_tokens or config.get("ai_max_tokens") or settings.ai_max_tokens),
         "ai_temperature": Decimal(
@@ -600,6 +603,24 @@ def _entry_risk_status(
     return None
 
 
+def _check_reentry_cooldown(
+    strategy: Strategy,
+    symbol: str,
+    candle_interval: str,
+    cooldown_candles: int = 6,
+) -> tuple[bool, str]:
+    """Block re-entry on the same symbol within N candles of a stop-loss."""
+    if not strategy.last_stop_loss_at or strategy.last_stop_loss_symbol != symbol:
+        return True, ""
+    interval_seconds = INTERVAL_TO_SECONDS.get(candle_interval, 300)
+    elapsed = (datetime.now(timezone.utc) - strategy.last_stop_loss_at).total_seconds()
+    cooldown_seconds = interval_seconds * cooldown_candles
+    if elapsed < cooldown_seconds:
+        remaining = int(cooldown_seconds - elapsed)
+        return False, f"Re-entry cooldown: {remaining}s remaining after stop-loss on {symbol}"
+    return True, ""
+
+
 def _regime_entry_policy(
     strategy_type: str,
     regime: MarketRegime,
@@ -903,7 +924,7 @@ async def _apply_ai_validation(
             decision.quantity_pct = Decimal("0")
             decision.validator_reason = verdict.error or verdict.reason_text
         if hasattr(session, "commit"):
-            await session.commit()
+            await commit_with_write_lock(session)
         return decision
     return verdict
 
@@ -1130,7 +1151,7 @@ async def _run_single_cycle_locked(
                 force,
                 cycle_id,
             )
-            await session.commit()
+            await commit_with_write_lock(session)
             return result_payload
 
         resolved_symbol = str(symbol or resolve_primary_symbol(strategy)).upper()
@@ -1145,7 +1166,7 @@ async def _run_single_cycle_locked(
             cycle_id,
             entry_allowed=True,
         )
-        await session.commit()
+        await commit_with_write_lock(session)
         return result_payload
 
 async def _run_loaded_symbol_cycle(
@@ -1380,7 +1401,7 @@ async def _run_multi_coin_cycle(
             cycle_id,
             entry_allowed=False,
         )
-        await session.commit()
+        await commit_with_write_lock(session)
         results.append(result)
         processed_symbols.add(symbol)
 
@@ -1402,7 +1423,7 @@ async def _run_multi_coin_cycle(
             cycle_id,
             entry_allowed=True,
         )
-        await session.commit()
+        await commit_with_write_lock(session)
         results.append(result)
         processed_symbols.add(pick.symbol)
 
@@ -1518,7 +1539,7 @@ async def _run_hybrid_cycle(
                 position.stop_loss_price = new_sl
                 hybrid_updated = True
             if hybrid_updated:
-                await session.commit()
+                await commit_with_write_lock(session)
                 return {
                     "status": "hold",
                     "reason": "Exit levels updated (trailing/breakeven)",
@@ -1586,9 +1607,31 @@ async def _run_hybrid_cycle(
             "composite": composite_dict,
         }
 
+    # Re-entry cooldown after stop-loss
+    cooldown_ok, cooldown_reason = _check_reentry_cooldown(strategy, symbol, interval)
+    if not cooldown_ok:
+        _log_stage(
+            session,
+            strategy_id=strategy_id,
+            cycle_id=cycle_id,
+            symbol=symbol,
+            stage="reentry_cooldown",
+            status="rejected",
+            reason_code="REENTRY_COOLDOWN_ACTIVE",
+            reason_text=cooldown_reason,
+        )
+        return {
+            "status": "skipped",
+            "reason": cooldown_reason,
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "reentry_cooldown",
+            "composite": composite_dict,
+        }
+
     risk_reason = _entry_risk_status(strategy, wallet, equity, config)
     if risk_reason is not None:
-        await session.commit()
+        await commit_with_write_lock(session)
         return {
             "status": "halted",
             "reason": risk_reason,
@@ -2029,7 +2072,7 @@ async def _run_rule_based_cycle(
             position.stop_loss_price = exit_decision.updated_stop_loss_price
             updated = True
         if updated:
-            await session.commit()
+            await commit_with_write_lock(session)
             return {
                 "status": "hold",
                 "reason": "Exit levels updated (trailing/breakeven)",
@@ -2118,9 +2161,30 @@ async def _run_rule_based_cycle(
         entry_confidence_bucket=_confidence_bucket(raw_confidence),
     )
 
+    # Re-entry cooldown after stop-loss
+    cooldown_ok, cooldown_reason = _check_reentry_cooldown(strategy, symbol, interval)
+    if not cooldown_ok:
+        _log_stage(
+            session,
+            strategy_id=strategy_id,
+            cycle_id=cycle_id,
+            symbol=symbol,
+            stage="reentry_cooldown",
+            status="rejected",
+            reason_code="REENTRY_COOLDOWN_ACTIVE",
+            reason_text=cooldown_reason,
+        )
+        return {
+            "status": "skipped",
+            "reason": cooldown_reason,
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "reentry_cooldown",
+        }
+
     risk_reason = _entry_risk_status(strategy, wallet, equity, config)
     if risk_reason is not None:
-        await session.commit()
+        await commit_with_write_lock(session)
         return {
             "status": "halted",
             "reason": risk_reason,
@@ -2459,7 +2523,7 @@ async def take_equity_snapshot(strategy_id: str, symbol: str | None = None) -> N
             total_equity_usdt=total,
         )
         session.add(snapshot)
-        await session.commit()
+        await commit_with_write_lock(session)
 
 
 async def strategy_loop(strategy_id: str, interval_seconds: int = 3600) -> None:

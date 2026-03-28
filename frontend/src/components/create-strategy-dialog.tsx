@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createStrategy } from "@/lib/api";
 import { STRATEGY_TYPE_META, type StrategyType, type StrategyWithStats } from "@/lib/types";
+import { buttonClassName } from "@/components/ui";
 
 const STRATEGY_TYPES = Object.keys(STRATEGY_TYPE_META) as StrategyType[];
 
@@ -120,17 +121,17 @@ export function CreateStrategyDialog({ open, onClose, existingStrategies = [] }:
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-full max-w-xl rounded-[2rem] border border-white/10 bg-[#0c121d]/95 p-6 shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-xl rounded-[18px] border border-slate-200 bg-white p-6 shadow-[0_12px_40px_rgba(15,23,42,0.14)]">
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-xs uppercase tracking-[0.22em] text-gold/80">Create Strategy</p>
-            <h2 className="mt-2 text-2xl font-semibold text-sand">New Desk</h2>
+            <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">Create Strategy</p>
+            <h2 className="mt-2 text-2xl font-semibold text-slate-900">New Desk</h2>
           </div>
           <button
             onClick={onClose}
-            className="rounded-lg p-1.5 text-mist/60 transition hover:bg-white/10 hover:text-sand"
+            className={buttonClassName("tertiary", "sm")}
           >
             <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
               <path d="M6 6l8 8M14 6l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -140,7 +141,7 @@ export function CreateStrategyDialog({ open, onClose, existingStrategies = [] }:
 
         {/* Strategy type selector */}
         <div className="mt-5 space-y-2">
-          <label className="text-xs uppercase tracking-[0.2em] text-mist/50">Strategy Type</label>
+          <label className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">Strategy Type</label>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             {STRATEGY_TYPES.map((type) => {
               const m = STRATEGY_TYPE_META[type];
@@ -157,12 +158,12 @@ export function CreateStrategyDialog({ open, onClose, existingStrategies = [] }:
                   }}
                   className={`relative rounded-lg border px-3 py-2.5 text-left text-xs transition ${
                     isSelected
-                      ? `${m.color} border-current`
-                      : "border-white/10 text-mist/60 hover:border-white/20 hover:text-mist"
+                      ? `${m.color} shadow-sm`
+                      : "border-slate-200 text-slate-600 hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900"
                   }`}
                 >
                   {alreadyExists && (
-                    <span className="absolute -top-1.5 -right-1.5 rounded-full bg-mist/20 px-1.5 py-0.5 text-[9px] font-medium text-mist/70">
+                    <span className="absolute -right-1.5 -top-1.5 rounded-full border border-slate-200 bg-white px-1.5 py-0.5 text-[9px] font-medium text-slate-500">
                       Active
                     </span>
                   )}
@@ -176,19 +177,19 @@ export function CreateStrategyDialog({ open, onClose, existingStrategies = [] }:
 
         {/* Name */}
         <div className="mt-4 space-y-1.5">
-          <label className="text-xs uppercase tracking-[0.2em] text-mist/50">Name</label>
+          <label className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">Name</label>
           <input
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder={meta.label}
-            className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-sand placeholder:text-mist/30 focus:border-gold/40 focus:outline-none"
+            className="w-full rounded-[10px] border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-300 focus:outline-none"
           />
         </div>
 
         {/* Balance */}
         <div className="mt-4 space-y-1.5">
-          <label className="text-xs uppercase tracking-[0.2em] text-mist/50">Initial Balance (USDT)</label>
+          <label className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">Initial Balance (USDT)</label>
           <input
             type="number"
             value={balance}
@@ -196,20 +197,20 @@ export function CreateStrategyDialog({ open, onClose, existingStrategies = [] }:
             min={100}
             max={100000}
             step={100}
-            className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-sand focus:border-gold/40 focus:outline-none"
+            className="w-full rounded-[10px] border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-300 focus:outline-none"
           />
         </div>
 
         <div className="mt-4 space-y-2">
-          <label className="text-xs uppercase tracking-[0.2em] text-mist/50">Execution Mode</label>
+          <label className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">Execution Mode</label>
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
               onClick={() => setExecutionMode("multi_coin_shared_wallet")}
               className={`rounded-lg border px-3 py-2 text-left text-xs transition ${
                 executionMode === "multi_coin_shared_wallet"
-                  ? "border-gold/50 bg-gold/10 text-gold"
-                  : "border-white/10 text-mist/60 hover:border-white/20 hover:text-mist"
+                  ? "border-blue-200 bg-blue-50 text-blue-700"
+                  : "border-slate-200 text-slate-600 hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900"
               }`}
             >
               <span className="font-medium">Multi-Coin</span>
@@ -220,8 +221,8 @@ export function CreateStrategyDialog({ open, onClose, existingStrategies = [] }:
               onClick={() => setExecutionMode("single_symbol")}
               className={`rounded-lg border px-3 py-2 text-left text-xs transition ${
                 executionMode === "single_symbol"
-                  ? "border-gold/50 bg-gold/10 text-gold"
-                  : "border-white/10 text-mist/60 hover:border-white/20 hover:text-mist"
+                  ? "border-blue-200 bg-blue-50 text-blue-700"
+                  : "border-slate-200 text-slate-600 hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900"
               }`}
             >
               <span className="font-medium">Single Symbol</span>
@@ -231,15 +232,15 @@ export function CreateStrategyDialog({ open, onClose, existingStrategies = [] }:
         </div>
 
         {/* Description preview */}
-        <div className="mt-4 rounded-[1.2rem] border border-white/8 bg-white/[0.03] px-4 py-3">
-          <p className="text-xs text-mist/50">{meta.description}</p>
+        <div className="mt-4 rounded-[12px] border border-slate-200 bg-slate-50 px-4 py-3">
+          <p className="text-xs text-slate-600">{meta.description}</p>
           {selectedType === "hybrid_composite" && (
-            <p className="mt-1 text-xs text-gold/70">
+            <p className="mt-1 text-xs text-blue-700">
               AI-enabled — will make API calls (costs apply)
             </p>
           )}
           {executionMode === "multi_coin_shared_wallet" && (
-            <p className="mt-1 text-xs text-rise/70">
+            <p className="mt-1 text-xs text-emerald-700">
               Multi-coin mode will scan the dynamic liquid universe and trade from the daily top picks.
             </p>
           )}
@@ -250,22 +251,22 @@ export function CreateStrategyDialog({ open, onClose, existingStrategies = [] }:
           <button
             onClick={() => setAutoStart(!autoStart)}
             className={`relative h-5 w-9 rounded-full transition ${
-              autoStart ? "bg-rise" : "bg-white/15"
+              autoStart ? "bg-emerald-600" : "bg-slate-300"
             }`}
           >
             <span
               className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
-                autoStart ? "translate-x-4" : ""
+              autoStart ? "translate-x-4" : ""
               }`}
             />
           </button>
-          <span className="text-sm text-mist/70">Start trading immediately</span>
+          <span className="text-sm text-slate-600">Start trading immediately</span>
         </div>
 
         {/* Duplicate warning */}
         {isDuplicate && (
-          <div className="mt-3 rounded-lg border border-gold/20 bg-gold/5 px-3 py-2">
-            <p className="text-xs text-gold/80">
+          <div className="mt-3 rounded-[10px] border border-amber-200 bg-amber-50 px-3 py-2">
+            <p className="text-xs text-amber-700">
               You already have a <strong>{meta.label}</strong> strategy running. Consider adjusting your existing one instead.
             </p>
           </div>
@@ -273,24 +274,24 @@ export function CreateStrategyDialog({ open, onClose, existingStrategies = [] }:
 
         {/* Error */}
         {error && (
-          <p className="mt-3 text-xs text-fall">{error}</p>
+          <p className="mt-3 text-xs text-red-700">{error}</p>
         )}
 
         {/* Actions */}
         <div className="mt-6 flex items-center justify-end gap-3">
           <button
             onClick={onClose}
-            className="rounded-lg border border-white/10 px-4 py-2 text-sm text-mist/60 transition hover:bg-white/5 hover:text-sand"
+            className={buttonClassName("secondary", "md")}
           >
             Cancel
           </button>
           <button
             onClick={handleCreate}
             disabled={loading}
-            className={`rounded-lg px-5 py-2 text-sm font-medium transition disabled:opacity-50 ${
+            className={`rounded-[10px] px-5 py-2 text-sm font-medium transition disabled:opacity-50 ${
               isDuplicate
-                ? "border border-gold/40 bg-gold/10 text-gold hover:bg-gold/20"
-                : "bg-gold/90 text-black hover:bg-gold"
+                ? "border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                : "bg-blue-700 text-white hover:bg-blue-800"
             }`}
           >
             {loading ? "Creating..." : isDuplicate ? "Create Anyway" : "Create Strategy"}

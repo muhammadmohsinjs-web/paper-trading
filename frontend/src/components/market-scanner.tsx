@@ -4,41 +4,42 @@ import { useState, useCallback } from "react";
 import { runManualScan } from "@/lib/api";
 import { formatCurrency, formatNumber } from "@/lib/format";
 import type { ManualScanResponse, RankedSymbol } from "@/lib/types";
+import { MetricStrip, buttonClassName } from "@/components/ui";
 
 const SETUP_LABELS: Record<string, { label: string; color: string }> = {
-  rsi_oversold: { label: "RSI Oversold", color: "text-rise" },
-  rsi_overbought: { label: "RSI Overbought", color: "text-fall" },
-  bb_squeeze: { label: "BB Squeeze", color: "text-teal-400" },
-  bb_lower_touch: { label: "BB Lower Touch", color: "text-rise" },
-  bb_upper_touch: { label: "BB Upper Touch", color: "text-fall" },
-  sma_crossover_proximity: { label: "SMA Crossover", color: "text-blue-400" },
-  volume_breakout: { label: "Volume Breakout", color: "text-amber-400" },
-  macd_crossover: { label: "MACD Crossover", color: "text-amber-400" },
-  macd_momentum_rising: { label: "MACD Rising", color: "text-rise" },
-  macd_momentum_falling: { label: "MACD Falling", color: "text-fall" },
-  ema_trend_bullish: { label: "EMA Bullish", color: "text-rise" },
-  ema_trend_bearish: { label: "EMA Bearish", color: "text-fall" },
-  adx_strong_trend: { label: "ADX Trend", color: "text-purple-400" },
-  rsi_divergence_bullish: { label: "RSI Div Bull", color: "text-rise" },
-  rsi_divergence_bearish: { label: "RSI Div Bear", color: "text-fall" },
-  momentum_breakout_high: { label: "Breakout High", color: "text-rise" },
-  momentum_breakout_low: { label: "Breakdown Low", color: "text-fall" },
+  rsi_oversold: { label: "RSI Oversold", color: "text-emerald-700" },
+  rsi_overbought: { label: "RSI Overbought", color: "text-red-700" },
+  bb_squeeze: { label: "BB Squeeze", color: "text-teal-700" },
+  bb_lower_touch: { label: "BB Lower Touch", color: "text-emerald-700" },
+  bb_upper_touch: { label: "BB Upper Touch", color: "text-red-700" },
+  sma_crossover_proximity: { label: "SMA Crossover", color: "text-blue-700" },
+  volume_breakout: { label: "Volume Breakout", color: "text-amber-700" },
+  macd_crossover: { label: "MACD Crossover", color: "text-amber-700" },
+  macd_momentum_rising: { label: "MACD Rising", color: "text-emerald-700" },
+  macd_momentum_falling: { label: "MACD Falling", color: "text-red-700" },
+  ema_trend_bullish: { label: "EMA Bullish", color: "text-emerald-700" },
+  ema_trend_bearish: { label: "EMA Bearish", color: "text-red-700" },
+  adx_strong_trend: { label: "ADX Trend", color: "text-violet-700" },
+  rsi_divergence_bullish: { label: "RSI Div Bull", color: "text-emerald-700" },
+  rsi_divergence_bearish: { label: "RSI Div Bear", color: "text-red-700" },
+  momentum_breakout_high: { label: "Breakout High", color: "text-emerald-700" },
+  momentum_breakout_low: { label: "Breakdown Low", color: "text-red-700" }
 };
 
 function getSetupMeta(setupType: string) {
-  return SETUP_LABELS[setupType] ?? { label: setupType, color: "text-mist/70" };
+  return SETUP_LABELS[setupType] ?? { label: setupType, color: "text-slate-600" };
 }
 
 function ScoreBar({ score }: { score: number }) {
   const pct = Math.min(score * 100, 100);
   const color =
-    pct >= 60 ? "bg-rise" : pct >= 40 ? "bg-gold" : "bg-mist/30";
+    pct >= 60 ? "bg-emerald-600" : pct >= 40 ? "bg-blue-700" : "bg-slate-300";
   return (
     <div className="flex items-center gap-2">
-      <div className="h-1.5 w-16 overflow-hidden rounded-full bg-white/8">
+      <div className="h-1.5 w-16 overflow-hidden rounded-full bg-slate-200">
         <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
       </div>
-      <span className="text-xs tabular-nums text-mist/60">{(score * 100).toFixed(0)}</span>
+      <span className="text-xs tabular-nums text-slate-500">{(score * 100).toFixed(0)}</span>
     </div>
   );
 }
@@ -46,21 +47,29 @@ function ScoreBar({ score }: { score: number }) {
 function SymbolRow({ item, rank }: { item: RankedSymbol; rank: number }) {
   const meta = getSetupMeta(item.setup_type);
   return (
-    <div className="grid grid-cols-[2rem_5.5rem_1fr_6rem_7rem_5rem] items-center gap-3 border-b border-white/5 px-4 py-3 text-sm last:border-b-0">
-      <span className="text-xs tabular-nums text-mist/40">#{rank}</span>
-      <span className="font-medium text-sand">{item.symbol.replace("USDT", "")}</span>
+    <div className="grid grid-cols-[2rem_5.5rem_1fr_6rem_7rem_5rem] items-center gap-3 border-b border-slate-200 px-4 py-3 text-sm last:border-b-0">
+      <span className="text-xs tabular-nums text-slate-500">#{rank}</span>
+      <span className="font-medium text-slate-900">{item.symbol.replace("USDT", "")}</span>
       <div className="min-w-0">
         <span className={`text-xs font-medium uppercase tracking-wider ${meta.color}`}>
           {meta.label}
         </span>
-        <p className="mt-0.5 truncate text-xs text-mist/50">{item.reason}</p>
+        <p className="mt-0.5 truncate text-xs text-slate-500">{item.reason}</p>
       </div>
       <div className="text-right">
-        <span className={`text-xs font-medium uppercase ${item.regime === "trending_up" ? "text-rise" : item.regime === "trending_down" ? "text-fall" : "text-mist/60"}`}>
+        <span
+          className={`text-xs font-medium uppercase ${
+            item.regime === "trending_up"
+              ? "text-emerald-700"
+              : item.regime === "trending_down"
+                ? "text-red-700"
+                : "text-slate-500"
+          }`}
+        >
           {item.regime.replace("_", " ")}
         </span>
       </div>
-      <div className="text-right text-xs text-mist/50">
+      <div className="text-right text-xs text-slate-500">
         {formatCurrency(item.liquidity_usdt, true)}
       </div>
       <div className="flex justify-end">
@@ -90,87 +99,59 @@ export function MarketScanner() {
   }, [interval]);
 
   return (
-    <section className="panel min-w-0 overflow-hidden p-0 rise-in">
-      <div className="border-b border-white/6 px-6 py-5">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0">
-            <p className="text-xs uppercase tracking-[0.28em] text-gold">Live Scanner</p>
-            <h3 className="mt-2 text-2xl font-semibold text-sand">Market Scanner</h3>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-mist/62">
-              Scan the full universe for trading setups across 12 signal types.
-              Results are ranked by composite score with diversification filtering.
-            </p>
-          </div>
-          <div className="flex flex-shrink-0 items-center gap-3">
-            <select
-              value={interval}
-              onChange={(e) => setInterval(e.target.value)}
-              className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-sand outline-none focus:border-gold/40"
-            >
-              <option value="5m">5m</option>
-              <option value="1h">1h</option>
-              <option value="4h">4h</option>
-            </select>
-            <button
-              onClick={handleScan}
-              disabled={scanning}
-              className="rounded-full bg-gold/90 px-5 py-2 text-sm font-medium text-black transition hover:bg-gold disabled:opacity-50"
-            >
-              {scanning ? (
-                <span className="flex items-center gap-2">
-                  <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-black/30 border-t-black" />
-                  Scanning...
-                </span>
-              ) : (
-                "Scan Now"
-              )}
-            </button>
-          </div>
+    <section className="min-w-0 space-y-4">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div className="space-y-2">
+          <h2 className="text-lg font-semibold text-slate-900">Market scanner</h2>
+          <p className="text-sm leading-6 text-slate-600">
+            Ranked setups from the live universe with table-first output.
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <select
+            value={interval}
+            onChange={(event) => setInterval(event.target.value)}
+            className="rounded-[10px] border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-300"
+          >
+            <option value="5m">5m</option>
+            <option value="1h">1h</option>
+            <option value="4h">4h</option>
+          </select>
+          <button onClick={handleScan} disabled={scanning} className={buttonClassName("primary", "md")}>
+            {scanning ? "Scanning..." : "Run scan"}
+          </button>
         </div>
       </div>
 
-      {error && (
-        <div className="border-b border-fall/20 bg-fall/[0.06] px-6 py-3 text-sm text-fall">
-          {error}
-        </div>
-      )}
+      {error ? <p className="text-sm text-red-700">{error}</p> : null}
 
       {scanResult ? (
         <>
-          <div className="grid grid-cols-4 gap-4 border-b border-white/6 px-6 py-4">
-            <div>
-              <p className="text-[10px] uppercase tracking-[0.22em] text-mist/40">Universe</p>
-              <p className="mt-1 text-lg font-semibold text-sand">
-                {formatNumber(scanResult.universe_size, 0)}
-              </p>
-            </div>
-            <div>
-              <p className="text-[10px] uppercase tracking-[0.22em] text-mist/40">With Data</p>
-              <p className="mt-1 text-lg font-semibold text-sand">
-                {formatNumber(scanResult.symbols_scanned, 0)}
-              </p>
-            </div>
-            <div>
-              <p className="text-[10px] uppercase tracking-[0.22em] text-mist/40">Setups Found</p>
-              <p className="mt-1 text-lg font-semibold text-rise">
-                {formatNumber(scanResult.ranked_symbols.length, 0)}
-              </p>
-            </div>
-            <div>
-              <p className="text-[10px] uppercase tracking-[0.22em] text-mist/40">Regime</p>
-              <p className={`mt-1 text-lg font-semibold capitalize ${
-                scanResult.regime === "trending_up" ? "text-rise" :
-                scanResult.regime === "trending_down" ? "text-fall" :
-                "text-sand"
-              }`}>
-                {scanResult.regime.replace("_", " ")}
-              </p>
-            </div>
-          </div>
+          <MetricStrip
+            items={[
+              { label: "Universe", value: formatNumber(scanResult.universe_size, 0) },
+              { label: "With data", value: formatNumber(scanResult.symbols_scanned, 0) },
+              {
+                label: "Setups found",
+                value: formatNumber(scanResult.ranked_symbols.length, 0),
+                tone: "success"
+              },
+              {
+                label: "Regime",
+                value: scanResult.regime.replace("_", " "),
+                tone:
+                  scanResult.regime === "trending_up"
+                    ? "success"
+                    : scanResult.regime === "trending_down"
+                      ? "danger"
+                      : "default"
+              }
+            ]}
+          />
 
           {scanResult.ranked_symbols.length > 0 ? (
-            <div>
-              <div className="grid grid-cols-[2rem_5.5rem_1fr_6rem_7rem_5rem] gap-3 border-b border-white/8 px-4 py-2 text-[10px] uppercase tracking-[0.2em] text-mist/35">
+            <div className="table-shell">
+              <div className="grid grid-cols-[2rem_5.5rem_1fr_6rem_7rem_5rem] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-[11px] font-medium uppercase tracking-[0.12em] text-slate-500">
                 <span>#</span>
                 <span>Symbol</span>
                 <span>Setup</span>
@@ -179,27 +160,26 @@ export function MarketScanner() {
                 <span className="text-right">Score</span>
               </div>
               {scanResult.ranked_symbols.map((item, idx) => (
-                <SymbolRow key={item.symbol} item={item} rank={idx + 1} />
+                <SymbolRow key={`${item.symbol}-${idx}`} item={item} rank={idx + 1} />
               ))}
             </div>
           ) : (
-            <div className="px-6 py-8 text-center text-sm text-mist/50">
+            <div className="border-t border-slate-200 py-6 text-sm text-slate-500">
               No setups detected across the universe. Market may be in a low-volatility phase.
             </div>
           )}
 
-          <div className="border-t border-white/6 px-6 py-3 text-xs text-mist/40">
-            Scanned at {new Date(scanResult.scanned_at).toLocaleTimeString()} on {interval} timeframe
-          </div>
+          <p className="text-xs text-slate-500">
+            Scanned at {new Date(scanResult.scanned_at).toLocaleTimeString()} on {interval} timeframe.
+          </p>
         </>
       ) : (
-        <div className="px-6 py-12 text-center">
-          <p className="text-sm text-mist/50">
-            Press <span className="font-medium text-gold">Scan Now</span> to run a fresh market scan
-            across all {35} symbols in the universe.
+        <div className="border-t border-slate-200 py-6">
+          <p className="text-sm text-slate-500">
+            Press <span className="font-medium text-blue-700">Run scan</span> to evaluate the live universe.
           </p>
-          <p className="mt-2 text-xs text-mist/35">
-            Detects RSI extremes, MACD crossovers, EMA trends, BB squeezes, ADX trends, momentum breakouts, and more.
+          <p className="mt-2 text-xs text-slate-500">
+            Detects RSI extremes, MACD crossovers, EMA trends, BB squeezes, ADX trends, and momentum breakouts.
           </p>
         </div>
       )}

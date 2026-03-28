@@ -10,6 +10,7 @@ import type {
   LeaderboardEntry,
   ManualExecutionResponse,
   ManualScanResponse,
+  MarketIndicatorsResponse,
   MarketPrice,
   OpenAIUsageResponse,
   Position,
@@ -107,6 +108,30 @@ export function getMarketPrice(symbol = "BTCUSDT") {
 
 export function getCandles(symbol = "BTCUSDT", interval = "5m", limit = 120) {
   return request<CandleResponse>(`/market/candles/${symbol}?interval=${interval}&limit=${limit}`);
+}
+
+export function getIndicatorSeries(
+  symbol = "BTCUSDT",
+  interval = "1h",
+  limit = 160,
+  config?: Partial<{
+    sma_short: number;
+    sma_long: number;
+    rsi_period: number;
+    volume_ma_period: number;
+  }>
+) {
+  const query = new URLSearchParams({
+    interval,
+    limit: String(limit),
+  });
+
+  if (config?.sma_short != null) query.set("sma_short", String(config.sma_short));
+  if (config?.sma_long != null) query.set("sma_long", String(config.sma_long));
+  if (config?.rsi_period != null) query.set("rsi_period", String(config.rsi_period));
+  if (config?.volume_ma_period != null) query.set("volume_ma_period", String(config.volume_ma_period));
+
+  return request<MarketIndicatorsResponse>(`/market/indicators/${symbol}?${query.toString()}`);
 }
 
 export function getEngineStatus() {

@@ -127,13 +127,19 @@ def _is_skip_result(result: Any) -> bool:
     return bool(result)
 
 
-def test_resolve_runtime_provider_and_model_prefers_strategy_context():
+def test_resolve_runtime_provider_and_model_prefers_env_model_over_strategy_context(monkeypatch):
+    monkeypatch.setattr(
+        ai_runtime,
+        "SETTINGS",
+        Settings(ai_provider="openai", ai_model="gpt-4.1-mini", openai_model="gpt-5.4-mini"),
+    )
+
     provider, model = ai_runtime.resolve_runtime_provider_and_model(
         {"strategy": {"ai_provider": "openai", "ai_model": "gpt-5-mini"}}
     )
 
     assert provider == "openai"
-    assert model == "gpt-5-mini"
+    assert model == "gpt-4.1-mini"
 
 
 def test_normalize_ai_strategy_key_supports_hybrid_composite():
@@ -434,7 +440,7 @@ def test_ai_runtime_tracks_usage_and_estimated_cost_without_network(monkeypatch)
     assert result.usage.estimated_cost_usdt == Decimal("0.00810000")
 
 
-def test_ai_runtime_prefers_strategy_selected_openai_model(monkeypatch):
+def test_ai_runtime_prefers_env_selected_openai_model(monkeypatch):
     monkeypatch.setattr(
         ai_runtime,
         "SETTINGS",
@@ -502,13 +508,103 @@ def test_ai_runtime_prefers_strategy_selected_openai_model(monkeypatch):
     assert result.action == "SELL"
     assert result.confidence == 0.74
     assert result.reason == "Momentum rolled over"
-    assert captured["model"] == "gpt-4o-mini"
+    assert captured["model"] == "gpt-5.4"
     assert result.usage is not None
     assert result.usage.provider == "openai"
     assert result.usage.prompt_tokens == 1000
     assert result.usage.completion_tokens == 200
     assert result.usage.total_tokens == 1200
     assert result.usage.estimated_cost_usdt == Decimal("0.00550000")
+
+
+def test_ai_runtime_retries_gpt5_when_reasoning_consumes_completion_budget(monkeypatch):
+    monkeypatch.setattr(
+        ai_runtime,
+        "SETTINGS",
+        Settings(
+            ai_provider="openai",
+            openai_api_key="test-key",
+            openai_model="gpt-5-mini",
+            openai_input_cost_per_1m_tokens_usd=0.75,
+            openai_output_cost_per_1m_tokens_usd=4.50,
+        ),
+    )
+
+    requested_budgets: list[int] = []
+
+    async def fake_call_openai(**kwargs: Any) -> dict[str, Any]:
+        requested_budgets.append(kwargs["max_tokens"])
+        if len(requested_budgets) == 1:
+            return {
+                "model": "gpt-5-mini-2025-08-07",
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "", "refusal": None, "annotations": []},
+                        "finish_reason": "length",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 6266,
+                    "completion_tokens": 700,
+                    "total_tokens": 6966,
+                    "completion_tokens_details": {"reasoning_tokens": 700},
+                },
+            }
+
+        return {
+            "model": "gpt-5-mini-2025-08-07",
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"action":"BUY","quantity_pct":0.3,'
+                            '"reason":"Breakout confirmed","confidence":0.81}'
+                        )
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 6266,
+                "completion_tokens": 220,
+                "total_tokens": 6486,
+                "completion_tokens_details": {"reasoning_tokens": 120},
+            },
+        }
+
+    monkeypatch.setattr(ai_runtime, "_call_openai", fake_call_openai)
+
+    context = ai_runtime.build_ai_context(
+        strategy_id=STRATEGY_ID,
+        strategy_name="Phase 3 AI",
+        symbol="BTCUSDT",
+        interval="5m",
+        closes=[50000.0 + i * 40.0 for i in range(40)],
+        indicators={"rsi": [48.0, 59.0], "macd": ([0.1, 0.5], [0.0, 0.2], [0.1, 0.3])},
+        wallet_available_usdt=Decimal("1000"),
+        has_position=False,
+        position_quantity=None,
+        position_entry_price=None,
+        current_price=Decimal("51560"),
+        ai_strategy_key="rsi_ma",
+        ai_provider="openai",
+        ai_model="gpt-5-mini",
+        ai_cooldown_seconds=60,
+        ai_max_tokens=700,
+        ai_temperature=Decimal("0.2"),
+        flat_market_metrics={},
+    )
+
+    result = asyncio.run(ai_runtime.evaluate_ai_decision(strategy_key="rsi_ma", context=context))
+
+    assert requested_budgets == [700, 1600]
+    assert result.status == "signal"
+    assert result.signal is not None
+    assert result.signal.action.value == "BUY"
+    assert result.signal.quantity_pct == Decimal("0.3")
+    assert result.reason == "Breakout confirmed"
+    assert result.usage is not None
+    assert result.usage.model == "gpt-5-mini-2025-08-07"
 
 
 def test_extract_openai_text_supports_responses_output_shape():

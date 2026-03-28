@@ -1,19 +1,20 @@
 import Link from "next/link";
+import { buttonClassName, Surface } from "@/components/ui";
 
 export default function NotFound() {
   return (
-    <div className="panel mx-auto max-w-xl p-8 text-center">
-      <p className="text-xs uppercase tracking-[0.28em] text-gold">Not Found</p>
-      <h2 className="mt-3 text-3xl font-semibold text-sand">Strategy unavailable</h2>
-      <p className="mt-3 text-sm text-mist/65">
+    <Surface className="mx-auto max-w-xl p-8 text-center">
+      <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-slate-500">Not Found</p>
+      <h2 className="mt-3 text-3xl font-semibold text-slate-900">Strategy unavailable</h2>
+      <p className="mt-3 text-sm text-slate-600">
         The requested route or strategy could not be loaded from the backend.
       </p>
       <Link
         href="/"
-        className="mt-6 inline-flex rounded-full border border-gold/40 px-4 py-2 text-sm text-gold transition hover:bg-gold/10"
+        className={`mt-6 ${buttonClassName("secondary", "md")}`}
       >
         Back to dashboard
       </Link>
-    </div>
+    </Surface>
   );
 }

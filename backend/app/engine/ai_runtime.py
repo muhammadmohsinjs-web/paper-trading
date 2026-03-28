@@ -162,11 +162,6 @@ def resolve_runtime_provider_and_model(
     strategy_context = context.get("strategy", {}) if isinstance(context, dict) else {}
     configured_provider = strategy_context.get("ai_provider")
     provider = normalize_ai_provider(str(configured_provider) if configured_provider else SETTINGS.ai_provider)
-
-    configured_model = strategy_context.get("ai_model")
-    if configured_model:
-        return provider, str(configured_model)
-
     return provider, str(default_ai_model_for_provider(provider, SETTINGS))
 
 
@@ -260,6 +255,20 @@ def _extract_openai_text(response_json: dict[str, Any]) -> str:
 
     choices = response_json.get("choices", [])
     if not isinstance(choices, list) or not choices:
+        # Try newer OpenAI response format: message at top level
+        message = response_json.get("message", {})
+        if isinstance(message, dict):
+            content = message.get("content", "")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+            if isinstance(content, list):
+                extracted = _extract_parts(content)
+                if extracted:
+                    return "\n".join(extracted).strip()
+        logger.warning(
+            "OpenAI response had no extractable text. Top-level keys: %s",
+            sorted(response_json.keys()),
+        )
         return ""
 
     message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
@@ -279,6 +288,39 @@ def _payload_excerpt(payload: dict[str, Any], limit: int = 4000) -> str:
     except TypeError:
         text = repr(payload)
     return text if len(text) <= limit else f"{text[:limit]}..."
+
+
+def _openai_finish_reason(response_json: dict[str, Any]) -> str:
+    choices = response_json.get("choices", [])
+    if not isinstance(choices, list) or not choices:
+        return ""
+    first_choice = choices[0]
+    if not isinstance(first_choice, dict):
+        return ""
+    return str(first_choice.get("finish_reason") or "").strip().lower()
+
+
+def _openai_retry_max_tokens(*, model: str, requested_max_tokens: int, response_json: dict[str, Any]) -> int | None:
+    if not model.startswith("gpt-5"):
+        return None
+    if _openai_finish_reason(response_json) != "length":
+        return None
+
+    usage = response_json.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+    if completion_tokens < requested_max_tokens:
+        return None
+
+    details = usage.get("completion_tokens_details")
+    if not isinstance(details, dict):
+        return None
+    reasoning_tokens = int(details.get("reasoning_tokens", 0) or 0)
+    if reasoning_tokens < completion_tokens:
+        return None
+
+    return max(requested_max_tokens * 2, 1600)
 
 
 def _extract_json_payload(text: str) -> dict[str, Any]:
@@ -689,6 +731,7 @@ async def evaluate_ai_decision(
     last_error: str | None = None
     last_usage: AIUsage | None = None
     system_prompt = _system_prompt(normalized_key)
+    retry_max_tokens = max_tokens
 
     async with AI_CALL_SEMAPHORE:
         async with httpx.AsyncClient(base_url=base_url, timeout=SETTINGS.ai_timeout_seconds) as client:
@@ -703,7 +746,7 @@ async def evaluate_ai_decision(
                         response_json = await _call_openai(
                             client=client,
                             model=model,
-                            max_tokens=max_tokens,
+                            max_tokens=retry_max_tokens,
                             temperature=temperature,
                             system_prompt=prompt,
                             user_message=user_message,
@@ -724,6 +767,19 @@ async def evaluate_ai_decision(
                     _log_ai_response(provider, raw_text or "(empty)", _symbol)
                     if not raw_text:
                         if provider == AI_PROVIDER_OPENAI:
+                            next_retry_budget = _openai_retry_max_tokens(
+                                model=model,
+                                requested_max_tokens=retry_max_tokens,
+                                response_json=response_json,
+                            )
+                            if next_retry_budget and next_retry_budget > retry_max_tokens:
+                                logger.warning(
+                                    "openai response exhausted completion budget without visible output; "
+                                    "retrying with max_completion_tokens=%d model=%s",
+                                    next_retry_budget,
+                                    model,
+                                )
+                                retry_max_tokens = next_retry_budget
                             logger.error(
                                 "openai response contained no extractable text payload_excerpt=%s",
                                 _payload_excerpt(response_json),
@@ -776,6 +832,11 @@ async def evaluate_ai_decision(
     )
 
 
+# Track consecutive AI failures per strategy for circuit-breaker alerting
+_consecutive_ai_failures: dict[str, int] = {}
+_AI_MAX_CONSECUTIVE_FAILURES = 5
+
+
 async def evaluate_ai_validation(
     *,
     context: dict[str, Any],
@@ -799,6 +860,7 @@ async def evaluate_ai_validation(
     system_prompt = _validation_system_prompt(proposed_action)
     last_error: str | None = None
     last_usage: AIUsage | None = None
+    retry_max_tokens = max_tokens
 
     async with AI_CALL_SEMAPHORE:
         async with httpx.AsyncClient(base_url=base_url, timeout=SETTINGS.ai_timeout_seconds) as client:
@@ -813,7 +875,7 @@ async def evaluate_ai_validation(
                         response_json = await _call_openai(
                             client=client,
                             model=model,
-                            max_tokens=max_tokens,
+                            max_tokens=retry_max_tokens,
                             temperature=temperature,
                             system_prompt=prompt,
                             user_message=user_message,
@@ -834,6 +896,19 @@ async def evaluate_ai_validation(
                     _log_ai_response(provider, raw_text or "(empty)", symbol)
                     if not raw_text:
                         if provider == AI_PROVIDER_OPENAI:
+                            next_retry_budget = _openai_retry_max_tokens(
+                                model=model,
+                                requested_max_tokens=retry_max_tokens,
+                                response_json=response_json,
+                            )
+                            if next_retry_budget and next_retry_budget > retry_max_tokens:
+                                logger.warning(
+                                    "openai validation exhausted completion budget without visible output; "
+                                    "retrying with max_completion_tokens=%d model=%s",
+                                    next_retry_budget,
+                                    model,
+                                )
+                                retry_max_tokens = next_retry_budget
                             logger.error(
                                 "openai validation response contained no extractable text payload_excerpt=%s",
                                 _payload_excerpt(response_json),
@@ -842,6 +917,9 @@ async def evaluate_ai_validation(
                     last_usage = _usage_from_response(response_json, provider)
                     payload = _extract_json_payload(raw_text)
                     approved, confidence_adjustment, reason, reason_code, fatal_flags, evidence = _coerce_validation_payload(payload)
+                    strategy_id = str(context.get("strategy", {}).get("strategy_id", ""))
+                    if strategy_id:
+                        _consecutive_ai_failures[strategy_id] = 0
                     return AIValidationResult(
                         status="validated" if approved else "rejected",
                         approved=approved,
@@ -864,9 +942,21 @@ async def evaluate_ai_validation(
                     if attempt == 0:
                         continue
 
+    # Track consecutive failures for circuit-breaker alerting
+    strategy_id = str(context.get("strategy", {}).get("strategy_id", ""))
+    if strategy_id:
+        _consecutive_ai_failures[strategy_id] = _consecutive_ai_failures.get(strategy_id, 0) + 1
+        count = _consecutive_ai_failures[strategy_id]
+        if count >= _AI_MAX_CONSECUTIVE_FAILURES:
+            logger.warning(
+                "AI validation has failed %d consecutive times for strategy=%s. "
+                "Check AI provider configuration (provider=%s, model=%s).",
+                count, strategy_id, provider, model,
+            )
+
     return AIValidationResult(
         status="error",
-        reason="AI validation failed; continuing without validator",
+        reason=f"AI validation failed ({last_error})",
         error=last_error,
         usage=last_usage,
     )

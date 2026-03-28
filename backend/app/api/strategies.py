@@ -23,6 +23,8 @@ from app.engine.multi_coin import (
     get_daily_picks,
     resolve_primary_symbol,
 )
+from app.engine.tradability import is_stablecoin_symbol
+from app.engine.wallet_manager import get_wallet
 from app.models.ai_call_log import AICallLog
 from app.models.daily_pick import DailyPick
 from app.models.enums import TradeSide
@@ -51,9 +53,10 @@ def _normalize_explicit_scan_universe(raw_universe: object) -> list[str]:
     if not isinstance(raw_universe, list):
         return []
     return [
-        str(symbol).upper()
+        candidate
         for symbol in raw_universe
-        if str(symbol).strip()
+        if (candidate := str(symbol).upper().strip())
+        and not is_stablecoin_symbol(candidate, quote_asset=settings.default_quote_asset)
     ]
 
 
@@ -101,10 +104,7 @@ def _resolve_initial_balance(strategy: Strategy) -> Decimal:
 async def _build_stats(session: AsyncSession, strategy: Strategy) -> StrategyWithStats:
     """Build a StrategyWithStats from DB data."""
     # Wallet
-    wallet_result = await session.execute(
-        select(Wallet).where(Wallet.strategy_id == strategy.id)
-    )
-    wallet = wallet_result.scalar_one_or_none()
+    wallet = await get_wallet(session, strategy.id)
 
     # Trade stats
     trade_result = await session.execute(
@@ -133,9 +133,14 @@ async def _build_stats(session: AsyncSession, strategy: Strategy) -> StrategyWit
     open_exposure_by_symbol = build_open_exposure_by_symbol(positions) if positions else {}
     portfolio_risk_status = build_portfolio_status(strategy, wallet, positions) if wallet else {}
     daily_picks = await get_daily_picks(session, strategy)
+    non_stable_positions = [
+        position
+        for position in positions
+        if not is_stablecoin_symbol(position.symbol, quote_asset=settings.default_quote_asset)
+    ]
     focus_symbol = (
-        positions[0].symbol
-        if positions
+        non_stable_positions[0].symbol
+        if non_stable_positions
         else daily_picks[0].symbol if daily_picks
         else resolve_primary_symbol(strategy)
     )
@@ -148,7 +153,7 @@ async def _build_stats(session: AsyncSession, strategy: Strategy) -> StrategyWit
         is_active=strategy.is_active,
         execution_mode=strategy.execution_mode,
         primary_symbol=strategy.primary_symbol,
-        scan_universe_json=strategy.scan_universe_json or [],
+        scan_universe_json=_normalize_explicit_scan_universe(strategy.scan_universe_json or []),
         top_pick_count=strategy.top_pick_count,
         selection_hour_utc=strategy.selection_hour_utc,
         max_concurrent_positions=strategy.max_concurrent_positions,
@@ -293,10 +298,7 @@ async def get_strategy_wallet(
     strategy_id: str,
     session: AsyncSession = Depends(get_db_session),
 ):
-    wallet_result = await session.execute(
-        select(Wallet).where(Wallet.strategy_id == strategy_id)
-    )
-    wallet = wallet_result.scalar_one_or_none()
+    wallet = await get_wallet(session, strategy_id)
     if wallet is None:
         raise HTTPException(404, "Wallet not found")
     return wallet
@@ -423,6 +425,9 @@ async def delete_strategy(
     await session.execute(delete(Snapshot).where(Snapshot.strategy_id == strategy_id))
     await session.execute(delete(Trade).where(Trade.strategy_id == strategy_id))
     await session.execute(delete(Position).where(Position.strategy_id == strategy_id))
-    await session.execute(delete(Wallet).where(Wallet.strategy_id == strategy_id))
+    # Only delete wallet in per-strategy mode; shared wallet is kept
+    settings = get_settings()
+    if not settings.shared_wallet_enabled:
+        await session.execute(delete(Wallet).where(Wallet.strategy_id == strategy_id))
     await session.delete(strategy)
     await session.commit()

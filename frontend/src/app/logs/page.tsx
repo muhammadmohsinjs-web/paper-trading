@@ -1,6 +1,7 @@
 import { getAILogs, getAILogStats, getOpenAIUsage } from "@/lib/api";
 import { AILogsTable } from "@/components/ai-logs-table";
 import { OpenAIUsagePanel } from "@/components/openai-usage-panel";
+import { MetricStrip, PageHeader } from "@/components/ui";
 
 type LogsPageProps = {
   searchParams?: { status?: string; strategy_id?: string; page?: string };
@@ -24,41 +25,25 @@ export default async function LogsPage({ searchParams }: LogsPageProps) {
 
   return (
     <div className="space-y-6">
-      <section className="panel p-6">
-        <p className="text-xs uppercase tracking-[0.28em] text-gold">AI Logs</p>
-        <h2 className="mt-2 text-3xl font-semibold text-sand">API Call History</h2>
-        <p className="mt-2 text-sm text-mist/65">
-          Complete audit trail of every AI decision — successful, skipped, and failed calls.
-        </p>
-      </section>
+      <PageHeader
+        title="API call history"
+        description="Complete audit trail of every AI decision, including successful, skipped, and failed calls."
+      />
 
-      {/* Stats cards */}
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
-        <div className="panel p-4 text-center">
-          <p className="text-2xl font-semibold text-sand">{stats.total_calls}</p>
-          <p className="mt-1 text-xs text-mist/60">Total Calls</p>
-        </div>
-        <div className="panel p-4 text-center">
-          <p className="text-2xl font-semibold text-green-400">{stats.success}</p>
-          <p className="mt-1 text-xs text-mist/60">Actual API Calls</p>
-        </div>
-        <div className="panel p-4 text-center">
-          <p className="text-2xl font-semibold text-amber-400">{stats.skipped}</p>
-          <p className="mt-1 text-xs text-mist/60">Skipped</p>
-        </div>
-        <div className="panel p-4 text-center">
-          <p className="text-2xl font-semibold text-red-400">{stats.errors}</p>
-          <p className="mt-1 text-xs text-mist/60">Errors</p>
-        </div>
-        <div className="panel p-4 text-center">
-          <p className="text-2xl font-semibold text-gold">${stats.total_cost_usdt.toFixed(4)}</p>
-          <p className="mt-1 text-xs text-mist/60">Est. Cost</p>
-        </div>
-        <div className="panel p-4 text-center">
-          <p className="text-2xl font-semibold text-sand">{stats.total_tokens.toLocaleString()}</p>
-          <p className="mt-1 text-xs text-mist/60">Total Tokens</p>
-        </div>
-      </div>
+      <MetricStrip
+        items={[
+          { label: "Total calls", value: String(stats.total_calls) },
+          { label: "Actual API calls", value: String(stats.success), tone: "success" },
+          { label: "Skipped", value: String(stats.skipped), tone: "warning" },
+          { label: "Errors", value: String(stats.errors), tone: "danger" },
+          {
+            label: "Estimated cost",
+            value: `$${stats.total_cost_usdt.toFixed(4)}`,
+            tone: "accent"
+          },
+          { label: "Total tokens", value: stats.total_tokens.toLocaleString() }
+        ]}
+      />
 
       {/* OpenAI real usage panel */}
       {openaiUsage && <OpenAIUsagePanel data={openaiUsage} />}

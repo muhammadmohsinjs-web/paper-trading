@@ -109,6 +109,18 @@ def is_stablecoin_like_base(base_asset: str, denylist: list[str] | None = None) 
     return re.search(r"USD", normalized) is not None
 
 
+def is_stablecoin_symbol(
+    symbol: str,
+    *,
+    quote_asset: str = "USDT",
+    denylist: list[str] | None = None,
+) -> bool:
+    return is_stablecoin_like_base(
+        infer_base_asset(symbol, quote_asset=quote_asset),
+        denylist=denylist,
+    )
+
+
 def _pct_change(newer: float, older: float) -> float:
     if older <= 0:
         return 0.0

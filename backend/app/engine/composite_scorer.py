@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.engine.reason_codes import (
+    ATR_BELOW_HARD_FLOOR,
     DIRECTIONAL_SCORE_TOO_SMALL,
     EDGE_TOO_WEAK,
     FINAL_CONFIDENCE_TOO_LOW,
@@ -282,6 +283,36 @@ def compute_composite_score(
     market_quality_score: float | None = None,
 ) -> CompositeScoreResult:
     thresholds = resolve_trade_quality_thresholds(config)
+
+    # Hard ATR floor: reject assets with insufficient price movement to
+    # trade profitably after fees/slippage (catches stablecoins, pegged
+    # tokens, and any ultra-low-volatility asset regardless of denylist).
+    _HARD_ATR_FLOOR_PCT = 0.10
+    atr_values = indicators.get("atr", [])
+    _latest_close = indicators.get("latest_close")
+    if atr_values and _latest_close and _latest_close > 0:
+        _latest_atr_pct = (atr_values[-1] / _latest_close) * 100
+        if _latest_atr_pct < _HARD_ATR_FLOOR_PCT:
+            return CompositeScoreResult(
+                votes={},
+                weights={},
+                composite_score=0.0,
+                confidence=0.0,
+                direction="HOLD",
+                signal="HOLD",
+                dampening_multiplier=1.0,
+                ai_vote_present=ai_vote_value is not None,
+                directional_score=0.0,
+                edge_strength=0.0,
+                base_edge_score=0.0,
+                signal_agreement=0.0,
+                market_quality=0.0,
+                regime_alignment=0.0,
+                edge_floor_passed=False,
+                quality_floor_passed=False,
+                reject_reason_codes=[ATR_BELOW_HARD_FLOOR],
+            )
+
     latest_rsi = indicators.get("rsi", [None])[-1] if indicators.get("rsi") else None
     macd_line, signal_line, histogram = indicators.get("macd", ([], [], []))
     latest_volume_ratio = indicators.get("volume_ratio", [None])[-1] if indicators.get("volume_ratio") else None

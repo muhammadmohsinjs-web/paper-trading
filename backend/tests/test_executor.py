@@ -181,3 +181,18 @@ async def test_buy_quantity_pct_partial(db_session: AsyncSession):
     spent = initial - wallet.available_usdt
     assert spent > Decimal("490")
     assert spent < Decimal("510")
+
+
+@pytest.mark.asyncio
+async def test_buy_rejects_stablecoin_like_symbol(db_session: AsyncSession):
+    wallet = await get_or_create_wallet(db_session, "test-strategy-1", Decimal("1000"))
+
+    result = await execute_buy(
+        db_session, "test-strategy-1", wallet, "USD1USDT",
+        Decimal("1.0"), Decimal("1.0"),
+    )
+
+    assert not result.success
+    assert "Stablecoin-like symbol blocked" in result.error
+    assert wallet.available_usdt == Decimal("1000")
+    assert await get_position(db_session, "test-strategy-1", "USD1USDT") is None

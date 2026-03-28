@@ -23,6 +23,7 @@ from app.market.indicators import compute_indicators
 from app.models.position import Position
 from app.models.strategy import Strategy
 from app.models.wallet import Wallet
+from app.engine.wallet_manager import get_wallet
 from app.strategies.manager import StrategyManager
 
 router = APIRouter(prefix="/engine", tags=["engine"])
@@ -110,10 +111,7 @@ async def ai_preview(
     indicators = compute_indicators(closes, config, highs=highs, lows=lows, volumes=volumes)
 
     # Get wallet & position
-    wallet_result = await session.execute(
-        select(Wallet).where(Wallet.strategy_id == strategy_id)
-    )
-    wallet = wallet_result.scalar_one_or_none()
+    wallet = await get_wallet(session, strategy_id)
     available_usdt = wallet.available_usdt if wallet else Decimal("1000")
 
     position_result = await session.execute(

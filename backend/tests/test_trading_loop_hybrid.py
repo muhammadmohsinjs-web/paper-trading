@@ -3,7 +3,9 @@
 from decimal import Decimal
 from types import SimpleNamespace
 
+from app.config import Settings
 from app.engine.post_trade import update_strategy_streak as _update_strategy_streak
+from app.engine import trading_loop as trading_loop_module
 from app.engine.trading_loop import (
     _confidence_bucket,
     _hybrid_calibration_multiplier,
@@ -61,7 +63,13 @@ def test_update_strategy_streak_increments_on_losses_and_resets_on_profit():
     assert strategy.streak_size_multiplier == Decimal("1.0")
 
 
-def test_normalize_ai_counters_prefers_strategy_provider_and_model():
+def test_normalize_ai_counters_prefers_strategy_provider_and_env_model(monkeypatch):
+    monkeypatch.setattr(
+        trading_loop_module,
+        "settings",
+        Settings(ai_provider="openai", ai_model="gpt-4.1-mini", openai_model="gpt-5.4-mini"),
+    )
+
     strategy = SimpleNamespace(
         config_json={"strategy_type": "hybrid_composite", "ai_enabled": True},
         ai_enabled=True,
@@ -76,5 +84,5 @@ def test_normalize_ai_counters_prefers_strategy_provider_and_model():
     result = _normalize_ai_counters(strategy)
 
     assert result["ai_provider"] == "openai"
-    assert result["ai_model"] == "gpt-5-mini"
+    assert result["ai_model"] == "gpt-4.1-mini"
     assert result["ai_strategy_key"] == "hybrid_composite"

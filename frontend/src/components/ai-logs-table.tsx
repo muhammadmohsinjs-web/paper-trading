@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import Link from "next/link";
 import { LocalDateTime } from "@/components/local-date-time";
 import type { AILogEntry } from "@/lib/types";
+import { badgeClassName, buttonClassName } from "@/components/ui";
 
 type Props = {
   logs: AILogEntry[];
@@ -25,32 +26,29 @@ function normalizeStatusLabel(status: string) {
   return normalized;
 }
 
+function statusTone(status: string): "neutral" | "accent" | "success" | "danger" | "warning" {
+  const normalized = normalizeStatusLabel(status);
+  if (normalized === "signal" || normalized === "validated") return "success";
+  if (normalized === "hold") return "accent";
+  if (normalized === "skipped" || normalized === "rejected") return "warning";
+  if (normalized === "error") return "danger";
+  return "neutral";
+}
+
 function StatusBadge({ status, skipReason }: { status: string; skipReason: string | null }) {
-  const colors: Record<string, string> = {
-    signal: "bg-green-400/15 text-green-400 border-green-400/30",
-    hold: "bg-blue-400/15 text-blue-400 border-blue-400/30",
-    skipped: "bg-amber-400/15 text-amber-400 border-amber-400/30",
-    error: "bg-red-400/15 text-red-400 border-red-400/30",
-    validated: "bg-emerald-400/15 text-emerald-400 border-emerald-400/30",
-    rejected: "bg-orange-400/15 text-orange-400 border-orange-400/30",
-  };
   const normalized = normalizeStatusLabel(status);
   const label = skipReason ? `${normalized} (${skipReason})` : normalized;
-  return (
-    <span className={`inline-block rounded-full border px-2 py-0.5 text-xs ${colors[normalized] ?? "bg-white/10 text-mist/60 border-white/10"}`}>
-      {label}
-    </span>
-  );
+  return <span className={badgeClassName(statusTone(normalized))}>{label}</span>;
 }
 
 function ActionBadge({ action }: { action: string | null }) {
-  if (!action) return <span className="text-mist/40">-</span>;
+  if (!action) return <span className="text-slate-400">-</span>;
   const colors: Record<string, string> = {
-    buy: "text-green-400",
-    sell: "text-red-400",
-    hold: "text-amber-400",
+    buy: "text-emerald-700",
+    sell: "text-red-700",
+    hold: "text-amber-700"
   };
-  return <span className={`font-medium uppercase ${colors[action] ?? "text-mist/60"}`}>{action}</span>;
+  return <span className={`font-medium uppercase ${colors[action] ?? "text-slate-600"}`}>{action}</span>;
 }
 
 function buildHref(params: Record<string, string | undefined>) {
@@ -71,67 +69,69 @@ export function AILogsTable({ logs, total, page, limit, currentStatus, currentSt
     { label: "Signal", value: "signal" },
     { label: "Hold", value: "hold" },
     { label: "Skipped", value: "skipped" },
-    { label: "Error", value: "error" },
+    { label: "Error", value: "error" }
   ];
 
   return (
-    <div className="panel overflow-hidden">
-      {/* Filters */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-white/10 px-4 py-3">
-        <span className="text-xs text-mist/50 mr-2">Filter:</span>
-        {statusFilters.map((f) => (
+    <section className="space-y-4">
+      <div>
+        <h2 className="text-lg font-semibold text-slate-900">AI call history</h2>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="mr-2 text-xs text-slate-500">Filter:</span>
+        {statusFilters.map((filter) => (
           <Link
-            key={f.label}
-            href={buildHref({ status: f.value, strategy_id: currentStrategyId })}
-            className={`rounded-full border px-3 py-1 text-xs transition ${
-              currentStatus === f.value || (!currentStatus && !f.value)
-                ? "border-gold/50 bg-gold/10 text-gold"
-                : "border-white/10 text-mist/60 hover:border-white/20 hover:text-mist/80"
-            }`}
+            key={filter.label}
+            href={buildHref({ status: filter.value, strategy_id: currentStrategyId })}
+            className={
+              currentStatus === filter.value || (!currentStatus && !filter.value)
+                ? badgeClassName("accent")
+                : badgeClassName("neutral", "hover:bg-slate-200")
+            }
           >
-            {f.label}
+            {filter.label}
           </Link>
         ))}
-        {currentStrategyId && (
+        {currentStrategyId ? (
           <Link
             href={buildHref({ status: currentStatus })}
-            className="ml-2 rounded-full border border-red-400/30 bg-red-400/10 px-3 py-1 text-xs text-red-400"
+            className={badgeClassName("danger")}
           >
             Clear strategy filter
           </Link>
-        )}
+        ) : null}
       </div>
 
-      {/* Table */}
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
+      <div className="table-shell overflow-x-auto">
+        <table className="data-table">
           <thead>
-            <tr className="border-b border-white/10 text-left text-xs uppercase tracking-wider text-mist/50">
-              <th className="px-4 py-3">Time</th>
-              <th className="px-4 py-3">Strategy</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Action</th>
-              <th className="px-4 py-3">Provider / Model</th>
-              <th className="px-4 py-3 text-right">Tokens</th>
-              <th className="px-4 py-3 text-right">Cost</th>
+            <tr>
+              <th>Time</th>
+              <th>Strategy</th>
+              <th>Status</th>
+              <th>Action</th>
+              <th>Provider / Model</th>
+              <th className="text-right">Tokens</th>
+              <th className="text-right">Cost</th>
             </tr>
           </thead>
           <tbody>
-            {logs.length === 0 && (
+            {logs.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-12 text-center text-mist/40">
+                <td colSpan={7} className="px-4 py-12 text-center text-slate-500">
                   No AI call logs yet. Logs will appear here once the trading engine makes AI decisions.
                 </td>
               </tr>
-            )}
+            ) : null}
+
             {logs.map((log) => (
-              <>
+              <Fragment key={log.id}>
                 <tr
-                  key={log.id}
                   onClick={() => setExpandedId(expandedId === log.id ? null : log.id)}
-                  className="cursor-pointer border-b border-white/5 transition hover:bg-white/[0.03]"
+                  className="cursor-pointer"
                 >
-                  <td className="whitespace-nowrap px-4 py-3 text-mist/70">
+                  <td className="whitespace-nowrap">
                     <LocalDateTime
                       value={log.created_at}
                       options={{
@@ -140,107 +140,112 @@ export function AILogsTable({ logs, total, page, limit, currentStatus, currentSt
                         hour: "2-digit",
                         minute: "2-digit",
                         second: "2-digit",
-                        hour12: false,
+                        hour12: false
                       }}
                     />
                   </td>
-                  <td className="px-4 py-3">
+                  <td>
                     <Link
                       href={buildHref({ strategy_id: log.strategy_id, status: currentStatus })}
-                      onClick={(e) => e.stopPropagation()}
-                      className="text-sand hover:text-gold transition"
+                      onClick={(event) => event.stopPropagation()}
+                      className="font-medium text-slate-900 transition hover:text-blue-700"
                     >
                       {log.strategy_name}
                     </Link>
                   </td>
-                  <td className="px-4 py-3">
+                  <td>
                     <StatusBadge status={log.status} skipReason={log.skip_reason} />
                   </td>
-                  <td className="px-4 py-3">
+                  <td>
                     <ActionBadge action={log.action} />
                   </td>
-                  <td className="px-4 py-3 text-mist/60">
+                  <td>
                     {log.provider ? (
                       <span>
-                        {log.provider} <span className="text-mist/40">/ {log.model}</span>
+                        {log.provider} <span className="text-slate-400">/ {log.model}</span>
                       </span>
                     ) : (
-                      <span className="text-mist/30">-</span>
+                      <span className="text-slate-400">-</span>
                     )}
                   </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-right tabular-nums text-mist/60">
+                  <td className="whitespace-nowrap text-right tabular-nums">
                     {log.total_tokens > 0 ? log.total_tokens.toLocaleString() : "-"}
                   </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-right tabular-nums text-gold">
+                  <td className="whitespace-nowrap text-right tabular-nums text-blue-700">
                     {log.cost_usdt > 0 ? `$${log.cost_usdt.toFixed(6)}` : "-"}
                   </td>
                 </tr>
-                {expandedId === log.id && (
-                  <tr key={`${log.id}-detail`} className="border-b border-white/5 bg-white/[0.02]">
+                {expandedId === log.id ? (
+                  <tr className="bg-slate-50">
                     <td colSpan={7} className="px-4 py-4">
                       <div className="grid gap-4 sm:grid-cols-2">
                         <div>
-                          <p className="mb-1 text-xs uppercase text-mist/40">Reasoning</p>
-                          <p className="text-sm text-mist/70 whitespace-pre-wrap">
+                          <p className="mb-1 text-xs uppercase text-slate-500">Reasoning</p>
+                          <p className="whitespace-pre-wrap text-sm text-slate-600">
                             {log.reasoning || log.error || "No details available"}
                           </p>
                         </div>
                         <div className="space-y-2">
-                          {log.confidence !== null && (
+                          {log.confidence !== null ? (
                             <div>
-                              <span className="text-xs text-mist/40">Confidence: </span>
-                              <span className="text-sm text-sand">{(log.confidence * 100).toFixed(1)}%</span>
+                              <span className="text-xs text-slate-500">Confidence: </span>
+                              <span className="text-sm text-slate-900">
+                                {(log.confidence * 100).toFixed(1)}%
+                              </span>
                             </div>
-                          )}
-                          {log.prompt_tokens > 0 && (
+                          ) : null}
+                          {log.prompt_tokens > 0 ? (
                             <div>
-                              <span className="text-xs text-mist/40">Prompt tokens: </span>
-                              <span className="text-sm text-mist/60">{log.prompt_tokens.toLocaleString()}</span>
-                              <span className="text-xs text-mist/40 ml-3">Completion: </span>
-                              <span className="text-sm text-mist/60">{log.completion_tokens.toLocaleString()}</span>
+                              <span className="text-xs text-slate-500">Prompt tokens: </span>
+                              <span className="text-sm text-slate-600">
+                                {log.prompt_tokens.toLocaleString()}
+                              </span>
+                              <span className="ml-3 text-xs text-slate-500">Completion: </span>
+                              <span className="text-sm text-slate-600">
+                                {log.completion_tokens.toLocaleString()}
+                              </span>
                             </div>
-                          )}
+                          ) : null}
                           <div>
-                            <span className="text-xs text-mist/40">Symbol: </span>
-                            <span className="text-sm text-mist/60">{log.symbol}</span>
+                            <span className="text-xs text-slate-500">Symbol: </span>
+                            <span className="text-sm text-slate-600">{log.symbol}</span>
                           </div>
                         </div>
                       </div>
                     </td>
                   </tr>
-                )}
-              </>
+                ) : null}
+              </Fragment>
             ))}
           </tbody>
         </table>
       </div>
 
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between border-t border-white/10 px-4 py-3">
-          <p className="text-xs text-mist/50">
+      {totalPages > 1 ? (
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-slate-500">
             Showing {(page - 1) * limit + 1}–{Math.min(page * limit, total)} of {total}
           </p>
           <div className="flex gap-2">
-            {page > 1 && (
+            {page > 1 ? (
               <Link
                 href={buildHref({ status: currentStatus, strategy_id: currentStrategyId, page: String(page - 1) })}
-                className="rounded border border-white/10 px-3 py-1 text-xs text-mist/60 hover:border-white/20"
+                className={buttonClassName("secondary", "sm")}
               >
                 Prev
               </Link>
-            )}
-            {page < totalPages && (
+            ) : null}
+            {page < totalPages ? (
               <Link
                 href={buildHref({ status: currentStatus, strategy_id: currentStrategyId, page: String(page + 1) })}
-                className="rounded border border-white/10 px-3 py-1 text-xs text-mist/60 hover:border-white/20"
+                className={buttonClassName("secondary", "sm")}
               >
                 Next
               </Link>
-            )}
+            ) : null}
           </div>
         </div>
-      )}
-    </div>
+      ) : null}
+    </section>
   );
 }

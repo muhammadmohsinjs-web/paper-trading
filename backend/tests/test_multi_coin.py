@@ -7,8 +7,15 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
-from app.engine.multi_coin import compute_total_equity, compute_unrealized_pnl, ensure_daily_picks
+from app.engine.multi_coin import (
+    compute_total_equity,
+    compute_unrealized_pnl,
+    ensure_daily_picks,
+    get_daily_picks,
+)
+from app.engine.wallet_manager import open_position
 from app.market.data_store import Candle, DataStore
+from app.models.daily_pick import DailyPick
 from app.models.symbol_evaluation_log import SymbolEvaluationLog
 from app.models.strategy import Strategy
 from app.regime.types import MarketRegime
@@ -189,3 +196,105 @@ async def test_explicit_universe_logs_real_tradability(db_session):
     assert logs
     assert logs[0].status == "rejected"
     assert logs[0].reason_code in {"DENYLIST_STABLE_BASE", "NEAR_PEG_PROFILE"}
+
+
+@pytest.mark.asyncio
+async def test_get_daily_picks_filters_stablecoin_symbols(db_session):
+    strategy = Strategy(
+        id="multi-stable-filter",
+        name="Stable Filter",
+        execution_mode="multi_coin_shared_wallet",
+        primary_symbol="BTCUSDT",
+        config_json={"strategy_type": "hybrid_composite"},
+    )
+    db_session.add(strategy)
+    await db_session.flush()
+
+    chosen_date = datetime.now(timezone.utc).date()
+    db_session.add_all([
+        DailyPick(
+            strategy_id=strategy.id,
+            selection_date=chosen_date,
+            rank=1,
+            symbol="USD1USDT",
+            score=1.0,
+        ),
+        DailyPick(
+            strategy_id=strategy.id,
+            selection_date=chosen_date,
+            rank=2,
+            symbol="BTCUSDT",
+            score=0.9,
+        ),
+    ])
+    await db_session.commit()
+
+    picks = await get_daily_picks(db_session, strategy, selection_date=chosen_date)
+
+    assert [pick.symbol for pick in picks] == ["BTCUSDT"]
+
+
+@pytest.mark.asyncio
+async def test_ensure_daily_picks_does_not_re_pin_stablecoin_open_positions(db_session, monkeypatch):
+    strategy = Strategy(
+        id="multi-no-stable-pin",
+        name="No Stable Pin",
+        execution_mode="multi_coin_shared_wallet",
+        primary_symbol="BTCUSDT",
+        top_pick_count=3,
+        config_json={"strategy_type": "hybrid_composite"},
+    )
+    db_session.add(strategy)
+    await db_session.flush()
+    await open_position(
+        db_session,
+        strategy.id,
+        "USD1USDT",
+        Decimal("100"),
+        Decimal("1"),
+        Decimal("0.1"),
+    )
+    await db_session.commit()
+
+    async def fake_resolve_symbols(self, *, retained_symbols=None):
+        self.symbols = ["BTCUSDT"]
+        return self.symbols
+
+    def fake_scan_all_setups(self, interval="1h"):
+        self._last_rank_audit = [
+            {
+                "symbol": "BTCUSDT",
+                "status": "qualified",
+                "reason_code": "QUALIFIED_SETUP",
+                "reason_text": "btc",
+                "setup_type": "ema_trend_bullish",
+                "movement_quality": {},
+                "score": 0.92,
+            }
+        ]
+        self._last_regime_cache = {"BTCUSDT": MarketRegime.TRENDING_UP}
+        return {
+            "BTCUSDT": [
+                RankedSetup(
+                    "BTCUSDT",
+                    0.92,
+                    "ema_trend_bullish",
+                    "BUY",
+                    "trending_up",
+                    "hybrid_composite",
+                    "btc",
+                    liquidity_usdt=2_000_000.0,
+                    market_quality_score=0.9,
+                    reward_to_cost_ratio=2.0,
+                    volatility_quality_score=0.8,
+                )
+            ]
+        }
+
+    monkeypatch.setattr("app.engine.multi_coin.OpportunityScanner.resolve_symbols", fake_resolve_symbols)
+    monkeypatch.setattr("app.engine.multi_coin.OpportunityScanner.scan_all_setups_for_universe", fake_scan_all_setups)
+    monkeypatch.setattr("app.engine.multi_coin.OpportunityScanner.get_last_regime_cache", lambda self: self._last_regime_cache)
+
+    picks = await ensure_daily_picks(db_session, strategy, interval="1h", force_refresh=True)
+
+    assert [pick.symbol for pick in picks] == ["BTCUSDT"]

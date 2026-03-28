@@ -79,6 +79,7 @@ class Settings:
     binance_rest_url: str = "https://api.binance.com"
 
     # Trading
+    shared_wallet_enabled: bool = True
     default_balance_usdt: float = 1000.0
     trading_interval_seconds: int = 3600
     default_candle_interval: str = "1h"
@@ -205,6 +206,7 @@ class Settings:
             allowed_origins=allowed_origins,
             binance_ws_url=_get_value("BINANCE_WS_URL", default=cls.binance_ws_url),
             binance_rest_url=_get_value("BINANCE_REST_URL", default=cls.binance_rest_url),
+            shared_wallet_enabled=_get_value("SHARED_WALLET_ENABLED", default="true").lower() in ("true", "1", "yes"),
             default_balance_usdt=float(_get_value("DEFAULT_BALANCE_USDT", default=str(cls.default_balance_usdt))),
             trading_interval_seconds=int(_get_value("TRADING_INTERVAL_SECONDS", default=str(cls.trading_interval_seconds))),
             default_candle_interval=_get_value("DEFAULT_CANDLE_INTERVAL", default=cls.default_candle_interval),

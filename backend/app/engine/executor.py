@@ -13,9 +13,11 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import execute_with_write_lock, flush_with_write_lock
 from app.config import get_settings
 from app.engine.fee_model import SPOT_FEE_RATE, calculate_fee
 from app.engine.slippage import apply_slippage
+from app.engine.tradability import is_stablecoin_symbol
 from app.engine.wallet_manager import (
     close_position,
     credit_wallet,
@@ -67,6 +69,13 @@ async def execute_buy(
     entry_confidence_bucket: str | None = None,
 ) -> ExecutionResult:
     """Execute a BUY order: calculate cost, apply slippage/fees, debit wallet, open position."""
+    if is_stablecoin_symbol(symbol, quote_asset=settings.default_quote_asset):
+        return ExecutionResult(
+            trade=None,  # type: ignore[arg-type]
+            success=False,
+            error=f"Stablecoin-like symbol blocked by execution guard: {symbol}",
+        )
+
     wallet_balance_before = wallet.available_usdt
 
     # Determine how much USDT to spend
@@ -104,7 +113,7 @@ async def execute_buy(
             existing.entry_confidence_final = entry_confidence_final
         if entry_confidence_bucket is not None:
             existing.entry_confidence_bucket = entry_confidence_bucket
-        await session.flush()
+        await flush_with_write_lock(session)
     else:
         await open_position(
             session,
@@ -148,7 +157,7 @@ async def execute_buy(
         wallet_balance_after=wallet_balance_after,
     )
     session.add(trade)
-    await session.flush()
+    await flush_with_write_lock(session)
 
     return ExecutionResult(trade=trade)
 
@@ -207,7 +216,8 @@ async def execute_sell(
     if remaining <= Decimal("0.00000001"):
         await close_position(session, position)
         ownership = (
-            await session.execute(
+            await execute_with_write_lock(
+                session,
                 select(SymbolOwnership).where(
                     SymbolOwnership.strategy_id == strategy_id,
                     SymbolOwnership.symbol == symbol,
@@ -223,7 +233,7 @@ async def execute_sell(
     else:
         position.quantity = remaining
         position.entry_fee = position.entry_fee - entry_fee_portion
-        await session.flush()
+        await flush_with_write_lock(session)
 
     wallet_balance_after = wallet.available_usdt
 
@@ -252,6 +262,6 @@ async def execute_sell(
         wallet_balance_after=wallet_balance_after,
     )
     session.add(trade)
-    await session.flush()
+    await flush_with_write_lock(session)
 
     return ExecutionResult(trade=trade)

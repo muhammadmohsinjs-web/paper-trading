@@ -8,6 +8,8 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
+from app.database import flush_with_write_lock
 from app.models.enums import PositionSide
 from app.models.position import Position
 from app.models.wallet import Wallet
@@ -18,6 +20,29 @@ async def get_or_create_wallet(
     strategy_id: str,
     initial_balance: Decimal = Decimal("1000"),
 ) -> Wallet:
+    settings = get_settings()
+
+    # Shared wallet mode: all strategies use a single wallet
+    if settings.shared_wallet_enabled:
+        result = await session.execute(
+            select(Wallet).order_by(Wallet.initial_balance_usdt.desc()).limit(1)
+        )
+        wallet = result.scalar_one_or_none()
+        if wallet is not None:
+            return wallet
+        # First call — create the shared wallet (linked to this strategy for FK)
+        wallet = Wallet(
+            id=str(uuid4()),
+            strategy_id=strategy_id,
+            initial_balance_usdt=initial_balance,
+            available_usdt=initial_balance,
+            peak_equity_usdt=initial_balance,
+        )
+        session.add(wallet)
+        await flush_with_write_lock(session)
+        return wallet
+
+    # Per-strategy wallet mode (legacy)
     result = await session.execute(
         select(Wallet).where(Wallet.strategy_id == strategy_id)
     )
@@ -31,8 +56,25 @@ async def get_or_create_wallet(
             peak_equity_usdt=initial_balance,
         )
         session.add(wallet)
-        await session.flush()
+        await flush_with_write_lock(session)
     return wallet
+
+
+async def get_wallet(
+    session: AsyncSession,
+    strategy_id: str,
+) -> Wallet | None:
+    """Fetch the wallet for a strategy, respecting shared wallet mode."""
+    settings = get_settings()
+    if settings.shared_wallet_enabled:
+        result = await session.execute(
+            select(Wallet).order_by(Wallet.initial_balance_usdt.desc()).limit(1)
+        )
+        return result.scalar_one_or_none()
+    result = await session.execute(
+        select(Wallet).where(Wallet.strategy_id == strategy_id)
+    )
+    return result.scalar_one_or_none()
 
 
 async def debit_wallet(
@@ -46,7 +88,7 @@ async def debit_wallet(
             f"Insufficient balance: have {wallet.available_usdt}, need {amount}"
         )
     wallet.available_usdt = wallet.available_usdt - amount
-    await session.flush()
+    await flush_with_write_lock(session)
 
 
 async def credit_wallet(
@@ -56,7 +98,7 @@ async def credit_wallet(
 ) -> None:
     """Add amount to available USDT."""
     wallet.available_usdt = wallet.available_usdt + amount
-    await session.flush()
+    await flush_with_write_lock(session)
 
 
 async def open_position(
@@ -85,7 +127,7 @@ async def open_position(
         entry_confidence_bucket=entry_confidence_bucket,
     )
     session.add(position)
-    await session.flush()
+    await flush_with_write_lock(session)
     return position
 
 
@@ -119,4 +161,4 @@ async def close_position(
 ) -> None:
     """Remove a position (fully closed)."""
     await session.delete(position)
-    await session.flush()
+    await flush_with_write_lock(session)

@@ -14,31 +14,31 @@ export const STRATEGY_TYPE_META: Record<
   sma_crossover: {
     label: "SMA Crossover",
     short: "SMA",
-    color: "text-blue-400 bg-blue-400/10 border-blue-400/30",
+    color: "text-blue-700 bg-blue-50 border-blue-200",
     description: "Buy/sell on short-vs-long SMA crossover",
   },
   rsi_mean_reversion: {
     label: "RSI Mean Reversion",
     short: "RSI",
-    color: "text-purple-400 bg-purple-400/10 border-purple-400/30",
+    color: "text-violet-700 bg-violet-50 border-violet-200",
     description: "Buy oversold (RSI<30), sell overbought (RSI>70)",
   },
   macd_momentum: {
     label: "MACD Momentum",
     short: "MACD",
-    color: "text-amber-400 bg-amber-400/10 border-amber-400/30",
+    color: "text-amber-700 bg-amber-50 border-amber-200",
     description: "Buy/sell on MACD/signal line crossovers",
   },
   bollinger_bounce: {
     label: "Bollinger Bounce",
     short: "BB",
-    color: "text-teal-400 bg-teal-400/10 border-teal-400/30",
+    color: "text-teal-700 bg-teal-50 border-teal-200",
     description: "Buy at lower band, sell at upper band",
   },
   hybrid_composite: {
     label: "Hybrid AI Composite",
     short: "AI",
-    color: "text-gold bg-gold/10 border-gold/30",
+    color: "text-blue-700 bg-blue-50 border-blue-200",
     description: "Weighted composite of all indicators + AI advisor",
   },
 };
@@ -62,6 +62,7 @@ export type StrategyWithStats = {
   ai_cooldown_seconds: number;
   ai_max_tokens: number;
   ai_temperature: number;
+  candle_interval: string;
   ai_last_decision_at: string | null;
   ai_last_decision_status: string | null;
   ai_last_reasoning: string | null;
@@ -144,6 +145,51 @@ export type CandleResponse = {
   interval: string;
   count: number;
   candles: Candle[];
+};
+
+export type IndicatorSeriesPoint = {
+  open_time: number;
+  value: number;
+};
+
+export type MarketIndicatorSeries = {
+  sma_short: IndicatorSeriesPoint[];
+  sma_long: IndicatorSeriesPoint[];
+  ema_12: IndicatorSeriesPoint[];
+  ema_26: IndicatorSeriesPoint[];
+  bollinger_upper: IndicatorSeriesPoint[];
+  bollinger_middle: IndicatorSeriesPoint[];
+  bollinger_lower: IndicatorSeriesPoint[];
+  rsi: IndicatorSeriesPoint[];
+  macd_line: IndicatorSeriesPoint[];
+  macd_signal: IndicatorSeriesPoint[];
+  macd_histogram: IndicatorSeriesPoint[];
+  atr: IndicatorSeriesPoint[];
+  adx: IndicatorSeriesPoint[];
+  volume_ratio: IndicatorSeriesPoint[];
+};
+
+export type MarketIndicatorsResponse = {
+  symbol: string;
+  interval: string;
+  candles_used: number;
+  config: {
+    sma_short: number;
+    sma_long: number;
+    rsi_period: number;
+    volume_ma_period: number;
+  };
+  latest: {
+    price: number | null;
+    rsi: number | null;
+    atr: number | null;
+    adx: number | null;
+    volume_ratio: number | null;
+    macd_line: number | null;
+    macd_signal: number | null;
+    macd_histogram: number | null;
+  };
+  series: MarketIndicatorSeries;
 };
 
 export type Trade = {

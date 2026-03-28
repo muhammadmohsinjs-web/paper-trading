@@ -4,28 +4,28 @@ import { Fragment, useState } from "react";
 import { LocalDateTime } from "@/components/local-date-time";
 import { formatCurrency, formatNumber } from "@/lib/format";
 import type { Trade } from "@/lib/types";
+import { badgeClassName } from "@/components/ui";
 
 const SOURCE_LABELS: Record<string, string> = {
   rule: "Rule",
   ai: "AI",
   hybrid_entry: "Hybrid Entry",
   hybrid_exit: "Hybrid Exit",
-  risk: "Risk",
+  risk: "Risk"
 };
 
-const SOURCE_COLORS: Record<string, string> = {
-  rule: "bg-blue-400/15 text-blue-400",
-  ai: "bg-purple-400/15 text-purple-400",
-  hybrid_entry: "bg-gold/15 text-gold",
-  hybrid_exit: "bg-amber-400/15 text-amber-400",
-  risk: "bg-red-400/15 text-red-400",
-};
+function sourceTone(source: string | null): "neutral" | "accent" | "warning" | "danger" {
+  if (source === "ai") return "accent";
+  if (source === "risk") return "danger";
+  if (source === "hybrid_exit") return "warning";
+  return "neutral";
+}
 
 function IndicatorBadge({ label, value }: { label: string; value: number | undefined }) {
   if (value === undefined || value === null) return null;
   return (
-    <span className="inline-flex items-center gap-1 rounded bg-white/5 px-2 py-0.5 text-xs text-mist/70">
-      <span className="text-mist/40">{label}</span>
+    <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
+      <span className="text-slate-500">{label}</span>
       <span className="font-mono">{formatNumber(value, 4)}</span>
     </span>
   );
@@ -35,21 +35,19 @@ function TradeDetail({ trade }: { trade: Trade }) {
   const snap = trade.indicator_snapshot;
 
   return (
-    <tr className="border-t border-white/5 bg-white/[0.02]">
+    <tr className="border-t border-slate-200 bg-slate-50">
       <td colSpan={10} className="px-5 py-4">
         <div className="grid gap-4 md:grid-cols-3">
-          {/* Reason / AI Reasoning */}
-          {trade.ai_reasoning && (
+          {trade.ai_reasoning ? (
             <div className="md:col-span-3">
-              <span className="text-xs text-mist/40">Reason</span>
-              <p className="mt-1 text-sm text-mist/80">{trade.ai_reasoning}</p>
+              <span className="text-xs text-slate-500">Reason</span>
+              <p className="mt-1 text-sm text-slate-700">{trade.ai_reasoning}</p>
             </div>
-          )}
+          ) : null}
 
-          {/* Indicators */}
-          {snap && Object.keys(snap).length > 0 && (
+          {snap && Object.keys(snap).length > 0 ? (
             <div>
-              <span className="text-xs text-mist/40">Indicators at Trade</span>
+              <span className="text-xs text-slate-500">Indicators at trade</span>
               <div className="mt-1.5 flex flex-wrap gap-1.5">
                 <IndicatorBadge label="RSI" value={snap.rsi} />
                 <IndicatorBadge label="ATR" value={snap.atr} />
@@ -64,45 +62,46 @@ function TradeDetail({ trade }: { trade: Trade }) {
                 <IndicatorBadge label="BB-L" value={snap.bb_lower} />
               </div>
             </div>
-          )}
+          ) : null}
 
-          {/* Composite Score */}
-          {(trade.composite_score !== null || trade.composite_confidence !== null) && (
+          {trade.composite_score !== null || trade.composite_confidence !== null ? (
             <div>
-              <span className="text-xs text-mist/40">Composite</span>
+              <span className="text-xs text-slate-500">Composite</span>
               <div className="mt-1.5 flex gap-3 text-sm">
-                {trade.composite_score !== null && (
-                  <span className="text-mist/70">
-                    Score: <span className="font-mono text-sand">{formatNumber(trade.composite_score, 4)}</span>
+                {trade.composite_score !== null ? (
+                  <span className="text-slate-600">
+                    Score: <span className="font-mono text-slate-900">{formatNumber(trade.composite_score, 4)}</span>
                   </span>
-                )}
-                {trade.composite_confidence !== null && (
-                  <span className="text-mist/70">
-                    Confidence: <span className="font-mono text-sand">{formatNumber(trade.composite_confidence, 4)}</span>
+                ) : null}
+                {trade.composite_confidence !== null ? (
+                  <span className="text-slate-600">
+                    Confidence:{" "}
+                    <span className="font-mono text-slate-900">
+                      {formatNumber(trade.composite_confidence, 4)}
+                    </span>
                   </span>
-                )}
+                ) : null}
               </div>
             </div>
-          )}
+          ) : null}
 
-          {/* Wallet Balance */}
-          {(trade.wallet_balance_before !== null || trade.wallet_balance_after !== null) && (
+          {trade.wallet_balance_before !== null || trade.wallet_balance_after !== null ? (
             <div>
-              <span className="text-xs text-mist/40">Wallet</span>
+              <span className="text-xs text-slate-500">Wallet</span>
               <div className="mt-1.5 flex gap-3 text-sm">
-                {trade.wallet_balance_before !== null && (
-                  <span className="text-mist/70">
+                {trade.wallet_balance_before !== null ? (
+                  <span className="text-slate-600">
                     Before: <span className="font-mono">{formatCurrency(trade.wallet_balance_before)}</span>
                   </span>
-                )}
-                {trade.wallet_balance_after !== null && (
-                  <span className="text-mist/70">
+                ) : null}
+                {trade.wallet_balance_after !== null ? (
+                  <span className="text-slate-600">
                     After: <span className="font-mono">{formatCurrency(trade.wallet_balance_after)}</span>
                   </span>
-                )}
+                ) : null}
               </div>
             </div>
-          )}
+          ) : null}
         </div>
       </td>
     </tr>
@@ -113,29 +112,29 @@ export function TradeLog({ trades }: { trades: Trade[] }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   return (
-    <div className="panel overflow-hidden">
-      <div className="border-b border-white/6 px-5 py-4">
-        <p className="text-xs uppercase tracking-[0.22em] text-mist/45">Execution History</p>
-        <h3 className="mt-2 text-xl font-semibold text-sand">Trade Log</h3>
+    <section className="space-y-3">
+      <div>
+        <h3 className="text-lg font-semibold text-slate-900">Trade Log</h3>
+        <p className="text-sm text-slate-600">Executed orders, sources, and detail snapshots.</p>
       </div>
 
       {trades.length === 0 ? (
-        <div className="px-5 py-8 text-sm text-mist/60">No trades executed yet.</div>
+        <div className="border-t border-slate-200 py-6 text-sm text-slate-500">No trades executed yet.</div>
       ) : (
-        <div className="max-h-[520px] overflow-auto">
-          <table className="min-w-full text-left text-sm">
-            <thead className="sticky top-0 bg-[#0f1722] text-mist/55">
+        <div className="table-shell max-h-[520px] overflow-auto">
+          <table className="data-table">
+            <thead className="sticky top-0">
               <tr>
-                <th className="px-5 py-3 font-medium">Time</th>
-                <th className="px-5 py-3 font-medium">Side</th>
-                <th className="px-5 py-3 font-medium">Symbol</th>
-                <th className="px-5 py-3 font-medium">Source</th>
-                <th className="px-5 py-3 font-medium">Strategy</th>
-                <th className="px-5 py-3 font-medium">Price</th>
-                <th className="px-5 py-3 font-medium">Qty</th>
-                <th className="px-5 py-3 font-medium">Cost</th>
-                <th className="px-5 py-3 font-medium">Fee</th>
-                <th className="px-5 py-3 font-medium">P&L</th>
+                <th>Time</th>
+                <th>Side</th>
+                <th>Symbol</th>
+                <th>Source</th>
+                <th>Strategy</th>
+                <th>Price</th>
+                <th>Qty</th>
+                <th>Cost</th>
+                <th>Fee</th>
+                <th>P&amp;L</th>
               </tr>
             </thead>
             <tbody>
@@ -150,37 +149,35 @@ export function TradeLog({ trades }: { trades: Trade[] }) {
                 return (
                   <Fragment key={trade.id}>
                     <tr
-                      className={`border-t border-white/6 ${hasDetails ? "cursor-pointer hover:bg-white/[0.03]" : ""}`}
+                      className={hasDetails ? "cursor-pointer" : ""}
                       onClick={() => hasDetails && setExpandedId(isExpanded ? null : trade.id)}
                     >
-                      <td className="px-5 py-4 text-mist/60">
+                      <td>
                         <LocalDateTime value={trade.executed_at} />
                       </td>
-                      <td className={`px-5 py-4 font-medium ${trade.side === "BUY" ? "text-rise" : "text-fall"}`}>
+                      <td className={`font-medium ${trade.side === "BUY" ? "text-emerald-700" : "text-red-700"}`}>
                         {trade.side}
                       </td>
-                      <td className="px-5 py-4 font-medium text-sand">{trade.symbol}</td>
-                      <td className="px-5 py-4">
+                      <td className="font-medium text-slate-900">{trade.symbol}</td>
+                      <td>
                         {trade.decision_source ? (
-                          <span className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${SOURCE_COLORS[trade.decision_source] ?? "bg-white/10 text-mist/60"}`}>
+                          <span className={badgeClassName(sourceTone(trade.decision_source))}>
                             {SOURCE_LABELS[trade.decision_source] ?? trade.decision_source}
                           </span>
                         ) : (
-                          <span className="text-mist/30">--</span>
+                          <span className="text-slate-400">--</span>
                         )}
                       </td>
-                      <td className="px-5 py-4 text-mist/70">
-                        {trade.strategy_name ?? trade.strategy_type ?? "--"}
-                      </td>
-                      <td className="px-5 py-4">{formatCurrency(trade.price)}</td>
-                      <td className="px-5 py-4">{formatNumber(trade.quantity, 6)}</td>
-                      <td className="px-5 py-4 font-mono">{formatCurrency(trade.cost_usdt)}</td>
-                      <td className="px-5 py-4">{formatCurrency(trade.fee)}</td>
-                      <td className={`px-5 py-4 ${(trade.pnl ?? 0) >= 0 ? "text-rise" : "text-fall"}`}>
+                      <td>{trade.strategy_name ?? trade.strategy_type ?? "--"}</td>
+                      <td>{formatCurrency(trade.price)}</td>
+                      <td>{formatNumber(trade.quantity, 6)}</td>
+                      <td className="font-mono">{formatCurrency(trade.cost_usdt)}</td>
+                      <td>{formatCurrency(trade.fee)}</td>
+                      <td className={(trade.pnl ?? 0) >= 0 ? "text-emerald-700" : "text-red-700"}>
                         {formatCurrency(trade.pnl)}
                       </td>
                     </tr>
-                    {isExpanded && <TradeDetail trade={trade} />}
+                    {isExpanded ? <TradeDetail trade={trade} /> : null}
                   </Fragment>
                 );
               })}
@@ -188,6 +185,6 @@ export function TradeLog({ trades }: { trades: Trade[] }) {
           </table>
         </div>
       )}
-    </div>
+    </section>
   );
 }

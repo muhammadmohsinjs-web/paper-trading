@@ -1,5 +1,5 @@
 import { DashboardClient } from "@/components/dashboard-client";
-import { getDashboard, getEngineStatus, getMarketPrice, getSignal } from "@/lib/api";
+import { getDashboard, getEngineStatus, getMarketPrice } from "@/lib/api";
 import type { DashboardResponse } from "@/lib/types";
 
 const EMPTY_DASHBOARD: DashboardResponse = {
@@ -12,7 +12,7 @@ const EMPTY_DASHBOARD: DashboardResponse = {
 };
 
 export default async function HomePage() {
-  const [dashboardResult, marketPrice, engineStatus, signal] = await Promise.all([
+  const [dashboardResult, marketPrice, engineStatus] = await Promise.all([
     getDashboard()
       .then((dashboard) => ({ dashboard, error: null as string | null }))
       .catch((error) => ({
@@ -20,8 +20,7 @@ export default async function HomePage() {
         error: error instanceof Error ? error.message : "Backend unavailable",
       })),
     getMarketPrice().catch(() => null),
-    getEngineStatus().catch(() => null),
-    getSignal().catch(() => null)
+    getEngineStatus().catch(() => null)
   ]);
 
   return (
@@ -29,7 +28,6 @@ export default async function HomePage() {
       dashboard={dashboardResult.dashboard}
       marketPrice={marketPrice}
       engineStatus={engineStatus}
-      initialSignal={signal}
       backendError={dashboardResult.error}
     />
   );

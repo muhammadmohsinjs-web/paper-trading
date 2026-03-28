@@ -1,57 +1,68 @@
 import Link from "next/link";
 import { formatCurrency, formatPercent } from "@/lib/format";
 import type { LeaderboardEntry } from "@/lib/types";
+import { buttonClassName } from "@/components/ui";
 
 export function LeaderboardTable({ entries }: { entries: LeaderboardEntry[] }) {
   return (
-    <div className="panel overflow-hidden">
-      <div className="border-b border-white/10 px-5 py-4">
-        <h2 className="text-xl font-semibold text-sand">Leaderboard</h2>
+    <section className="space-y-4">
+      <div>
+        <h2 className="text-lg font-semibold text-slate-900">Leaderboard</h2>
       </div>
-      <div className="overflow-x-auto">
-        <table className="min-w-full text-left text-sm">
-          <thead className="bg-white/5 text-mist/55">
+
+      <div className="table-shell overflow-x-auto">
+        <table className="data-table">
+          <thead>
             <tr>
-              <th className="px-5 py-3 font-medium">Rank</th>
-              <th className="px-5 py-3 font-medium">Strategy</th>
-              <th className="px-5 py-3 font-medium">Realized P&L</th>
-              <th className="px-5 py-3 font-medium">Unrealized P&L</th>
-              <th className="px-5 py-3 font-medium">Win Rate</th>
-              <th className="px-5 py-3 font-medium">Trades</th>
-              <th className="px-5 py-3 font-medium">Equity</th>
-              <th className="px-5 py-3 font-medium">AI Cost</th>
+              <th>Rank</th>
+              <th>Strategy</th>
+              <th>Realized P&amp;L</th>
+              <th>Unrealized P&amp;L</th>
+              <th>Win Rate</th>
+              <th>Trades</th>
+              <th>Equity</th>
+              <th>AI Cost</th>
             </tr>
           </thead>
           <tbody>
             {entries.map((entry) => (
-              <tr key={entry.strategy_id} className="border-t border-white/8">
-                <td className="px-5 py-4 text-gold">#{entry.rank}</td>
-                <td className="px-5 py-4">
-                  <Link href={`/strategies/${entry.strategy_id}`} className="font-medium text-sand hover:text-gold">
+              <tr key={entry.strategy_id}>
+                <td className="font-medium text-slate-500">#{entry.rank}</td>
+                <td>
+                  <Link
+                    href={`/strategies/${entry.strategy_id}`}
+                    className="font-medium text-slate-900 hover:text-blue-700"
+                  >
                     {entry.strategy_name}
                   </Link>
                 </td>
-                <td className={`px-5 py-4 ${entry.total_pnl >= 0 ? "text-rise" : "text-fall"}`}>
+                <td className={entry.total_pnl >= 0 ? "text-emerald-700" : "text-red-700"}>
                   {formatCurrency(entry.total_pnl)}
                 </td>
-                <td className="px-5 py-4">
+                <td>
                   {entry.has_open_position ? (
-                    <span className={entry.unrealized_pnl >= 0 ? "text-rise" : "text-fall"}>
+                    <span className={entry.unrealized_pnl >= 0 ? "text-emerald-700" : "text-red-700"}>
                       {formatCurrency(entry.unrealized_pnl)}
                     </span>
                   ) : (
-                    <span className="text-mist/40">&mdash;</span>
+                    <span className="text-slate-400">&mdash;</span>
                   )}
                 </td>
-                <td className="px-5 py-4">{formatPercent(entry.win_rate)}</td>
-                <td className="px-5 py-4">{entry.total_trades}</td>
-                <td className="px-5 py-4">{formatCurrency(entry.total_equity)}</td>
-                <td className="px-5 py-4">{formatCurrency(entry.ai_total_cost_usdt)}</td>
+                <td>{formatPercent(entry.win_rate)}</td>
+                <td>{entry.total_trades}</td>
+                <td className="font-medium text-slate-900">{formatCurrency(entry.total_equity)}</td>
+                <td>{formatCurrency(entry.ai_total_cost_usdt)}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-    </div>
+
+      <div>
+        <Link href="/" className={buttonClassName("secondary", "sm")}>
+          Back to overview
+        </Link>
+      </div>
+    </section>
   );
 }

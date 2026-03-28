@@ -12,6 +12,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.database import execute_with_write_lock, flush_with_write_lock
 from app.engine.conflict_resolver import PinnedSymbol, resolve_conflicts
 from app.engine.evaluation_logging import build_symbol_evaluation_log
 from app.engine.strategy_scorer import (
@@ -20,7 +21,7 @@ from app.engine.strategy_scorer import (
     get_strategy_profile,
     resolve_strategy_type,
 )
-from app.engine.tradability import evaluate_symbol_tradability
+from app.engine.tradability import evaluate_symbol_tradability, is_stablecoin_symbol
 from app.market.data_store import DataStore
 from app.models.daily_pick import DailyPick
 from app.models.position import Position
@@ -59,13 +60,24 @@ def resolve_primary_symbol(strategy: Strategy) -> str:
 def resolve_scan_universe(strategy: Strategy) -> list[str]:
     config = strategy.config_json or {}
     raw_universe = strategy.scan_universe_json or config.get("scan_universe") or settings.default_scan_universe
-    normalized = [str(symbol).upper() for symbol in raw_universe if str(symbol).strip()]
+    normalized = [
+        candidate
+        for symbol in raw_universe
+        if (candidate := str(symbol).upper().strip())
+        and not is_stablecoin_symbol(candidate, quote_asset=settings.default_quote_asset)
+    ]
     return normalized or settings.default_scan_universe
 
 
 def has_explicit_scan_universe(strategy: Strategy) -> bool:
     config = strategy.config_json or {}
-    return bool(strategy.scan_universe_json or config.get("scan_universe"))
+    raw_universe = strategy.scan_universe_json or config.get("scan_universe") or []
+    return any(
+        candidate
+        for symbol in raw_universe
+        if (candidate := str(symbol).upper().strip())
+        and not is_stablecoin_symbol(candidate, quote_asset=settings.default_quote_asset)
+    )
 
 
 def resolve_top_pick_count(strategy: Strategy) -> int:
@@ -111,7 +123,11 @@ async def get_daily_picks(
         )
         .order_by(DailyPick.rank.asc())
     )
-    return list(result.scalars().all())
+    return [
+        pick
+        for pick in result.scalars().all()
+        if not is_stablecoin_symbol(pick.symbol, quote_asset=settings.default_quote_asset)
+    ]
 
 
 PICK_REFRESH_HOURS = settings.dynamic_universe_refresh_hours if settings.dynamic_universe_enabled else 4
@@ -269,7 +285,15 @@ async def ensure_coordinated_picks(
             select(Position).where(Position.strategy_id.in_(strategy_ids))
         )
     ).scalars().all()
-    all_open_symbols = {position.symbol for position in positions} | set(open_position_symbols or set())
+    all_open_symbols = {
+        position.symbol
+        for position in positions
+        if not is_stablecoin_symbol(position.symbol, quote_asset=settings.default_quote_asset)
+    } | {
+        symbol
+        for symbol in (open_position_symbols or set())
+        if not is_stablecoin_symbol(symbol, quote_asset=settings.default_quote_asset)
+    }
 
     ownership_rows = (
         await session.execute(
@@ -361,6 +385,8 @@ async def ensure_coordinated_picks(
 
     pinned_symbols: dict[str, PinnedSymbol] = {}
     for position in positions:
+        if is_stablecoin_symbol(position.symbol, quote_asset=settings.default_quote_asset):
+            continue
         strategy = strategies_by_id.get(position.strategy_id)
         if strategy is None:
             continue
@@ -396,12 +422,14 @@ async def ensure_coordinated_picks(
         now=now,
     )
 
-    await session.execute(
-        delete(DailyPick).where(
-            DailyPick.strategy_id.in_(strategy_ids),
-            DailyPick.selection_date == chosen_date,
+    with session.no_autoflush:
+        await execute_with_write_lock(
+            session,
+            delete(DailyPick).where(
+                DailyPick.strategy_id.in_(strategy_ids),
+                DailyPick.selection_date == chosen_date,
+            ),
         )
-    )
 
     claim_counts = Counter(
         candidate.symbol
@@ -498,7 +526,7 @@ async def ensure_coordinated_picks(
         assignments,
         now,
     )
-    await session.flush()
+    await flush_with_write_lock(session)
     return created_by_strategy
 
 
@@ -580,12 +608,14 @@ async def _ensure_daily_picks_legacy(
             )
         )
 
-    await session.execute(
-        delete(DailyPick).where(
-            DailyPick.strategy_id == strategy.id,
-            DailyPick.selection_date == chosen_date,
+    with session.no_autoflush:
+        await execute_with_write_lock(
+            session,
+            delete(DailyPick).where(
+                DailyPick.strategy_id == strategy.id,
+                DailyPick.selection_date == chosen_date,
+            ),
         )
-    )
 
     created: list[DailyPick] = []
     for idx, candidate in enumerate(ranked_symbols, start=1):
@@ -604,7 +634,7 @@ async def _ensure_daily_picks_legacy(
         session.add(item)
         created.append(item)
 
-    await session.flush()
+    await flush_with_write_lock(session)
     return created
 
 

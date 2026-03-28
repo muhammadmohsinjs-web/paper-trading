@@ -2,14 +2,98 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, Query
 
-from app.market.data_store import DataStore
+from app.market.data_store import Candle, DataStore
 from app.market.indicators import compute_indicators
 from app.engine.composite_scorer import compute_composite_score
 from app.regime.classifier import RegimeClassifier
 
 router = APIRouter(prefix="/market", tags=["market"])
+
+
+def _series_points(
+    candles: list[Candle],
+    values: list[float],
+    *,
+    precision: int = 4,
+) -> list[dict[str, float | int]]:
+    if not candles or not values:
+        return []
+
+    aligned_candles = candles[-len(values) :]
+    return [
+        {
+            "open_time": candle.open_time,
+            "value": round(float(value), precision),
+        }
+        for candle, value in zip(aligned_candles, values)
+    ]
+
+
+def _latest_value(values: list[float], *, precision: int = 4) -> float | None:
+    if not values:
+        return None
+    return round(float(values[-1]), precision)
+
+
+def _build_indicator_payload(
+    symbol: str,
+    interval: str,
+    candles: list[Candle],
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    closes = [c.close for c in candles]
+    highs = [c.high for c in candles]
+    lows = [c.low for c in candles]
+    volumes = [c.volume for c in candles]
+
+    indicators = compute_indicators(closes, config=config, highs=highs, lows=lows, volumes=volumes)
+
+    macd_line, macd_signal, macd_histogram = indicators.get("macd", ([], [], []))
+    bb_upper, bb_middle, bb_lower = indicators.get("bollinger_bands", ([], [], []))
+
+    resolved_config = {
+        "sma_short": int((config or {}).get("sma_short", 20)),
+        "sma_long": int((config or {}).get("sma_long", 50)),
+        "rsi_period": int((config or {}).get("rsi_period", 14)),
+        "volume_ma_period": int((config or {}).get("volume_ma_period", 20)),
+    }
+
+    return {
+        "symbol": symbol,
+        "interval": interval,
+        "candles_used": len(candles),
+        "config": resolved_config,
+        "latest": {
+            "price": round(float(closes[-1]), 4) if closes else None,
+            "rsi": _latest_value(indicators.get("rsi", []), precision=2),
+            "atr": _latest_value(indicators.get("atr", []), precision=4),
+            "adx": _latest_value(indicators.get("adx", []), precision=2),
+            "volume_ratio": _latest_value(indicators.get("volume_ratio", []), precision=3),
+            "macd_line": _latest_value(macd_line),
+            "macd_signal": _latest_value(macd_signal),
+            "macd_histogram": _latest_value(macd_histogram),
+        },
+        "series": {
+            "sma_short": _series_points(candles, indicators.get("sma_short", [])),
+            "sma_long": _series_points(candles, indicators.get("sma_long", [])),
+            "ema_12": _series_points(candles, indicators.get("ema_12", [])),
+            "ema_26": _series_points(candles, indicators.get("ema_26", [])),
+            "bollinger_upper": _series_points(candles, bb_upper),
+            "bollinger_middle": _series_points(candles, bb_middle),
+            "bollinger_lower": _series_points(candles, bb_lower),
+            "rsi": _series_points(candles, indicators.get("rsi", []), precision=2),
+            "macd_line": _series_points(candles, macd_line),
+            "macd_signal": _series_points(candles, macd_signal),
+            "macd_histogram": _series_points(candles, macd_histogram),
+            "atr": _series_points(candles, indicators.get("atr", [])),
+            "adx": _series_points(candles, indicators.get("adx", []), precision=2),
+            "volume_ratio": _series_points(candles, indicators.get("volume_ratio", []), precision=3),
+        },
+    }
 
 
 @router.get("/price/{symbol}")
@@ -45,6 +129,35 @@ async def get_candles(
             for c in candles
         ],
     }
+
+
+@router.get("/indicators/{symbol}")
+async def get_indicator_series(
+    symbol: str,
+    interval: str = Query("1h"),
+    limit: int = Query(200, ge=1, le=500),
+    sma_short: int | None = Query(None, ge=1, le=200),
+    sma_long: int | None = Query(None, ge=2, le=400),
+    rsi_period: int | None = Query(None, ge=2, le=100),
+    volume_ma_period: int | None = Query(None, ge=2, le=200),
+):
+    store = DataStore.get_instance()
+    candles = store.get_candles(symbol.upper(), interval, limit)
+    if not candles:
+        raise HTTPException(404, f"No candle data for {symbol}")
+
+    config = {
+        key: value
+        for key, value in {
+            "sma_short": sma_short,
+            "sma_long": sma_long,
+            "rsi_period": rsi_period,
+            "volume_ma_period": volume_ma_period,
+        }.items()
+        if value is not None
+    }
+
+    return _build_indicator_payload(symbol.upper(), interval, candles, config)
 
 
 @router.get("/signal/{symbol}")

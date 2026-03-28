@@ -56,6 +56,10 @@ class Strategy(UUIDPrimaryKeyMixin, CreatedAtMixin, UpdatedAtMixin, Base):
     max_consecutive_losses: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     streak_size_multiplier: Mapped[Decimal] = mapped_column(Numeric(6, 3), nullable=False, default=Decimal("1.0"))
 
+    # Re-entry cooldown after stop-loss
+    last_stop_loss_symbol: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    last_stop_loss_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
     wallet = relationship(
         "Wallet",
         back_populates="strategy",
