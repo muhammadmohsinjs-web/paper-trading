@@ -22,6 +22,7 @@ import httpx
 from app.config import DEFAULT_SCAN_UNIVERSE, get_settings
 from app.engine.reason_codes import ENTRY_BLOCKED_RETAINED_SYMBOL, RETAINED_OPEN_POSITION
 from app.engine.tradability import evaluate_symbol_tradability
+from app.engine.liquidity_policy import build_liquidity_policy, score_liquidity_depth
 from app.market.binance_rest import fetch_candles
 from app.market.data_store import DataStore
 from app.scanner.relative_strength import get_relative_strength
@@ -158,11 +159,15 @@ class UniverseSelector:
             price = float(ticker.get("lastPrice", 0))
             volume_24h = float(ticker.get("quoteVolume", 0))
             price_change_pct = float(ticker.get("priceChangePercent", 0))
+            liquidity_policy = build_liquidity_policy(
+                symbol,
+                observed_volume_24h_usdt=volume_24h,
+            )
 
             # Hard filters
             if price < settings.universe_min_price:
                 continue
-            if volume_24h < settings.universe_min_24h_volume_usdt:
+            if volume_24h < liquidity_policy.discovery_floor_usdt:
                 continue
 
             # Listing age check
@@ -175,6 +180,8 @@ class UniverseSelector:
                 price=price,
                 volume_24h_usdt=volume_24h,
                 price_change_pct_24h=price_change_pct,
+                liquidity_archetype=liquidity_policy.archetype,
+                threshold_volume_24h_usdt=round(liquidity_policy.discovery_floor_usdt, 2),
             ))
 
         self._candidate_pool = candidates
@@ -221,6 +228,17 @@ class UniverseSelector:
             highs = [c.high for c in candles]
             lows = [c.low for c in candles]
             volumes = [c.volume for c in candles]
+            volume_1h_usdt = (
+                float(candles[-1].close) * float(candles[-1].volume)
+                if candles
+                else volume_24h / 24.0
+            )
+            liquidity_policy = build_liquidity_policy(
+                candidate.symbol,
+                observed_volume_24h_usdt=volume_24h,
+                interval="1h",
+            )
+            threshold_volume_1h_usdt = liquidity_policy.interval_soft_floor_usdt
 
             tradability = evaluate_symbol_tradability(
                 symbol=candidate.symbol,
@@ -236,6 +254,10 @@ class UniverseSelector:
                     price=price,
                     volume_24h_usdt=volume_24h,
                     price_change_pct_24h=price_change_pct,
+                    liquidity_archetype=liquidity_policy.archetype,
+                    threshold_volume_24h_usdt=round(liquidity_policy.required_24h_volume_usdt, 2),
+                    volume_1h_usdt=round(volume_1h_usdt, 2),
+                    threshold_volume_1h_usdt=round(threshold_volume_1h_usdt, 2),
                     tradability_passed=tradability.passed,
                     reason_codes=tradability.reason_codes,
                     reason_text=tradability.reason_text,
@@ -256,7 +278,10 @@ class UniverseSelector:
             trend_clarity = self._score_trend_clarity(candidate.symbol, store)
 
             # D. Liquidity Depth Score
-            liquidity_depth = self._score_liquidity_depth(volume_24h)
+            liquidity_depth = score_liquidity_depth(
+                candidate.symbol,
+                observed_volume_24h_usdt=volume_24h,
+            )
 
             # E. Relative Strength Score
             relative_strength = self._score_relative_strength(candidate.symbol)

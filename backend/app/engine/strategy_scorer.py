@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.config import get_settings
+from app.engine.liquidity_policy import build_liquidity_policy
 from app.engine.reason_codes import REGIME_UNFAVORABLE, SETUP_TYPE_MISMATCH
 from app.models.strategy import Strategy
 from app.regime.types import MarketRegime
@@ -203,7 +204,6 @@ def evaluate_universe_for_strategy(
     strategy_type = resolve_strategy_type(strategy)
     results: list[StrategyCandidate] = []
     rejections: list[StrategyRejection] = []
-    liquidity_floor = max(float(settings.multi_coin_liquidity_floor_usdt), 1.0)
     effective_max = max_pick_count if max_pick_count is not None else profile.max_pick_count
 
     for symbol, setups in scanner_results.items():
@@ -251,7 +251,15 @@ def evaluate_universe_for_strategy(
             )
             continue
 
-        liquidity_score = min(best_setup.liquidity_usdt / (liquidity_floor * 4.0), 1.0)
+        liquidity_policy = build_liquidity_policy(
+            symbol,
+            observed_volume_24h_usdt=float(best_setup.liquidity_usdt),
+            config=strategy.config_json or {},
+        )
+        liquidity_score = min(
+            best_setup.liquidity_usdt / max(liquidity_policy.required_24h_volume_usdt * 4.0, 1.0),
+            1.0,
+        )
         perf_memory_score = 0.5
         vol_quality_score = _clamp01(best_setup.volatility_quality_score)
         expected_rr_score = _clamp01(best_setup.reward_to_cost_ratio / 3.0)

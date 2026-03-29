@@ -33,6 +33,10 @@ class CandidateInfo:
     price: float
     volume_24h_usdt: float  # 24h quote volume
     price_change_pct_24h: float  # 24h price change %
+    liquidity_archetype: str = ""
+    threshold_volume_24h_usdt: float = 0.0
+    volume_1h_usdt: float = 0.0
+    threshold_volume_1h_usdt: float = 0.0
     tradability_passed: bool = True
     reason_codes: list[str] = field(default_factory=list)
     reason_text: str = ""

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Query
 
 from app.config import get_settings
+from app.market.binance_rest import backfill
 from app.scanner.scanner import OpportunityScanner
 from app.scanner.universe_selector import UniverseSelector
 
@@ -133,6 +136,49 @@ async def refresh_universe():
     return {
         "status": "refreshed",
         "active_universe_size": len(symbols),
+        "active_symbols": symbols,
+        "promoted": snapshot.promoted if snapshot else [],
+        "demoted": snapshot.demoted if snapshot else [],
+    }
+
+
+@router.post("/live/refresh")
+async def refresh_live_market_data(
+    limit: int = Query(200, ge=50, le=500),
+):
+    """Force-refresh the universe and backfill live scan candles from Binance."""
+    selector = UniverseSelector.get_instance()
+    symbols = await selector.get_active_universe(force_refresh=True)
+    snapshot = selector.get_last_snapshot()
+
+    intervals = ("5m", "1h", "4h")
+    symbols_to_refresh = list(dict.fromkeys([settings.default_symbol, *symbols]))
+    semaphore = asyncio.Semaphore(6)
+
+    async def _refresh_symbol(symbol: str, interval: str) -> int:
+        async with semaphore:
+            return await backfill(symbol, interval, limit)
+
+    results = await asyncio.gather(
+        *(
+            _refresh_symbol(symbol, interval)
+            for symbol in symbols_to_refresh
+            for interval in intervals
+        )
+    )
+
+    requested_pairs = len(symbols_to_refresh) * len(intervals)
+    successful_pairs = sum(1 for count in results if count > 0)
+
+    return {
+        "status": "refreshed",
+        "refreshed_at": datetime.now(timezone.utc).isoformat(),
+        "active_universe_size": len(symbols),
+        "symbols_refreshed": len(symbols_to_refresh),
+        "intervals_refreshed": list(intervals),
+        "requested_pairs": requested_pairs,
+        "successful_pairs": successful_pairs,
+        "failed_pairs": requested_pairs - successful_pairs,
         "active_symbols": symbols,
         "promoted": snapshot.promoted if snapshot else [],
         "demoted": snapshot.demoted if snapshot else [],

@@ -119,6 +119,25 @@ class Settings:
     universe_min_24h_volume_usdt: float = 500_000.0
     universe_min_price: float = 0.00001
     universe_min_listing_age_days: int = 14
+    liquidity_major_bases: list[str] = field(default_factory=lambda: ["BTC", "ETH", "SOL", "BNB", "XRP"])
+    liquidity_meme_bases: list[str] = field(default_factory=lambda: [
+        "DOGE", "SHIB", "PEPE", "WIF", "BONK", "FLOKI", "BRETT", "MOG",
+        "MEME", "POPCAT", "MEW", "NEIRO", "CHEEMS", "PONKE", "TURBO", "BOME",
+    ])
+    liquidity_tier_major_24h_usdt: float = 50_000_000.0
+    liquidity_tier_mid_24h_usdt: float = 10_000_000.0
+    liquidity_floor_major_24h_usdt: float = 5_000_000.0
+    liquidity_floor_mid_24h_usdt: float = 3_000_000.0
+    liquidity_floor_small_24h_usdt: float = 1_000_000.0
+    liquidity_floor_meme_24h_usdt: float = 8_000_000.0
+    execution_order_book_depth_levels: int = 20
+    execution_depth_band_bps: float = 35.0
+    execution_max_spread_bps_major: float = 15.0
+    execution_max_spread_bps_mid: float = 30.0
+    execution_max_spread_bps_small: float = 50.0
+    execution_min_depth_multiple_major: float = 10.0
+    execution_min_depth_multiple_mid: float = 7.0
+    execution_min_depth_multiple_small: float = 4.0
     universe_volume_surge_weight: float = 0.30
     universe_volatility_quality_weight: float = 0.25
     universe_trend_clarity_weight: float = 0.20
@@ -246,6 +265,25 @@ class Settings:
             universe_min_24h_volume_usdt=float(_get_value("UNIVERSE_MIN_24H_VOLUME_USDT", default=str(cls.universe_min_24h_volume_usdt))),
             universe_min_price=float(_get_value("UNIVERSE_MIN_PRICE", default=str(cls.universe_min_price))),
             universe_min_listing_age_days=int(_get_value("UNIVERSE_MIN_LISTING_AGE_DAYS", default=str(cls.universe_min_listing_age_days))),
+            liquidity_major_bases=_get_list("LIQUIDITY_MAJOR_BASES") or ["BTC", "ETH", "SOL", "BNB", "XRP"],
+            liquidity_meme_bases=_get_list("LIQUIDITY_MEME_BASES") or [
+                "DOGE", "SHIB", "PEPE", "WIF", "BONK", "FLOKI", "BRETT", "MOG",
+                "MEME", "POPCAT", "MEW", "NEIRO", "CHEEMS", "PONKE", "TURBO", "BOME",
+            ],
+            liquidity_tier_major_24h_usdt=float(_get_value("LIQUIDITY_TIER_MAJOR_24H_USDT", default=str(cls.liquidity_tier_major_24h_usdt))),
+            liquidity_tier_mid_24h_usdt=float(_get_value("LIQUIDITY_TIER_MID_24H_USDT", default=str(cls.liquidity_tier_mid_24h_usdt))),
+            liquidity_floor_major_24h_usdt=float(_get_value("LIQUIDITY_FLOOR_MAJOR_24H_USDT", default=str(cls.liquidity_floor_major_24h_usdt))),
+            liquidity_floor_mid_24h_usdt=float(_get_value("LIQUIDITY_FLOOR_MID_24H_USDT", default=str(cls.liquidity_floor_mid_24h_usdt))),
+            liquidity_floor_small_24h_usdt=float(_get_value("LIQUIDITY_FLOOR_SMALL_24H_USDT", default=str(cls.liquidity_floor_small_24h_usdt))),
+            liquidity_floor_meme_24h_usdt=float(_get_value("LIQUIDITY_FLOOR_MEME_24H_USDT", default=str(cls.liquidity_floor_meme_24h_usdt))),
+            execution_order_book_depth_levels=int(_get_value("EXECUTION_ORDER_BOOK_DEPTH_LEVELS", default=str(cls.execution_order_book_depth_levels))),
+            execution_depth_band_bps=float(_get_value("EXECUTION_DEPTH_BAND_BPS", default=str(cls.execution_depth_band_bps))),
+            execution_max_spread_bps_major=float(_get_value("EXECUTION_MAX_SPREAD_BPS_MAJOR", default=str(cls.execution_max_spread_bps_major))),
+            execution_max_spread_bps_mid=float(_get_value("EXECUTION_MAX_SPREAD_BPS_MID", default=str(cls.execution_max_spread_bps_mid))),
+            execution_max_spread_bps_small=float(_get_value("EXECUTION_MAX_SPREAD_BPS_SMALL", default=str(cls.execution_max_spread_bps_small))),
+            execution_min_depth_multiple_major=float(_get_value("EXECUTION_MIN_DEPTH_MULTIPLE_MAJOR", default=str(cls.execution_min_depth_multiple_major))),
+            execution_min_depth_multiple_mid=float(_get_value("EXECUTION_MIN_DEPTH_MULTIPLE_MID", default=str(cls.execution_min_depth_multiple_mid))),
+            execution_min_depth_multiple_small=float(_get_value("EXECUTION_MIN_DEPTH_MULTIPLE_SMALL", default=str(cls.execution_min_depth_multiple_small))),
             stablecoin_base_denylist=_get_list("STABLECOIN_BASE_DENYLIST") or [
                 "USDC", "USDT", "BUSD", "FDUSD", "TUSD", "USDP", "DAI", "USD1",
                 "USDE", "USDD", "PYUSD", "FRAX",

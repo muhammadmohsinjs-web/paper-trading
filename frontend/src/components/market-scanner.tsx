@@ -1,9 +1,14 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { runManualScan } from "@/lib/api";
+import { refreshScannerLiveData, runManualScan } from "@/lib/api";
 import { cn, formatCurrency, formatNumber } from "@/lib/format";
-import type { FunnelStats, ManualScanResponse, RankedSymbol } from "@/lib/types";
+import type {
+  FunnelStats,
+  ManualScanResponse,
+  RankedSymbol,
+  ScannerRefreshResponse,
+} from "@/lib/types";
 import { MetricStrip, CoinIcon, buttonClassName } from "@/components/ui";
 
 const SETUP_LABELS: Record<string, { label: string; color: string }> = {
@@ -138,7 +143,9 @@ function FiltrationFunnel({ funnel }: { funnel: FunnelStats }) {
 export function MarketScanner() {
   const [scanResult, setScanResult] = useState<ManualScanResponse | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [refreshResult, setRefreshResult] = useState<ScannerRefreshResponse | null>(null);
   const [interval, setInterval] = useState("1h");
 
   const handleScan = useCallback(async () => {
@@ -151,6 +158,21 @@ export function MarketScanner() {
       setError(err instanceof Error ? err.message : "Scan failed");
     } finally {
       setScanning(false);
+    }
+  }, [interval]);
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    setError(null);
+    try {
+      const refreshed = await refreshScannerLiveData();
+      setRefreshResult(refreshed);
+      const result = await runManualScan(interval, 15);
+      setScanResult(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Refresh failed");
+    } finally {
+      setRefreshing(false);
     }
   }, [interval]);
 
@@ -173,13 +195,31 @@ export function MarketScanner() {
             <option value="1h">1h</option>
             <option value="4h">4h</option>
           </select>
-          <button onClick={handleScan} disabled={scanning} className={buttonClassName("primary", "md")}>
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing || scanning}
+            className={buttonClassName("secondary", "md")}
+          >
+            {refreshing ? "Refreshing..." : "Refresh Binance"}
+          </button>
+          <button
+            onClick={handleScan}
+            disabled={scanning || refreshing}
+            className={buttonClassName("primary", "md")}
+          >
             {scanning ? "Scanning..." : "Run scan"}
           </button>
         </div>
       </div>
 
       {error ? <p className="text-sm text-red-700">{error}</p> : null}
+      {refreshResult ? (
+        <p className="text-xs text-slate-500">
+          Binance refresh loaded {formatNumber(refreshResult.symbols_refreshed, 0)} symbols across{" "}
+          {formatNumber(refreshResult.successful_pairs, 0)}/
+          {formatNumber(refreshResult.requested_pairs, 0)} symbol-interval pairs.
+        </p>
+      ) : null}
 
       {scanResult ? (
         <>

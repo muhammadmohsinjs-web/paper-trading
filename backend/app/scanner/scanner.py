@@ -24,6 +24,7 @@ from app.engine.tradability import (
     evaluate_movement_quality,
     evaluate_symbol_tradability,
 )
+from app.engine.liquidity_policy import build_liquidity_policy
 from app.market.data_store import DataStore
 from app.market.indicators import compute_indicators
 from app.regime.classifier import RegimeClassifier
@@ -178,6 +179,21 @@ class OpportunityScanner:
 
         for symbol in self.symbols:
             candles = store.get_candles(symbol, interval, 200)
+            volume_1h_usdt = round(
+                self._estimate_one_hour_volume_usdt(candles, interval),
+                2,
+            )
+            daily_liquidity_usdt = round(
+                self._estimate_liquidity_usdt(candles, window=24),
+                2,
+            )
+            liquidity_policy = build_liquidity_policy(
+                symbol,
+                observed_volume_24h_usdt=daily_liquidity_usdt,
+                interval=interval,
+                config={"multi_coin_liquidity_floor_usdt": min_liquidity},
+            )
+            threshold_volume_1h_usdt = round(liquidity_policy.interval_hard_floor_usdt, 2)
             if len(candles) < MIN_CANDLES_FOR_SCAN:
                 skipped_data.append(f"{symbol}({len(candles)})")
                 audit_rows.append({
@@ -188,6 +204,8 @@ class OpportunityScanner:
                     "setup_type": None,
                     "movement_quality": {},
                     "score": 0.0,
+                    "volume_1h_usdt": volume_1h_usdt,
+                    "threshold_volume_1h_usdt": threshold_volume_1h_usdt,
                 })
                 continue
 
@@ -202,8 +220,9 @@ class OpportunityScanner:
                 highs=highs,
                 lows=lows,
                 volumes=volumes,
-                volume_24h_usdt=self._estimate_liquidity_usdt(candles, window=24),
+                volume_24h_usdt=daily_liquidity_usdt,
                 indicators=indicators,
+                config={"multi_coin_liquidity_floor_usdt": min_liquidity},
             )
             if not tradability.passed:
                 audit_rows.append({
@@ -214,6 +233,8 @@ class OpportunityScanner:
                     "setup_type": None,
                     "movement_quality": tradability.metrics.to_dict(),
                     "score": 0.0,
+                    "volume_1h_usdt": volume_1h_usdt,
+                    "threshold_volume_1h_usdt": threshold_volume_1h_usdt,
                 })
                 continue
             regime_result = self.regime_classifier.classify_full(indicators)
@@ -238,10 +259,11 @@ class OpportunityScanner:
                     "setup_type": first_rejection.setup_type if first_rejection else None,
                     "movement_quality": first_rejection.metrics if first_rejection else {},
                     "score": 0.0,
+                    "volume_1h_usdt": volume_1h_usdt,
+                    "threshold_volume_1h_usdt": threshold_volume_1h_usdt,
                 })
                 continue
 
-            liquidity_usdt = self._estimate_liquidity_usdt(candles)
             # Filter to entry-eligible setups for ranking (long-only engine)
             eligible_setups = [s for s in setups if s.entry_eligible]
             if not eligible_setups:
@@ -254,21 +276,38 @@ class OpportunityScanner:
                     "setup_type": setups[0].setup_type if setups else None,
                     "movement_quality": setups[0].movement_quality if setups else {},
                     "score": setups[0].score if setups else 0.0,
+                    "volume_1h_usdt": volume_1h_usdt,
+                    "threshold_volume_1h_usdt": threshold_volume_1h_usdt,
                 })
                 continue
             best_setup = max(eligible_setups, key=lambda setup: setup.score)
-            if liquidity_usdt < min_liquidity:
-                skipped_liquidity.append(f"{symbol}(${liquidity_usdt:,.0f})")
+            if volume_1h_usdt < liquidity_policy.interval_hard_floor_usdt:
+                skipped_liquidity.append(f"{symbol}(${volume_1h_usdt:,.0f}/h)")
                 audit_rows.append({
                     "symbol": symbol,
                     "status": "rejected",
                     "reason_code": LIQUIDITY_TOO_LOW,
-                    "reason_text": f"Liquidity ${liquidity_usdt:,.0f} below floor ${min_liquidity:,.0f}",
+                    "reason_text": (
+                        f"{liquidity_policy.archetype} interval liquidity ${volume_1h_usdt:,.0f}/h below "
+                        f"severe floor ${liquidity_policy.interval_hard_floor_usdt:,.0f}/h"
+                    ),
                     "setup_type": best_setup.setup_type,
                     "movement_quality": best_setup.movement_quality,
                     "score": best_setup.score,
+                    "volume_1h_usdt": volume_1h_usdt,
+                    "threshold_volume_1h_usdt": threshold_volume_1h_usdt,
                 })
                 continue
+            liquidity_penalty = 0.0
+            if volume_1h_usdt < liquidity_policy.interval_soft_floor_usdt:
+                liquidity_penalty = min(
+                    0.15,
+                    0.03
+                    + (
+                        (liquidity_policy.interval_soft_floor_usdt - volume_1h_usdt)
+                        / max(liquidity_policy.interval_soft_floor_usdt, 1.0)
+                    ) * 0.12,
+                )
 
             advisory_penalty = min(0.12, 0.03 * len(tradability.advisory_reason_codes))
 
@@ -282,7 +321,10 @@ class OpportunityScanner:
 
             # Net quality score: weighted blend of family quality metrics
             regime_affinity = REGIME_AFFINITY.get(regime_result.regime, {}).get(best_setup.recommended_strategy, 0.5)
-            liquidity_score = min(liquidity_usdt / max(min_liquidity * 4.0, 1.0), 1.0)
+            liquidity_score = min(
+                daily_liquidity_usdt / max(liquidity_policy.required_24h_volume_usdt * 4.0, 1.0),
+                1.0,
+            )
             net_quality = (
                 best_setup.room_to_move_score * 0.25
                 + best_setup.execution_quality_score * 0.20
@@ -290,7 +332,7 @@ class OpportunityScanner:
                 + best_setup.symbol_quality_score * 0.15
                 + best_setup.score * 0.15
                 + regime_affinity * 0.10
-            ) - contradiction_penalty - exhaustion_penalty - advisory_penalty
+            ) - contradiction_penalty - exhaustion_penalty - advisory_penalty - liquidity_penalty
 
             final_score = max(0.0, net_quality * 0.70 + best_setup.score * 0.20 + liquidity_score * 0.10)
             candidates.append(
@@ -301,7 +343,7 @@ class OpportunityScanner:
                     setup_type=best_setup.setup_type,
                     recommended_strategy=best_setup.recommended_strategy,
                     reason=best_setup.reason,
-                    liquidity_usdt=liquidity_usdt,
+                    liquidity_usdt=daily_liquidity_usdt,
                     indicators=best_setup.indicators,
                     reason_code=best_setup.reason_code,
                     reason_codes=best_setup.reason_codes,
@@ -323,9 +365,12 @@ class OpportunityScanner:
                 "setup_type": best_setup.setup_type,
                 "movement_quality": best_setup.movement_quality,
                 "score": best_setup.score,
+                "volume_1h_usdt": volume_1h_usdt,
+                "threshold_volume_1h_usdt": threshold_volume_1h_usdt,
                 "family": best_setup.family,
                 "net_quality_score": round(net_quality, 4),
                 "advisory_penalty": round(advisory_penalty, 4),
+                "liquidity_penalty": round(liquidity_penalty, 4),
             })
 
         if skipped_data:
@@ -1008,4 +1053,30 @@ class OpportunityScanner:
         if not recent:
             return 0.0
         quote_volumes = [float(candle.close) * float(candle.volume) for candle in recent]
-        return sum(quote_volumes) / len(quote_volumes)
+        return sum(quote_volumes)
+
+    @staticmethod
+    def _estimate_one_hour_volume_usdt(candles: list[Any], interval: str) -> float:
+        if not candles:
+            return 0.0
+
+        normalized = (interval or "").strip().lower()
+        if normalized.endswith("m"):
+            try:
+                minutes = max(int(normalized[:-1]), 1)
+            except ValueError:
+                minutes = 60
+            candles_per_hour = max(1, 60 // minutes)
+            recent = candles[-candles_per_hour:]
+            return sum(float(candle.close) * float(candle.volume) for candle in recent)
+
+        if normalized.endswith("h"):
+            try:
+                hours = max(int(normalized[:-1]), 1)
+            except ValueError:
+                hours = 1
+            latest = candles[-1]
+            return (float(latest.close) * float(latest.volume)) / hours
+
+        latest = candles[-1]
+        return float(latest.close) * float(latest.volume)

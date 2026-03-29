@@ -10,6 +10,9 @@ from typing import Any
 
 from app.config import get_settings
 from app.engine.fee_model import SPOT_FEE_RATE
+from app.engine.liquidity_policy import (
+    build_liquidity_policy,
+)
 from app.engine.reason_codes import (
     ABS_CHANGE_TOO_LOW,
     ATR_PCT_TOO_LOW,
@@ -18,9 +21,13 @@ from app.engine.reason_codes import (
     ENTRY_BLOCKED_RETAINED_SYMBOL,
     EXECUTION_HOSTILE,
     LIQUIDITY_TOO_LOW,
+    LIQUIDITY_EXECUTION_RISK,
+    LIQUIDITY_PARTICIPATION_TOO_HIGH,
     MARKET_QUALITY_TOO_LOW,
     MOVE_BELOW_COST,
     NEAR_PEG_PROFILE,
+    ORDER_BOOK_DEPTH_TOO_THIN,
+    ORDER_BOOK_SPREAD_TOO_WIDE,
     RANGE_PCT_TOO_LOW,
     SETUP_NO_ABSOLUTE_EXPANSION,
     SETUP_RANGE_TOO_SMALL,
@@ -29,6 +36,7 @@ from app.engine.reason_codes import (
 )
 from app.engine.slippage import estimate_slippage_rate
 from app.engine.trade_quality import resolve_trade_quality_thresholds
+from app.market.binance_rest import OrderBookSnapshot
 from app.market.indicators import compute_indicators
 
 SETTINGS = get_settings()
@@ -78,6 +86,50 @@ class TradabilityResult:
             "reason_text": self.reason_text,
             "metrics": self.metrics.to_dict(),
             "market_quality_score": self.market_quality_score,
+        }
+
+
+@dataclass(frozen=True)
+class LiquidityExecutionResult:
+    passed: bool
+    reason_code: str | None
+    reason_text: str
+    estimated_notional_usdt: float
+    observed_volume_24h_usdt: float
+    required_volume_24h_usdt: float
+    volume_multiple: float
+    participation_rate: float
+    advisory: bool
+    liquidity_tier: str = "unknown"
+    microstructure_available: bool = False
+    spread_bps: float = 0.0
+    max_spread_bps: float = 0.0
+    bid_depth_usdt: float = 0.0
+    ask_depth_usdt: float = 0.0
+    required_depth_usdt: float = 0.0
+    depth_multiple: float = 0.0
+    depth_band_bps: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "passed": self.passed,
+            "reason_code": self.reason_code,
+            "reason_text": self.reason_text,
+            "estimated_notional_usdt": self.estimated_notional_usdt,
+            "observed_volume_24h_usdt": self.observed_volume_24h_usdt,
+            "required_volume_24h_usdt": self.required_volume_24h_usdt,
+            "volume_multiple": self.volume_multiple,
+            "participation_rate": self.participation_rate,
+            "advisory": self.advisory,
+            "liquidity_tier": self.liquidity_tier,
+            "microstructure_available": self.microstructure_available,
+            "spread_bps": self.spread_bps,
+            "max_spread_bps": self.max_spread_bps,
+            "bid_depth_usdt": self.bid_depth_usdt,
+            "ask_depth_usdt": self.ask_depth_usdt,
+            "required_depth_usdt": self.required_depth_usdt,
+            "depth_multiple": self.depth_multiple,
+            "depth_band_bps": self.depth_band_bps,
         }
 
 
@@ -163,6 +215,11 @@ _BLOCKING_TRADABILITY_CODES = {
     ENTRY_BLOCKED_RETAINED_SYMBOL,
 }
 
+_EXECUTION_MIN_DAILY_VOLUME_MULTIPLE = 100.0
+_EXECUTION_TARGET_DAILY_VOLUME_MULTIPLE = 200.0
+_EXECUTION_MAX_PARTICIPATION_RATE = 0.01
+_EXECUTION_WARN_PARTICIPATION_RATE = 0.005
+
 
 def split_tradability_reason_codes(reason_codes: list[str]) -> tuple[list[str], list[str]]:
     blocking: list[str] = []
@@ -173,6 +230,181 @@ def split_tradability_reason_codes(reason_codes: list[str]) -> tuple[list[str], 
         else:
             advisory.append(code)
     return blocking, advisory
+
+
+def resolve_liquidity_floor_usdt(
+    *,
+    symbol: str | None = None,
+    observed_volume_24h_usdt: float = 0.0,
+    estimated_notional: Decimal | None = None,
+    config: dict[str, Any] | None = None,
+) -> float:
+    if symbol is None:
+        base_floor = max(
+            float(SETTINGS.universe_min_24h_volume_usdt),
+            float((config or {}).get("multi_coin_liquidity_floor_usdt", SETTINGS.multi_coin_liquidity_floor_usdt)),
+        )
+        if estimated_notional is None:
+            return base_floor
+        notional_floor = float(estimated_notional) * _EXECUTION_MIN_DAILY_VOLUME_MULTIPLE
+        return max(base_floor, notional_floor)
+    return build_liquidity_policy(
+        symbol,
+        observed_volume_24h_usdt=observed_volume_24h_usdt,
+        estimated_notional=estimated_notional,
+        config=config,
+    ).required_24h_volume_usdt
+
+
+def _resolve_execution_liquidity_profile(
+    *,
+    observed_volume_24h_usdt: float,
+    config: dict[str, Any] | None = None,
+) -> tuple[str, float, float]:
+    source = config or {}
+    if observed_volume_24h_usdt >= float(source.get("liquidity_tier_major_24h_usdt", SETTINGS.liquidity_tier_major_24h_usdt)):
+        return (
+            "major",
+            float(source.get("execution_max_spread_bps_major", SETTINGS.execution_max_spread_bps_major)),
+            float(source.get("execution_min_depth_multiple_major", SETTINGS.execution_min_depth_multiple_major)),
+        )
+    if observed_volume_24h_usdt >= float(source.get("liquidity_tier_mid_24h_usdt", SETTINGS.liquidity_tier_mid_24h_usdt)):
+        return (
+            "mid",
+            float(source.get("execution_max_spread_bps_mid", SETTINGS.execution_max_spread_bps_mid)),
+            float(source.get("execution_min_depth_multiple_mid", SETTINGS.execution_min_depth_multiple_mid)),
+        )
+    return (
+        "small",
+        float(source.get("execution_max_spread_bps_small", SETTINGS.execution_max_spread_bps_small)),
+        float(source.get("execution_min_depth_multiple_small", SETTINGS.execution_min_depth_multiple_small)),
+    )
+
+
+def evaluate_execution_liquidity(
+    *,
+    metrics: TradabilityMetrics,
+    estimated_notional: Decimal,
+    symbol: str | None = None,
+    config: dict[str, Any] | None = None,
+    microstructure: OrderBookSnapshot | None = None,
+) -> LiquidityExecutionResult:
+    observed_volume = max(float(metrics.volume_24h_usdt), 0.0)
+    required_volume = resolve_liquidity_floor_usdt(
+        symbol=symbol or "EXECUTION",
+        observed_volume_24h_usdt=observed_volume,
+        estimated_notional=estimated_notional,
+        config=config,
+    )
+    target_volume = max(
+        required_volume,
+        float(estimated_notional) * _EXECUTION_TARGET_DAILY_VOLUME_MULTIPLE,
+    )
+    liquidity_tier, max_spread_bps, min_depth_multiple = _resolve_execution_liquidity_profile(
+        observed_volume_24h_usdt=observed_volume,
+        config=config,
+    )
+    volume_multiple = (observed_volume / required_volume) if required_volume > 0 else 0.0
+    participation_rate = (float(estimated_notional) / observed_volume) if observed_volume > 0 else 1.0
+    estimated_notional_float = float(estimated_notional)
+
+    spread_bps = float(microstructure.spread_bps) if microstructure is not None else 0.0
+    bid_depth_usdt = float(microstructure.bid_depth_usdt) if microstructure is not None else 0.0
+    ask_depth_usdt = float(microstructure.ask_depth_usdt) if microstructure is not None else 0.0
+    depth_band_bps = float(microstructure.depth_band_bps) if microstructure is not None else 0.0
+    required_depth_usdt = estimated_notional_float * min_depth_multiple if estimated_notional_float > 0 else 0.0
+    available_depth_usdt = min(bid_depth_usdt, ask_depth_usdt) if microstructure is not None else 0.0
+    depth_multiple = (available_depth_usdt / estimated_notional_float) if estimated_notional_float > 0 and microstructure is not None else 0.0
+
+    result_kwargs = {
+        "estimated_notional_usdt": estimated_notional_float,
+        "observed_volume_24h_usdt": round(observed_volume, 2),
+        "required_volume_24h_usdt": round(required_volume, 2),
+        "volume_multiple": round(volume_multiple, 4),
+        "participation_rate": round(participation_rate, 6),
+        "liquidity_tier": liquidity_tier,
+        "microstructure_available": microstructure is not None,
+        "spread_bps": round(spread_bps, 4),
+        "max_spread_bps": round(max_spread_bps, 4),
+        "bid_depth_usdt": round(bid_depth_usdt, 2),
+        "ask_depth_usdt": round(ask_depth_usdt, 2),
+        "required_depth_usdt": round(required_depth_usdt, 2),
+        "depth_multiple": round(depth_multiple, 4),
+        "depth_band_bps": round(depth_band_bps, 2),
+    }
+
+    if observed_volume < required_volume:
+        return LiquidityExecutionResult(
+            passed=False,
+            reason_code=LIQUIDITY_EXECUTION_RISK,
+            reason_text=(
+                f"24h volume ${observed_volume:,.0f} below required execution floor "
+                f"${required_volume:,.0f}"
+            ),
+            advisory=False,
+            **result_kwargs,
+        )
+
+    if participation_rate > _EXECUTION_MAX_PARTICIPATION_RATE:
+        return LiquidityExecutionResult(
+            passed=False,
+            reason_code=LIQUIDITY_PARTICIPATION_TOO_HIGH,
+            reason_text=(
+                f"Estimated order would consume {participation_rate * 100:.2f}% of 24h volume "
+                f"(max {_EXECUTION_MAX_PARTICIPATION_RATE * 100:.2f}%)"
+            ),
+            advisory=False,
+            **result_kwargs,
+        )
+
+    if microstructure is not None:
+        if spread_bps > max_spread_bps:
+            return LiquidityExecutionResult(
+                passed=False,
+                reason_code=ORDER_BOOK_SPREAD_TOO_WIDE,
+                reason_text=(
+                    f"Spread {spread_bps:.1f} bps exceeds {liquidity_tier} tier limit "
+                    f"of {max_spread_bps:.1f} bps"
+                ),
+                advisory=False,
+                **result_kwargs,
+            )
+        if available_depth_usdt < required_depth_usdt:
+            return LiquidityExecutionResult(
+                passed=False,
+                reason_code=ORDER_BOOK_DEPTH_TOO_THIN,
+                reason_text=(
+                    f"Near-mid order-book depth ${available_depth_usdt:,.0f} is below required "
+                    f"${required_depth_usdt:,.0f} ({min_depth_multiple:.1f}x order size)"
+                ),
+                advisory=False,
+                **result_kwargs,
+            )
+
+    advisory = participation_rate > _EXECUTION_WARN_PARTICIPATION_RATE or observed_volume < target_volume
+    if microstructure is not None:
+        advisory = advisory or spread_bps > (max_spread_bps * 0.7) or available_depth_usdt < (required_depth_usdt * 1.5)
+    if advisory:
+        if microstructure is not None:
+            reason_text = (
+                f"Liquidity is tradable but borderline: spread {spread_bps:.1f} bps, "
+                f"book depth ${available_depth_usdt:,.0f}, participation {participation_rate * 100:.2f}%"
+            )
+        else:
+            reason_text = (
+                f"Liquidity is tradable but borderline: 24h volume ${observed_volume:,.0f}, "
+                f"participation {participation_rate * 100:.2f}%"
+            )
+    else:
+        reason_text = "Execution liquidity passed"
+
+    return LiquidityExecutionResult(
+        passed=True,
+        reason_code=None,
+        reason_text=reason_text,
+        advisory=advisory,
+        **result_kwargs,
+    )
 
 
 def _score_min_threshold(value: float, minimum: float, target: float) -> float:
@@ -251,9 +483,11 @@ def build_tradability_metrics(
             variance = sum((price - mean_close) ** 2 for price in sample_24h) / len(sample_24h)
             close_std_pct_24h = sqrt(variance) / mean_close * 100.0
 
-    liquidity_floor = max(
-        float(SETTINGS.universe_min_24h_volume_usdt),
-        float(SETTINGS.multi_coin_liquidity_floor_usdt),
+    liquidity_floor = resolve_liquidity_floor_usdt(
+        symbol=symbol,
+        observed_volume_24h_usdt=volume_24h_usdt,
+        estimated_notional=estimated_notional,
+        config=config,
     )
     liquidity_score = _score_min_threshold(volume_24h_usdt, liquidity_floor * 0.5, liquidity_floor * 2.0)
     atr_score = _score_min_threshold(atr_pct_14, thresholds.min_atr_pct, 0.90)
@@ -366,9 +600,11 @@ def evaluate_symbol_tradability(
     if metrics.close_std_pct_24h > 5.0 and metrics.reward_to_cost_ratio < 1.5:
         reason_codes.append(EXECUTION_HOSTILE)
 
-    liquidity_floor = max(
-        float(SETTINGS.universe_min_24h_volume_usdt),
-        float(SETTINGS.multi_coin_liquidity_floor_usdt),
+    liquidity_floor = resolve_liquidity_floor_usdt(
+        symbol=symbol,
+        observed_volume_24h_usdt=metrics.volume_24h_usdt,
+        estimated_notional=estimated_notional,
+        config=config,
     )
     if metrics.volume_24h_usdt < liquidity_floor:
         reason_codes.append(LIQUIDITY_TOO_LOW)
@@ -382,7 +618,21 @@ def evaluate_symbol_tradability(
     deduped = list(dict.fromkeys(reason_codes))
     blocking_reason_codes, advisory_reason_codes = split_tradability_reason_codes(deduped)
     if blocking_reason_codes:
-        reason_text = "; ".join(blocking_reason_codes)
+        blocking_texts: list[str] = []
+        for code in blocking_reason_codes:
+            if code == LIQUIDITY_TOO_LOW:
+                policy = build_liquidity_policy(
+                    symbol,
+                    observed_volume_24h_usdt=metrics.volume_24h_usdt,
+                    estimated_notional=estimated_notional,
+                    config=config,
+                )
+                blocking_texts.append(
+                    f"{code} ({policy.archetype}: ${metrics.volume_24h_usdt:,.0f} < ${policy.required_24h_volume_usdt:,.0f} 24h)"
+                )
+            else:
+                blocking_texts.append(code)
+        reason_text = "; ".join(blocking_texts)
         if advisory_reason_codes:
             reason_text = f"{reason_text} | advisory: {'; '.join(advisory_reason_codes)}"
     elif advisory_reason_codes:

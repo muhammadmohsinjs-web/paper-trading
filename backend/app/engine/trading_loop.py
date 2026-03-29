@@ -62,13 +62,17 @@ from app.engine.post_trade import (
 from app.engine.safety_validator import SafetyVerdict, evaluate_local_trade_safety
 from app.engine.reason_codes import AI_SAFETY_UNAVAILABLE
 from app.engine.tradability import (
+    LiquidityExecutionResult,
     MovementQuality,
     TradabilityResult,
+    evaluate_execution_liquidity,
     evaluate_movement_quality,
     evaluate_symbol_tradability,
 )
 from app.engine.wallet_manager import get_or_create_wallet, get_position, get_positions
+from app.engine.slippage import estimate_liquidity_adjusted_slippage_rate
 from app.models.ai_call_log import AICallLog
+from app.market.binance_rest import OrderBookSnapshot, fetch_order_book_snapshot
 from app.market.data_store import DataStore
 from app.market.indicators import compute_indicators
 from app.models.snapshot import Snapshot
@@ -85,6 +89,8 @@ _regime_classifier = RegimeClassifier()
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
 def _as_aware(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -256,6 +262,7 @@ class LiveTradeDecision:
 @dataclass
 class ExecutionReadiness:
     tradability_passed: bool
+    liquidity_execution_passed: bool
     signal_quality_passed: bool
     economic_viability_passed: bool
     ai_safety_passed: bool
@@ -274,6 +281,18 @@ def _first_reason_code(reason_codes: list[str] | None) -> str | None:
 
 def _join_reason_codes(reason_codes: list[str]) -> str:
     return "; ".join(reason_codes) if reason_codes else "Checks passed"
+
+
+async def _fetch_execution_microstructure(symbol: str) -> OrderBookSnapshot | None:
+    try:
+        return await fetch_order_book_snapshot(
+            symbol,
+            depth_limit=settings.execution_order_book_depth_levels,
+            depth_band_bps=settings.execution_depth_band_bps,
+        )
+    except Exception:
+        logger.warning("execution_microstructure_unavailable symbol=%s", symbol, exc_info=True)
+        return None
 
 
 def _log_stage(
@@ -307,6 +326,7 @@ def _log_stage(
 def _build_execution_readiness(
     *,
     tradability: TradabilityResult,
+    liquidity_execution: LiquidityExecutionResult,
     signal_quality_passed: bool,
     economic_viability: EconomicViabilityResult,
     ai_safety: SafetyVerdict,
@@ -315,6 +335,8 @@ def _build_execution_readiness(
     reason_codes: list[str] = []
     if not tradability.passed:
         reason_codes.extend(tradability.reason_codes)
+    if not liquidity_execution.passed and liquidity_execution.reason_code:
+        reason_codes.append(liquidity_execution.reason_code)
     if not signal_quality_passed:
         reason_codes.append("FINAL_SANITY_FAILED")
     if not economic_viability.passed:
@@ -331,6 +353,7 @@ def _build_execution_readiness(
     fatal_flags = list(dict.fromkeys(ai_safety.fatal_flags or []))
     return ExecutionReadiness(
         tradability_passed=tradability.passed,
+        liquidity_execution_passed=liquidity_execution.passed,
         signal_quality_passed=signal_quality_passed,
         economic_viability_passed=economic_viability.passed,
         ai_safety_passed=ai_safety.approved,
@@ -340,6 +363,7 @@ def _build_execution_readiness(
         reason_text=_join_reason_codes(deduped_codes),
         metrics={
             "tradability": tradability.to_dict(),
+            "liquidity_execution": liquidity_execution.to_dict(),
             "economic_viability": economic_viability.to_dict(),
             "ai_safety": ai_safety.to_dict(),
             "sizing_safety": {
@@ -1644,11 +1668,52 @@ async def _run_hybrid_cycle(
         Decimal(str(wallet.available_usdt)),
         equity * (Decimal(str(strategy.max_position_size_pct)) / Decimal("100")),
     )
+    microstructure = await _fetch_execution_microstructure(symbol)
+    liquidity_execution = evaluate_execution_liquidity(
+        metrics=tradability_result.metrics,
+        estimated_notional=estimated_notional,
+        symbol=symbol,
+        config=config,
+        microstructure=microstructure,
+    )
+    _log_stage(
+        session,
+        strategy_id=strategy_id,
+        cycle_id=cycle_id,
+        symbol=symbol,
+        stage="execution_liquidity",
+        status="passed" if liquidity_execution.passed else "rejected",
+        reason_code=liquidity_execution.reason_code,
+        reason_text=liquidity_execution.reason_text,
+        metrics_json=liquidity_execution.to_dict(),
+        context_json={
+            "advisory": liquidity_execution.advisory,
+            "microstructure": microstructure.to_dict() if microstructure is not None else None,
+        },
+    )
+    if not liquidity_execution.passed:
+        return {
+            "status": "skipped",
+            "reason": liquidity_execution.reason_text,
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "execution_liquidity",
+            "composite": composite_dict,
+        }
+    entry_slippage_rate = estimate_liquidity_adjusted_slippage_rate(
+        estimated_notional,
+        volume_24h_usdt=tradability_result.metrics.volume_24h_usdt,
+        market_quality_score=tradability_result.market_quality_score,
+        spread_bps=liquidity_execution.spread_bps if liquidity_execution.microstructure_available else None,
+        depth_multiple=liquidity_execution.depth_multiple if liquidity_execution.microstructure_available else None,
+    )
     economic_viability = evaluate_economic_viability(
         entry_price=market_price,
         stop_loss_price=stop_loss_price,
         take_profit_price=take_profit_price,
         notional=estimated_notional,
+        entry_slippage_rate=entry_slippage_rate,
+        exit_slippage_rate=entry_slippage_rate,
         config=config,
     )
     _log_stage(
@@ -1661,7 +1726,13 @@ async def _run_hybrid_cycle(
         reason_code=_first_reason_code(economic_viability.reason_codes),
         reason_text=economic_viability.reason_text,
         metrics_json=economic_viability.to_dict(),
-        context_json={"estimated_notional": float(estimated_notional)},
+        context_json={
+            "estimated_notional": float(estimated_notional),
+            "entry_slippage_rate": float(entry_slippage_rate),
+            "microstructure_available": liquidity_execution.microstructure_available,
+            "spread_bps": liquidity_execution.spread_bps,
+            "depth_multiple": liquidity_execution.depth_multiple,
+        },
     )
     if not economic_viability.passed:
         return {
@@ -1810,6 +1881,7 @@ async def _run_hybrid_cycle(
     live_decision.quantity_pct = quantity_pct
     execution_readiness = _build_execution_readiness(
         tradability=tradability_result,
+        liquidity_execution=liquidity_execution,
         signal_quality_passed=not decision.composite_result.reject_reason_codes,
         economic_viability=economic_viability,
         ai_safety=ai_safety,
@@ -1817,6 +1889,7 @@ async def _run_hybrid_cycle(
     )
     if (
         not execution_readiness.tradability_passed
+        or not execution_readiness.liquidity_execution_passed
         or not execution_readiness.signal_quality_passed
         or not execution_readiness.economic_viability_passed
         or not execution_readiness.ai_safety_passed
@@ -2193,14 +2266,55 @@ async def _run_rule_based_cycle(
             "decision_source": "confidence_gate",
         }
 
+    estimated_notional = min(
+        Decimal(str(wallet.available_usdt)),
+        equity * (Decimal(str(strategy.max_position_size_pct)) / Decimal("100")),
+    )
+    microstructure = await _fetch_execution_microstructure(symbol)
+    liquidity_execution = evaluate_execution_liquidity(
+        metrics=tradability_result.metrics,
+        estimated_notional=estimated_notional,
+        symbol=symbol,
+        config=config,
+        microstructure=microstructure,
+    )
+    _log_stage(
+        session,
+        strategy_id=strategy_id,
+        cycle_id=cycle_id,
+        symbol=symbol,
+        stage="execution_liquidity",
+        status="passed" if liquidity_execution.passed else "rejected",
+        reason_code=liquidity_execution.reason_code,
+        reason_text=liquidity_execution.reason_text,
+        metrics_json=liquidity_execution.to_dict(),
+        context_json={
+            "advisory": liquidity_execution.advisory,
+            "microstructure": microstructure.to_dict() if microstructure is not None else None,
+        },
+    )
+    if not liquidity_execution.passed:
+        return {
+            "status": "skipped",
+            "reason": liquidity_execution.reason_text,
+            "symbol": symbol,
+            "strategy_id": strategy_id,
+            "decision_source": "execution_liquidity",
+        }
+    entry_slippage_rate = estimate_liquidity_adjusted_slippage_rate(
+        estimated_notional,
+        volume_24h_usdt=tradability_result.metrics.volume_24h_usdt,
+        market_quality_score=tradability_result.market_quality_score,
+        spread_bps=liquidity_execution.spread_bps if liquidity_execution.microstructure_available else None,
+        depth_multiple=liquidity_execution.depth_multiple if liquidity_execution.microstructure_available else None,
+    )
     economic_viability = evaluate_economic_viability(
         entry_price=market_price,
         stop_loss_price=stop_loss_price,
         take_profit_price=take_profit_price,
-        notional=min(
-            Decimal(str(wallet.available_usdt)),
-            equity * (Decimal(str(strategy.max_position_size_pct)) / Decimal("100")),
-        ),
+        notional=estimated_notional,
+        entry_slippage_rate=entry_slippage_rate,
+        exit_slippage_rate=entry_slippage_rate,
         config=config,
     )
     _log_stage(
@@ -2213,7 +2327,14 @@ async def _run_rule_based_cycle(
         reason_code=_first_reason_code(economic_viability.reason_codes),
         reason_text=economic_viability.reason_text,
         metrics_json=economic_viability.to_dict(),
-        context_json={"strategy_type": strategy_type},
+        context_json={
+            "strategy_type": strategy_type,
+            "estimated_notional": float(estimated_notional),
+            "entry_slippage_rate": float(entry_slippage_rate),
+            "microstructure_available": liquidity_execution.microstructure_available,
+            "spread_bps": liquidity_execution.spread_bps,
+            "depth_multiple": liquidity_execution.depth_multiple,
+        },
     )
     logger.info(
         "economic_viability strategy_id=%s symbol=%s passed=%s reason=%s",
@@ -2339,6 +2460,7 @@ async def _run_rule_based_cycle(
     )
     execution_readiness = _build_execution_readiness(
         tradability=tradability_result,
+        liquidity_execution=liquidity_execution,
         signal_quality_passed=True,
         economic_viability=economic_viability,
         ai_safety=ai_safety,
@@ -2346,6 +2468,7 @@ async def _run_rule_based_cycle(
     )
     if (
         not execution_readiness.tradability_passed
+        or not execution_readiness.liquidity_execution_passed
         or not execution_readiness.signal_quality_passed
         or not execution_readiness.economic_viability_passed
         or not execution_readiness.ai_safety_passed

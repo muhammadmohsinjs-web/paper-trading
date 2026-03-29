@@ -32,6 +32,56 @@ def estimate_slippage_rate(notional: Decimal) -> Decimal:
     return Decimal("0.001")
 
 
+def estimate_liquidity_adjusted_slippage_rate(
+    notional: Decimal,
+    *,
+    volume_24h_usdt: float | None = None,
+    market_quality_score: float | None = None,
+    spread_bps: float | None = None,
+    depth_multiple: float | None = None,
+) -> Decimal:
+    """Estimate slippage with a simple liquidity-aware penalty.
+
+    The base tiers still anchor the estimate by order size, but the rate is
+    increased when the intended order consumes a material share of 24h volume
+    or when the market-quality score is weak.
+    """
+    base_rate = estimate_slippage_rate(notional)
+    multiplier = Decimal("1.0")
+    spread_floor = Decimal("0")
+
+    if volume_24h_usdt is not None and volume_24h_usdt > 0:
+        participation = float(notional) / float(volume_24h_usdt)
+        if participation >= 0.01:
+            multiplier *= Decimal("1.75")
+        elif participation >= 0.005:
+            multiplier *= Decimal("1.45")
+        elif participation >= 0.002:
+            multiplier *= Decimal("1.25")
+        elif participation >= 0.001:
+            multiplier *= Decimal("1.10")
+
+    if market_quality_score is not None:
+        deficit = max(0.0, 0.60 - float(market_quality_score))
+        multiplier *= Decimal(str(1.0 + min(deficit * 0.75, 0.30)))
+
+    adjusted = (base_rate * multiplier).quantize(Decimal("0.0000001"))
+
+    if spread_bps is not None and spread_bps > 0:
+        half_spread_rate = (Decimal(str(spread_bps)) / Decimal("10000")) / Decimal("2")
+        spread_floor = half_spread_rate.quantize(Decimal("0.0000001"))
+        adjusted = max(adjusted, spread_floor)
+
+    if depth_multiple is not None and depth_multiple > 0:
+        if depth_multiple < 4:
+            adjusted *= Decimal("1.30")
+        elif depth_multiple < 7:
+            adjusted *= Decimal("1.15")
+
+    cap = (base_rate * Decimal("3.0")).quantize(Decimal("0.0000001"))
+    return max(spread_floor, min(adjusted.quantize(Decimal("0.0000001")), cap))
+
+
 def _pick_rate(notional: Decimal) -> Decimal:
     for threshold, lo, hi in _TIERS:
         if notional < threshold:

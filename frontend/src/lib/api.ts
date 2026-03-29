@@ -19,6 +19,7 @@ import type {
   ReviewLedgerResponse,
   ReviewSummary,
   SignalData,
+  ScannerRefreshResponse,
   StrategyWithStats,
   Trade,
   TradeLogResponse,
@@ -282,6 +283,13 @@ export function triggerDailyReport(date?: string) {
 export function runManualScan(interval = "1h", maxResults = 10) {
   return request<ManualScanResponse>(
     `/scanner/scan?interval=${interval}&max_results=${maxResults}`,
+    { method: "POST" }
+  );
+}
+
+export function refreshScannerLiveData(limit = 200) {
+  return request<ScannerRefreshResponse>(
+    `/scanner/live/refresh?limit=${limit}`,
     { method: "POST" }
   );
 }

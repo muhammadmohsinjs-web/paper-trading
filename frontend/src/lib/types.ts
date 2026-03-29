@@ -293,6 +293,20 @@ export type ManualExecutionResponse =
       [key: string]: unknown;
     };
 
+export type ScannerRefreshResponse = {
+  status: string;
+  refreshed_at: string;
+  active_universe_size: number;
+  symbols_refreshed: number;
+  intervals_refreshed: string[];
+  requested_pairs: number;
+  successful_pairs: number;
+  failed_pairs: number;
+  active_symbols: string[];
+  promoted: string[];
+  demoted: string[];
+};
+
 export type SignalData = {
   symbol: string;
   interval: string;
@@ -418,12 +432,24 @@ export type ScanAuditRow = {
   setup_type: string | null;
   movement_quality: Record<string, unknown>;
   score: number;
+  volume_1h_usdt?: number;
+  threshold_volume_1h_usdt?: number;
+  liquidity_archetype?: string;
+  threshold_volume_24h_usdt?: number;
+  family?: string;
+  net_quality_score?: number;
+  advisory_penalty?: number;
+  liquidity_penalty?: number;
 };
 
 export type CandidateEvaluation = {
   symbol: string;
   price: number;
   volume_24h_usdt: number;
+  volume_1h_usdt: number;
+  threshold_volume_1h_usdt: number;
+  liquidity_archetype: string;
+  threshold_volume_24h_usdt: number;
   price_change_pct_24h: number;
   tradability_passed: boolean;
   reason_codes: string[];

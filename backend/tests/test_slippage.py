@@ -2,7 +2,7 @@
 
 from decimal import Decimal
 
-from app.engine.slippage import apply_slippage
+from app.engine.slippage import apply_slippage, estimate_liquidity_adjusted_slippage_rate
 from app.models.enums import TradeSide
 
 
@@ -52,3 +52,34 @@ def test_large_order_higher_slippage():
     _, small_slip = apply_slippage(price, Decimal("5000"), TradeSide.BUY)
     _, large_slip = apply_slippage(price, Decimal("100000"), TradeSide.BUY)
     assert large_slip > small_slip
+
+
+def test_liquidity_adjusted_slippage_increases_when_volume_is_thin():
+    base = estimate_liquidity_adjusted_slippage_rate(
+        Decimal("5000"),
+        volume_24h_usdt=50_000_000,
+        market_quality_score=0.8,
+    )
+    stressed = estimate_liquidity_adjusted_slippage_rate(
+        Decimal("5000"),
+        volume_24h_usdt=300_000,
+        market_quality_score=0.4,
+    )
+
+    assert stressed > base
+
+
+def test_liquidity_adjusted_slippage_respects_wide_spread_floor():
+    base = estimate_liquidity_adjusted_slippage_rate(
+        Decimal("5000"),
+        volume_24h_usdt=50_000_000,
+        market_quality_score=0.8,
+    )
+    with_spread = estimate_liquidity_adjusted_slippage_rate(
+        Decimal("5000"),
+        volume_24h_usdt=50_000_000,
+        market_quality_score=0.8,
+        spread_bps=24.0,
+    )
+
+    assert with_spread > base
