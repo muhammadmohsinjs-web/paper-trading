@@ -361,20 +361,38 @@ def compute_composite_score(
 
     reject_reason_codes: list[str] = []
     edge_floor_passed = abs(directional_score) >= thresholds.min_directional_score and edge_strength >= thresholds.min_edge_strength
-    quality_floor_passed = (
-        movement_quality >= thresholds.min_movement_quality_score
-        and market_quality >= thresholds.min_composite_market_quality_score
+    quality_grace = 0.05
+    strong_confirmation = (
+        abs(directional_score) >= (thresholds.min_directional_score + 0.08)
+        and signal_agreement >= 0.66
+        and edge_strength >= thresholds.min_edge_strength
     )
+    movement_quality_failed = (
+        movement_quality < thresholds.min_movement_quality_score
+        and not (
+            strong_confirmation
+            and movement_quality >= (thresholds.min_movement_quality_score - quality_grace)
+        )
+    )
+    market_quality_failed = (
+        market_quality < thresholds.min_composite_market_quality_score
+        and not (
+            strong_confirmation
+            and market_quality >= (thresholds.min_composite_market_quality_score - quality_grace)
+        )
+    )
+    quality_floor_passed = not movement_quality_failed and not market_quality_failed
     if abs(directional_score) < thresholds.min_directional_score:
         reject_reason_codes.append(DIRECTIONAL_SCORE_TOO_SMALL)
-    if movement_quality < thresholds.min_movement_quality_score:
+    if movement_quality_failed:
         reject_reason_codes.append(MOVEMENT_QUALITY_TOO_LOW)
-    if market_quality < thresholds.min_composite_market_quality_score:
+    if market_quality_failed:
         reject_reason_codes.append(MARKET_QUALITY_TOO_LOW)
     if edge_strength < thresholds.min_edge_strength:
         reject_reason_codes.append(EDGE_TOO_WEAK)
 
-    gate = max(float((config or {}).get("confidence_gate", DEFAULT_CONFIDENCE_GATE)), thresholds.min_edge_strength)
+    confidence_floor = max(0.45, thresholds.min_edge_strength - 0.05)
+    gate = max(float((config or {}).get("confidence_gate", DEFAULT_CONFIDENCE_GATE)), confidence_floor)
     if confidence < gate:
         reject_reason_codes.append(FINAL_CONFIDENCE_TOO_LOW)
 

@@ -177,6 +177,26 @@ class TestUniverseSelector:
 
         assert universe == get_settings().default_scan_universe
 
+    @pytest.mark.asyncio
+    async def test_ensure_symbol_candles_fetches_for_never_hydrated_symbol_even_on_fresh_process(self, monkeypatch):
+        selector = UniverseSelector.get_instance()
+        store = DataStore.get_instance()
+        fetched = _make_candles(60)
+        called = {"count": 0}
+
+        async def fake_fetch_candles(symbol: str, interval: str, limit: int):
+            called["count"] += 1
+            return fetched
+
+        monkeypatch.setattr("app.scanner.universe_selector.fetch_candles", fake_fetch_candles)
+        monkeypatch.setattr("app.scanner.universe_selector.time.monotonic", lambda: 100.0)
+
+        await selector._ensure_symbol_candles("TESTUSDT", store)
+
+        assert called["count"] == 1
+        assert len(store.get_candles("TESTUSDT", "1h", 60)) == 60
+        assert selector._hydrated_symbols_at["TESTUSDT"] == 100.0
+
 
 class TestActivityScore:
     """Test the ActivityScore dataclass."""

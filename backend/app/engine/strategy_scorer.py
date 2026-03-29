@@ -224,9 +224,19 @@ def evaluate_universe_for_strategy(
             continue
 
         best_setup = max(eligible, key=lambda item: item.score)
+        setup_fit_base = best_setup.score
+        if best_setup.symbol_quality_score > 0:
+            setup_fit_base = best_setup.score * 0.6 + best_setup.symbol_quality_score * 0.25 + best_setup.execution_quality_score * 0.15
         regime = (regime_cache or {}).get(symbol) or _parse_regime(best_setup.regime)
         regime_fit = _resolve_regime_fit(regime, strategy_type)
-        if _is_regime_unfavorable(profile, regime, regime_fit):
+        high_quality_exception = (
+            setup_fit_base >= 0.86
+            or (
+                best_setup.symbol_quality_score >= 0.68
+                and best_setup.execution_quality_score >= 0.62
+            )
+        )
+        if _is_regime_unfavorable(profile, regime, regime_fit) and not high_quality_exception:
             rejections.append(
                 StrategyRejection(
                     strategy_id=strategy.id,
@@ -245,11 +255,6 @@ def evaluate_universe_for_strategy(
         perf_memory_score = 0.5
         vol_quality_score = _clamp01(best_setup.volatility_quality_score)
         expected_rr_score = _clamp01(best_setup.reward_to_cost_ratio / 3.0)
-
-        # Blend family quality into setup fit when available
-        setup_fit_base = best_setup.score
-        if best_setup.symbol_quality_score > 0:
-            setup_fit_base = best_setup.score * 0.6 + best_setup.symbol_quality_score * 0.25 + best_setup.execution_quality_score * 0.15
 
         final_score = (
             setup_fit_base * profile.weights.setup_fit

@@ -270,6 +270,8 @@ class OpportunityScanner:
                 })
                 continue
 
+            advisory_penalty = min(0.12, 0.03 * len(tradability.advisory_reason_codes))
+
             # Contradiction penalty: bullish + bearish eligible families present
             has_buy = any(s.signal == "BUY" for s in setups)
             has_sell = any(s.signal == "SELL" for s in setups)
@@ -288,7 +290,7 @@ class OpportunityScanner:
                 + best_setup.symbol_quality_score * 0.15
                 + best_setup.score * 0.15
                 + regime_affinity * 0.10
-            ) - contradiction_penalty - exhaustion_penalty
+            ) - contradiction_penalty - exhaustion_penalty - advisory_penalty
 
             final_score = max(0.0, net_quality * 0.70 + best_setup.score * 0.20 + liquidity_score * 0.10)
             candidates.append(
@@ -323,6 +325,7 @@ class OpportunityScanner:
                 "score": best_setup.score,
                 "family": best_setup.family,
                 "net_quality_score": round(net_quality, 4),
+                "advisory_penalty": round(advisory_penalty, 4),
             })
 
         if skipped_data:

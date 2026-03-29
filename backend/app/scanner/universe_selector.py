@@ -262,13 +262,16 @@ class UniverseSelector:
             relative_strength = self._score_relative_strength(candidate.symbol)
 
             # Composite
-            composite = (
+            raw_composite = (
                 volume_surge * settings.universe_volume_surge_weight
                 + volatility_quality * settings.universe_volatility_quality_weight
                 + trend_clarity * settings.universe_trend_clarity_weight
                 + liquidity_depth * settings.universe_liquidity_depth_weight
                 + relative_strength * settings.universe_relative_strength_weight
             )
+            quality_multiplier = 0.85 + (0.15 * tradability.market_quality_score)
+            advisory_penalty = min(0.12, 0.04 * len(tradability.advisory_reason_codes))
+            composite = max(0.0, raw_composite * quality_multiplier - advisory_penalty)
 
             scores.append(ActivityScore(
                 symbol=candidate.symbol,
@@ -368,9 +371,9 @@ class UniverseSelector:
         if len(candles) >= 48:
             return
 
-        last_refresh = self._hydrated_symbols_at.get(symbol, 0.0)
         now = time.monotonic()
-        if now - last_refresh < 900:
+        last_refresh = self._hydrated_symbols_at.get(symbol)
+        if last_refresh is not None and (now - last_refresh) < 900:
             return
 
         async with self._hydration_semaphore:

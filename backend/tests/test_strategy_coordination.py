@@ -82,6 +82,45 @@ def test_strategy_scorer_filters_setup_types_and_regimes():
     assert {rejection.symbol for rejection in result.rejections} == {"ETHUSDT", "SOLUSDT"}
 
 
+def test_strategy_scorer_keeps_exceptional_off_regime_setup_as_penalized_candidate():
+    strategy = Strategy(
+        id="sma-1",
+        name="SMA",
+        execution_mode="multi_coin_shared_wallet",
+        config_json={"strategy_type": "sma_crossover"},
+    )
+    profile = get_strategy_profile("sma_crossover")
+    assert profile is not None
+
+    result = evaluate_universe_for_strategy(
+        strategy,
+        profile,
+        {
+            "SOLUSDT": [
+                RankedSetup(
+                    "SOLUSDT",
+                    0.88,
+                    "ema_trend_bullish",
+                    "BUY",
+                    "ranging",
+                    "sma_crossover",
+                    "exceptional",
+                    liquidity_usdt=2_000_000.0,
+                    market_quality_score=0.8,
+                    reward_to_cost_ratio=2.1,
+                    volatility_quality_score=0.7,
+                    symbol_quality_score=0.74,
+                    execution_quality_score=0.69,
+                )
+            ],
+        },
+        {"SOLUSDT": MarketRegime.RANGING},
+    )
+
+    assert [candidate.symbol for candidate in result.candidates] == ["SOLUSDT"]
+    assert result.rejections == []
+
+
 def test_conflict_resolver_respects_tiebreak_and_cooldown():
     now = datetime.now(timezone.utc)
     assignments, rejections = resolve_conflicts(

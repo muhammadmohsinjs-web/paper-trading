@@ -63,6 +63,8 @@ class TradabilityMetrics:
 class TradabilityResult:
     passed: bool
     reason_codes: list[str]
+    blocking_reason_codes: list[str]
+    advisory_reason_codes: list[str]
     reason_text: str
     metrics: TradabilityMetrics
     market_quality_score: float
@@ -71,6 +73,8 @@ class TradabilityResult:
         return {
             "passed": self.passed,
             "reason_codes": list(self.reason_codes),
+            "blocking_reason_codes": list(self.blocking_reason_codes),
+            "advisory_reason_codes": list(self.advisory_reason_codes),
             "reason_text": self.reason_text,
             "metrics": self.metrics.to_dict(),
             "market_quality_score": self.market_quality_score,
@@ -148,6 +152,27 @@ def _range_pct(values: list[float]) -> float:
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(value, 1.0))
+
+
+_BLOCKING_TRADABILITY_CODES = {
+    DENYLIST_STABLE_BASE,
+    NEAR_PEG_PROFILE,
+    STRUCTURALLY_DEAD,
+    EXECUTION_HOSTILE,
+    LIQUIDITY_TOO_LOW,
+    ENTRY_BLOCKED_RETAINED_SYMBOL,
+}
+
+
+def split_tradability_reason_codes(reason_codes: list[str]) -> tuple[list[str], list[str]]:
+    blocking: list[str] = []
+    advisory: list[str] = []
+    for code in reason_codes:
+        if code in _BLOCKING_TRADABILITY_CODES:
+            blocking.append(code)
+        else:
+            advisory.append(code)
+    return blocking, advisory
 
 
 def _score_min_threshold(value: float, minimum: float, target: float) -> float:
@@ -355,10 +380,21 @@ def evaluate_symbol_tradability(
         reason_codes.append(ENTRY_BLOCKED_RETAINED_SYMBOL)
 
     deduped = list(dict.fromkeys(reason_codes))
+    blocking_reason_codes, advisory_reason_codes = split_tradability_reason_codes(deduped)
+    if blocking_reason_codes:
+        reason_text = "; ".join(blocking_reason_codes)
+        if advisory_reason_codes:
+            reason_text = f"{reason_text} | advisory: {'; '.join(advisory_reason_codes)}"
+    elif advisory_reason_codes:
+        reason_text = f"Advisory: {'; '.join(advisory_reason_codes)}"
+    else:
+        reason_text = "Symbol passed tradability checks"
     return TradabilityResult(
-        passed=not deduped,
+        passed=not blocking_reason_codes,
         reason_codes=deduped,
-        reason_text="; ".join(deduped) if deduped else "Symbol passed tradability checks",
+        blocking_reason_codes=blocking_reason_codes,
+        advisory_reason_codes=advisory_reason_codes,
+        reason_text=reason_text,
         metrics=metrics,
         market_quality_score=metrics.market_quality_score,
     )
